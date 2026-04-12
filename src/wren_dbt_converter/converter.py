@@ -35,15 +35,19 @@ def build_manifest(
     profile_name: Optional[str] = None,
     target: Optional[str] = None,
     include_staging: bool = False,
+    catalog_path: Optional[Path] = None,
+    manifest_path: Optional[Path] = None,
 ) -> ConvertResult:
     """
     Convert a dbt project to a Wren MDL manifest without constructing an engine.
 
     Args:
-        project_path: Path to the dbt project root.
+        project_path: Path to the dbt project root (must contain dbt_project.yml and profiles.yml).
         profile_name: Profile name to use. Defaults to the first profile found.
         target: Target name within the profile. Defaults to the profile's default target.
         include_staging: If True, include models with staging prefixes.
+        catalog_path: Path to catalog.json. Defaults to <project_path>/target/catalog.json.
+        manifest_path: Path to manifest.json. Defaults to <project_path>/target/manifest.json.
 
     Returns:
         ConvertResult with manifest, data_source and connection_info.
@@ -57,27 +61,27 @@ def build_manifest(
         )
 
     # 2. Load catalog
-    catalog_path = project_path / "target" / "catalog.json"
-    if not catalog_path.exists():
+    resolved_catalog = catalog_path or (project_path / "target" / "catalog.json")
+    if not resolved_catalog.exists():
         raise FileNotFoundError(
-            f"catalog.json not found at {catalog_path}. Run 'dbt docs generate' first."
+            f"catalog.json not found at {resolved_catalog}. Run 'dbt docs generate' first."
         )
-    catalog = load_catalog(catalog_path)
+    catalog = load_catalog(resolved_catalog)
 
     # 3. Load manifest
-    manifest_path = project_path / "target" / "manifest.json"
-    if not manifest_path.exists():
+    resolved_manifest = manifest_path or (project_path / "target" / "manifest.json")
+    if not resolved_manifest.exists():
         raise FileNotFoundError(
-            f"manifest.json not found at {manifest_path}. "
+            f"manifest.json not found at {resolved_manifest}. "
             "Run 'dbt compile' or 'dbt run' first."
         )
-    manifest = load_manifest(manifest_path)
+    manifest = load_manifest(resolved_manifest)
 
     # 4. Find and parse profiles
     profiles_path = find_profiles_file(project_path)
     if profiles_path is None:
         raise FileNotFoundError(
-            "profiles.yml not found in project directory, .dbt/, or ~/.dbt/"
+            f"profiles.yml not found in project directory: {project_path}"
         )
     profiles = analyze_dbt_profiles(profiles_path)
 
@@ -178,15 +182,19 @@ def from_dbt_project(
     profile_name: Optional[str] = None,
     target: Optional[str] = None,
     include_staging: bool = False,
+    catalog_path: Optional[Path] = None,
+    manifest_path: Optional[Path] = None,
 ) -> WrenEngine:
     """
     Convert a dbt project to a ready-to-use WrenEngine instance.
 
     Args:
-        project_path: Path to the dbt project root.
+        project_path: Path to the dbt project root (must contain dbt_project.yml and profiles.yml).
         profile_name: Profile name to use.
         target: Target name within the profile.
         include_staging: If True, include models with staging prefixes.
+        catalog_path: Path to catalog.json. Defaults to <project_path>/target/catalog.json.
+        manifest_path: Path to manifest.json. Defaults to <project_path>/target/manifest.json.
 
     Returns:
         WrenEngine constructed from the dbt project's MDL manifest.
@@ -196,5 +204,7 @@ def from_dbt_project(
         profile_name=profile_name,
         target=target,
         include_staging=include_staging,
+        catalog_path=catalog_path,
+        manifest_path=manifest_path,
     )
     return build_engine(result.manifest, result.data_source, result.connection_info)
