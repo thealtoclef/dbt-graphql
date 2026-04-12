@@ -1,7 +1,35 @@
 [project]
 name = "wren-dbt-converter"
 version = "0.1.0"
-description = "Add your description here"
+description = "Convert dbt projects to Wren MDL and WrenEngine instances"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+license = "MIT"
+dependencies = [
+    "dbt-artifacts-parser>=0.13.0",
+    "pyyaml>=6.0.2",
+    "wren-engine>=0.2.1",
+]
+
+[dependency-groups]
+test = ["pytest>=9.0.3", "pytest-cov>=7.1.0"]
+lint = ["ruff", "ty"]
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = ["tests/*", "**/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
