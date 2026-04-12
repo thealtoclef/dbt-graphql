@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -14,9 +15,6 @@ from .parsers.profiles_parser import analyze_dbt_profiles, find_profiles_file
 from .processors.columns import convert_columns
 from .processors.relationships import build_relationships
 from .processors.tests_preprocessor import preprocess_tests
-
-# Staging model name prefixes that can be excluded
-_STAGING_PREFIXES = ("stg_", "staging_")
 
 
 @dataclass
@@ -34,7 +32,7 @@ def build_manifest(
     project_path: str | Path,
     profile_name: Optional[str] = None,
     target: Optional[str] = None,
-    include_staging: bool = False,
+    exclude_pattern: Optional[str] = None,
     catalog_path: Optional[Path] = None,
     manifest_path: Optional[Path] = None,
 ) -> ConvertResult:
@@ -45,7 +43,8 @@ def build_manifest(
         project_path: Path to the dbt project root (must contain dbt_project.yml and profiles.yml).
         profile_name: Profile name to use. Defaults to the first profile found.
         target: Target name within the profile. Defaults to the profile's default target.
-        include_staging: If True, include models with staging prefixes.
+        exclude_pattern: Regex pattern matched against model names; matching models are excluded.
+            Defaults to None (no models excluded). Example: r"^(stg_|staging_)" to skip staging.
         catalog_path: Path to catalog.json. Defaults to <project_path>/target/catalog.json.
         manifest_path: Path to manifest.json. Defaults to <project_path>/target/manifest.json.
 
@@ -104,9 +103,7 @@ def build_manifest(
 
         model_name: str = catalog_node.metadata.name or key.split(".")[-1]
 
-        if not include_staging and any(
-            model_name.startswith(p) for p in _STAGING_PREFIXES
-        ):
+        if exclude_pattern and re.search(exclude_pattern, model_name):
             continue
 
         # Find matching manifest node
@@ -181,7 +178,7 @@ def from_dbt_project(
     project_path: str | Path,
     profile_name: Optional[str] = None,
     target: Optional[str] = None,
-    include_staging: bool = False,
+    exclude_pattern: Optional[str] = None,
     catalog_path: Optional[Path] = None,
     manifest_path: Optional[Path] = None,
 ) -> WrenEngine:
@@ -192,7 +189,7 @@ def from_dbt_project(
         project_path: Path to the dbt project root (must contain dbt_project.yml and profiles.yml).
         profile_name: Profile name to use.
         target: Target name within the profile.
-        include_staging: If True, include models with staging prefixes.
+        exclude_pattern: Regex pattern matched against model names; matching models are excluded.
         catalog_path: Path to catalog.json. Defaults to <project_path>/target/catalog.json.
         manifest_path: Path to manifest.json. Defaults to <project_path>/target/manifest.json.
 
@@ -203,7 +200,7 @@ def from_dbt_project(
         project_path=project_path,
         profile_name=profile_name,
         target=target,
-        include_staging=include_staging,
+        exclude_pattern=exclude_pattern,
         catalog_path=catalog_path,
         manifest_path=manifest_path,
     )

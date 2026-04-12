@@ -31,16 +31,18 @@ def test_build_manifest_returns_result(dbt_project):
 def test_build_manifest_has_models(dbt_project):
     result = build_manifest(dbt_project)
     model_names = {m.name for m in result.manifest.models}
-    # staging model excluded by default
+    assert "customers" in model_names
+    assert "orders" in model_names
+    # all models included by default
+    assert "stg_orders" in model_names
+
+
+def test_build_manifest_exclude_pattern(dbt_project):
+    result = build_manifest(dbt_project, exclude_pattern=r"^(stg_|staging_)")
+    model_names = {m.name for m in result.manifest.models}
     assert "customers" in model_names
     assert "orders" in model_names
     assert "stg_orders" not in model_names
-
-
-def test_build_manifest_includes_staging(dbt_project):
-    result = build_manifest(dbt_project, include_staging=True)
-    model_names = {m.name for m in result.manifest.models}
-    assert "stg_orders" in model_names
 
 
 def test_build_manifest_has_relationship(dbt_project):

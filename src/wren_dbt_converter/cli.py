@@ -19,7 +19,6 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to the dbt project root (must contain dbt_project.yml and profiles.yml).",
     )
     parser.add_argument(
-        "-o",
         "--output",
         type=Path,
         default=Path("."),
@@ -53,10 +52,13 @@ def main(argv: list[str] | None = None) -> None:
         help="dbt target within the profile (default: profile's default target).",
     )
     parser.add_argument(
-        "--include-staging",
-        action="store_true",
-        default=False,
-        help="Include staging models (stg_*, staging_*) in the output.",
+        "--exclude",
+        default=None,
+        metavar="PATTERN",
+        help=(
+            "Regex pattern matched against model names; matching models are excluded. "
+            "Example: --exclude '^(stg_|staging_)' to skip staging models."
+        ),
     )
 
     args = parser.parse_args(argv)
@@ -66,7 +68,7 @@ def main(argv: list[str] | None = None) -> None:
             project_path=args.project_path,
             profile_name=args.profile_name,
             target=args.target,
-            include_staging=args.include_staging,
+            exclude_pattern=args.exclude,
             catalog_path=args.catalog,
             manifest_path=args.manifest,
         )

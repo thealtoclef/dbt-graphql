@@ -21,14 +21,14 @@ def dbt_project(tmp_path):
 
 def test_cli_produces_output_files(dbt_project, tmp_path):
     output_dir = tmp_path / "out"
-    main([str(dbt_project), "-o", str(output_dir)])
+    main([str(dbt_project), "--output", str(output_dir)])
     assert (output_dir / "mdl.json").exists()
     assert (output_dir / "connection.json").exists()
 
 
 def test_cli_mdl_json_valid(dbt_project, tmp_path):
     output_dir = tmp_path / "out"
-    main([str(dbt_project), "-o", str(output_dir)])
+    main([str(dbt_project), "--output", str(output_dir)])
     data = json.loads((output_dir / "mdl.json").read_text())
     assert "models" in data
     assert "relationships" in data
@@ -37,27 +37,28 @@ def test_cli_mdl_json_valid(dbt_project, tmp_path):
 
 def test_cli_connection_json_valid(dbt_project, tmp_path):
     output_dir = tmp_path / "out"
-    main([str(dbt_project), "-o", str(output_dir)])
+    main([str(dbt_project), "--output", str(output_dir)])
     data = json.loads((output_dir / "connection.json").read_text())
     assert "dataSource" in data
     assert "connection" in data
     assert data["dataSource"] == "duckdb"
 
 
-def test_cli_staging_excluded_by_default(dbt_project, tmp_path):
+def test_cli_all_models_included_by_default(dbt_project, tmp_path):
     output_dir = tmp_path / "out"
-    main([str(dbt_project), "-o", str(output_dir)])
-    data = json.loads((output_dir / "mdl.json").read_text())
-    model_names = [m["name"] for m in data["models"]]
-    assert "stg_orders" not in model_names
-
-
-def test_cli_include_staging(dbt_project, tmp_path):
-    output_dir = tmp_path / "out"
-    main([str(dbt_project), "--include-staging", "-o", str(output_dir)])
+    main([str(dbt_project), "--output", str(output_dir)])
     data = json.loads((output_dir / "mdl.json").read_text())
     model_names = [m["name"] for m in data["models"]]
     assert "stg_orders" in model_names
+
+
+def test_cli_exclude_pattern(dbt_project, tmp_path):
+    output_dir = tmp_path / "out"
+    main([str(dbt_project), "--exclude", "^(stg_|staging_)", "--output", str(output_dir)])
+    data = json.loads((output_dir / "mdl.json").read_text())
+    model_names = [m["name"] for m in data["models"]]
+    assert "stg_orders" not in model_names
+    assert "customers" in model_names
 
 
 def test_cli_custom_catalog_and_manifest(dbt_project, tmp_path):
@@ -71,7 +72,7 @@ def test_cli_custom_catalog_and_manifest(dbt_project, tmp_path):
             str(catalog),
             "--manifest",
             str(manifest),
-            "-o",
+            "--output",
             str(output_dir),
         ]
     )
@@ -80,7 +81,7 @@ def test_cli_custom_catalog_and_manifest(dbt_project, tmp_path):
 
 def test_cli_missing_project_exits_1(tmp_path):
     with pytest.raises(SystemExit) as exc_info:
-        main([str(tmp_path), "-o", str(tmp_path / "out")])
+        main([str(tmp_path), "--output", str(tmp_path / "out")])
     assert exc_info.value.code == 1
 
 
