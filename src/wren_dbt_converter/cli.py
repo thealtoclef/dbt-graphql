@@ -92,9 +92,9 @@ def main(argv: list[str] | None = None) -> None:
         )
     )
 
-    schema_description_path = output_dir / "schema_description.txt"
+    schema_description_path = output_dir / "schema_description.md"
     schema_description_path.write_text(result.schema_description)
 
     print(f"mdl.json                → {mdl_path}")
     print(f"connection.json         → {connection_path}")
-    print(f"schema_description.txt  → {schema_description_path}")
+    print(f"schema_description.md   → {schema_description_path}")
