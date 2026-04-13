@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from wren import DataSource as WrenDataSource, WrenEngine
+from wren import DataSource as WrenDataSource
+from wren import WrenEngine
 
-from .engine_builder import build_engine
+from .engine_builder import EngineConfig, build_engine
 from .models.data_source import get_active_connection
 from .models.wren_mdl import TableReference, WrenMDLManifest, WrenModel
 from .parsers.artifacts import load_catalog, load_manifest
@@ -182,6 +183,7 @@ def from_dbt_project(
     exclude_patterns: Optional[list[str]] = None,
     catalog_path: Optional[Path] = None,
     manifest_path: Optional[Path] = None,
+    engine_config: Optional[EngineConfig] = None,
 ) -> WrenEngine:
     """
     Convert a dbt project to a ready-to-use WrenEngine instance.
@@ -194,6 +196,7 @@ def from_dbt_project(
             if any pattern matches.
         catalog_path: Path to catalog.json. Defaults to <project_path>/target/catalog.json.
         manifest_path: Path to manifest.json. Defaults to <project_path>/target/manifest.json.
+        engine_config: Optional WrenEngine parameters (function_path, fallback, config).
 
     Returns:
         WrenEngine constructed from the dbt project's MDL manifest.
@@ -206,4 +209,12 @@ def from_dbt_project(
         catalog_path=catalog_path,
         manifest_path=manifest_path,
     )
-    return build_engine(result.manifest, result.data_source, result.connection_info)
+    ec = engine_config or EngineConfig()
+    return build_engine(
+        result.manifest,
+        result.data_source,
+        result.connection_info,
+        function_path=ec.function_path,
+        fallback=ec.fallback,
+        config=ec.config,
+    )
