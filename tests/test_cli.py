@@ -75,9 +75,12 @@ def test_cli_exclude_multiple_patterns(dbt_project, tmp_path):
     main(
         [
             str(dbt_project),
-            "--exclude", "^stg_",
-            "--exclude", "^ord",
-            "--output", str(output_dir),
+            "--exclude",
+            "^stg_",
+            "--exclude",
+            "^ord",
+            "--output",
+            str(output_dir),
         ]
     )
     data = json.loads((output_dir / "mdl.json").read_text())

@@ -11,7 +11,7 @@ import base64
 import json
 from typing import Any
 
-from .mdl import (
+from .mdl import (  # noqa: F401
     Column,
     EnumDefinition,
     JoinType,

@@ -321,6 +321,19 @@ wheels = [
 ]
 
 [[package]]
+name = "dbt-colibri"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "sqlglot", extra = ["c"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8b/58/aa429c6c14a735e167f16db535dfc0d70788981428a287b5ff49a507fea6/dbt_colibri-0.3.0.tar.gz", hash = "sha256:a9910b58408033b3a12e56d243e54adee562d1b072c8d94a764513be593ff114", size = 1202642, upload-time = "2026-04-04T02:04:10.45Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/52/21849360acfa0621a46e21a61e93e7c10a02ed6bfb742b0a01d04c28850b/dbt_colibri-0.3.0-py3-none-any.whl", hash = "sha256:b678f0d32a39871ae5850ac49a7a4cc9f61ec774c9efcf8e21ebab024b99b25d", size = 1186352, upload-time = "2026-04-04T02:04:11.836Z" },
+]
+
+[[package]]
 name = "duckdb"
 version = "1.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -927,6 +940,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/de/fe/1e5289e2e5111d276ff060ae48a2c5795f669b99aeeda0bb005b1815e2c8/sqlglot-30.4.2-py3-none-any.whl", hash = "sha256:f9424479412cabc8f1e7ff9e90a442cd88c6586e8b36cceeb0fc5ca0b8bd3364", size = 670857, upload-time = "2026-04-08T19:50:20.816Z" },
 ]
 
+[package.optional-dependencies]
+c = [
+    { name = "sqlglotc" },
+]
+
+[[package]]
+name = "sqlglotc"
+version = "30.4.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/9a/bc64b2e5560ee1d485884720777553d413638aceec59b5699e1ae80ef7d2/sqlglotc-30.4.2.tar.gz", hash = "sha256:c6ced1d307201aba059e8b1ce747db7e69bb0a1710259ec31874a48403ba19f8", size = 458183, upload-time = "2026-04-08T19:49:27.752Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/77/dd5aaf54552db8d2c6d88abb83a6e8014dee0fb08802fc15681d4005acc3/sqlglotc-30.4.2-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:bba64e35ff5de99315b5555bf7619f54231c5125564bfbcde587892503b5a057", size = 18596348, upload-time = "2026-04-08T19:49:04.981Z" },
+    { url = "https://files.pythonhosted.org/packages/08/20/8dcaff9e0b8881bbb77a7c4073525f0a172beb6695fbd9b11cf5b35df71c/sqlglotc-30.4.2-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4d17a45cc941a7ffc8feeaff49bd5d1b9581e46356a606fba5bf71b684eb43cc", size = 12994523, upload-time = "2026-04-08T19:49:07.952Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/7a/867c2b3e8c3efa914dc43f07d83514b31691ca5d0aa8255347b66967c23e/sqlglotc-30.4.2-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d76912b961f84e813c621905ab77889deb6f5a137231fafe101ad7bb15830236", size = 13610211, upload-time = "2026-04-08T19:49:10.969Z" },
+    { url = "https://files.pythonhosted.org/packages/41/d2/264dda162fb03e5f0091202065a68980d9f86bec55c39268e22e6b2443ac/sqlglotc-30.4.2-cp314-cp314-win_amd64.whl", hash = "sha256:32d9c405289cc0e091f6bcaa1c516f8b49c00001223e2f9816d87fa2f5df14f7", size = 8487356, upload-time = "2026-04-08T19:49:13.458Z" },
+]
+
 [[package]]
 name = "toolz"
 version = "1.1.0"
@@ -1050,6 +1080,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "dbt-artifacts-parser" },
+    { name = "dbt-colibri" },
     { name = "pyyaml" },
     { name = "wren-engine" },
 ]
@@ -1070,6 +1101,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "dbt-artifacts-parser", specifier = ">=0.13.0" },
+    { name = "dbt-colibri", specifier = ">=0.3.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "wren-engine", specifier = ">=0.2.1" },
 ]

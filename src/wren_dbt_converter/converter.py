@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from wren import DataSource as WrenDataSource
 from wren.memory.schema_indexer import describe_schema
@@ -22,8 +22,12 @@ from .parsers.artifacts import load_catalog, load_manifest
 from .parsers.profiles_parser import analyze_dbt_profiles, find_profiles_file
 from .processors.columns import convert_columns
 from .processors.constraints import extract_constraints
+from .processors.lineage import build_lineage
 from .processors.relationships import build_relationships
 from .processors.tests_preprocessor import preprocess_tests
+
+if TYPE_CHECKING:
+    from .processors.lineage import LineageResult
 
 
 @dataclass
@@ -212,6 +216,12 @@ def build_manifest(
         enum_definitions=tests_result.enum_definitions,
     )
 
+    # 12. Extract lineage
+    lineage = build_lineage(manifest, resolved_manifest, resolved_catalog)
+
+    # 13. Embed lineage in model and column properties (bidirectional)
+    _embed_lineage(model_by_name, lineage)
+
     return ConvertResult(
         manifest=wren_manifest,
         data_source=data_source,
@@ -249,3 +259,78 @@ def _add_relationship_column(
     if model.columns is None:
         model.columns = []
     model.columns.append(rel_col)
+
+
+def _embed_lineage(
+    model_by_name: dict[str, WrenModel],
+    lineage: LineageResult,
+) -> None:
+    """Embed bidirectional lineage into model properties.
+
+    Each model gets a ``lineage`` property with ``upstream`` and ``downstream``
+    keys.  Each direction contains ``models`` (table-level) and ``columns``
+    (column-level, keyed by this model's own column names).
+    """
+    # --- Reverse indices ---
+    # Model-level: who depends on me?
+    depended_by: dict[str, list[str]] = {}
+    for model_name, upstream in lineage.table_lineage.items():
+        for parent in upstream:
+            depended_by.setdefault(parent, []).append(model_name)
+
+    # Column-level: (source_model, source_col) -> [(target_model, target_col, type)]
+    downstream_cols: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+    for model_name, col_map in lineage.column_lineage.items():
+        for col_name, edges in col_map.items():
+            for edge in edges:
+                key = (edge.source_model, edge.source_column)
+                downstream_cols.setdefault(key, []).append(
+                    (model_name, col_name, edge.lineage_type)
+                )
+
+    for model in model_by_name.values():
+        upstream_models = lineage.table_lineage.get(model.name, [])
+        downstream_models = depended_by.get(model.name, [])
+
+        # Upstream columns: this model's col -> [source edges]
+        upstream_columns: dict[str, list[dict[str, str]]] = {}
+        col_map = lineage.column_lineage.get(model.name, {})
+        for col_name, edges in col_map.items():
+            upstream_columns[col_name] = [
+                {
+                    "model": e.source_model,
+                    "column": e.source_column,
+                    "type": e.lineage_type,
+                }
+                for e in edges
+            ]
+
+        # Downstream columns: this model's col -> [target edges]
+        downstream_columns: dict[str, list[dict[str, str]]] = {}
+        if model.columns:
+            for col in model.columns:
+                ds_entries = downstream_cols.get((model.name, col.name))
+                if ds_entries:
+                    downstream_columns[col.name] = [
+                        {"model": tgt_model, "column": tgt_col, "type": ln_type}
+                        for tgt_model, tgt_col, ln_type in ds_entries
+                    ]
+
+        lineage_prop: dict[str, Any] = {}
+        if upstream_models or upstream_columns:
+            lineage_prop["upstream"] = {}
+            if upstream_models:
+                lineage_prop["upstream"]["models"] = upstream_models
+            if upstream_columns:
+                lineage_prop["upstream"]["columns"] = upstream_columns
+        if downstream_models or downstream_columns:
+            lineage_prop["downstream"] = {}
+            if downstream_models:
+                lineage_prop["downstream"]["models"] = downstream_models
+            if downstream_columns:
+                lineage_prop["downstream"]["columns"] = downstream_columns
+
+        if lineage_prop:
+            props: dict[str, Any] = model.properties or {}
+            props["lineage"] = lineage_prop
+            model.properties = props if props else None

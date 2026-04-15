@@ -88,7 +88,10 @@ def main(argv: list[str] | None = None) -> None:
     connection_path = output_dir / "connection.json"
     connection_path.write_text(
         json.dumps(
-            {"dataSource": str(result.data_source), "connection": result.connection_info},
+            {
+                "dataSource": str(result.data_source),
+                "connection": result.connection_info,
+            },
             indent=2,
         )
     )

@@ -64,25 +64,47 @@ def extract_constraints(manifest) -> ConstraintsResult:
         # --- Model-level constraints ---
         model_constraints = getattr(node, "constraints", None) or []
         for constraint in model_constraints:
-            ctype = constraint.get("type", "") if isinstance(constraint, dict) else getattr(constraint, "type", "")
+            ctype = (
+                constraint.get("type", "")
+                if isinstance(constraint, dict)
+                else getattr(constraint, "type", "")
+            )
 
             if ctype == "primary_key":
-                columns = constraint.get("columns", []) if isinstance(constraint, dict) else getattr(constraint, "columns", [])
+                columns = (
+                    constraint.get("columns", [])
+                    if isinstance(constraint, dict)
+                    else getattr(constraint, "columns", [])
+                )
                 if columns:
                     # Use the first column as primary key (composite PKs not supported in MDL)
                     col_name = columns[0] if isinstance(columns[0], str) else columns[0]
                     result.primary_keys[unique_id] = col_name
 
             elif ctype == "foreign_key":
-                expression = constraint.get("expression", "") if isinstance(constraint, dict) else getattr(constraint, "expression", "")
-                fk_columns = constraint.get("columns", []) if isinstance(constraint, dict) else getattr(constraint, "columns", [])
+                expression = (
+                    constraint.get("expression", "")
+                    if isinstance(constraint, dict)
+                    else getattr(constraint, "expression", "")
+                )
+                fk_columns = (
+                    constraint.get("columns", [])
+                    if isinstance(constraint, dict)
+                    else getattr(constraint, "columns", [])
+                )
                 if expression and fk_columns:
                     parsed = _parse_fk_expression(expression)
                     if parsed:
                         to_table, to_col = parsed
-                        from_col = fk_columns[0] if isinstance(fk_columns[0], str) else fk_columns[0]
+                        from_col = (
+                            fk_columns[0]
+                            if isinstance(fk_columns[0], str)
+                            else fk_columns[0]
+                        )
                         rel_name = f"{from_model}_{from_col}_{to_table}_{to_col}"
-                        condition = f'"{from_model}"."{from_col}" = "{to_table}"."{to_col}"'
+                        condition = (
+                            f'"{from_model}"."{from_col}" = "{to_table}"."{to_col}"'
+                        )
 
                         dedup_key = (rel_name, condition)
                         if dedup_key not in seen_fk:
@@ -106,7 +128,11 @@ def extract_constraints(manifest) -> ConstraintsResult:
                     else getattr(col_def, "constraints", None) or []
                 )
                 for constraint in col_constraints:
-                    ctype = constraint.get("type", "") if isinstance(constraint, dict) else getattr(constraint, "type", "")
+                    ctype = (
+                        constraint.get("type", "")
+                        if isinstance(constraint, dict)
+                        else getattr(constraint, "type", "")
+                    )
 
                     if ctype == "primary_key":
                         # Column-level primary_key constraint
@@ -114,12 +140,18 @@ def extract_constraints(manifest) -> ConstraintsResult:
                             result.primary_keys[unique_id] = col_name
 
                     elif ctype == "foreign_key":
-                        expression = constraint.get("expression", "") if isinstance(constraint, dict) else getattr(constraint, "expression", "")
+                        expression = (
+                            constraint.get("expression", "")
+                            if isinstance(constraint, dict)
+                            else getattr(constraint, "expression", "")
+                        )
                         if expression:
                             parsed = _parse_fk_expression(expression)
                             if parsed:
                                 to_table, to_col = parsed
-                                rel_name = f"{from_model}_{col_name}_{to_table}_{to_col}"
+                                rel_name = (
+                                    f"{from_model}_{col_name}_{to_table}_{to_col}"
+                                )
                                 condition = f'"{from_model}"."{col_name}" = "{to_table}"."{to_col}"'
 
                                 dedup_key = (rel_name, condition)
