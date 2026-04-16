@@ -25,9 +25,7 @@ requires = ["uv_build>=0.11.6,<0.12"]
 build-backend = "uv_build"
 
 [tool.datamodel-codegen]
-input = "wren-mdl/mdl.schema.json"
 input-file-type = "jsonschema"
-output = "src/wren_dbt_converter/models/mdl.py"
 output-model-type = "pydantic_v2.BaseModel"
 snake-case-field = "true"
 use-type-alias = true
@@ -37,18 +35,13 @@ target-python-version = "3.14"
 target-pydantic-version = "2.11"
 disable-timestamp = true
 
+[tool.datamodel-codegen.profiles.mdl]
+input = "wren-mdl/mdl.schema.json"
+output = "src/wren_dbt_converter/models/mdl.py"
+
 [tool.datamodel-codegen.profiles.lineage]
 input = "wren-mdl/lineage.schema.json"
-input-file-type = "jsonschema"
 output = "src/wren_dbt_converter/models/lineage.py"
-output-model-type = "pydantic_v2.BaseModel"
-snake-case-field = "true"
-use-type-alias = true
-allow-population-by-field-name = "true"
-formatters = ["ruff-check", "ruff-format"]
-target-python-version = "3.14"
-target-pydantic-version = "2.11"
-disable-timestamp = true
 
 [tool.pytest]
 testpaths = ["tests"]
