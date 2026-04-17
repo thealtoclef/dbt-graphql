@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..dbt.models import DbtConnection
+from .formatter import _DB_TYPE_MAP
 
 
 # ---------------------------------------------------------------------------
@@ -172,13 +173,13 @@ def build_connection_info(
     dbt_home: Path,
 ) -> dict[str, Any]:
     """Build a connection-info dict appropriate for *conn*'s database type."""
-    dbt_type = conn.type.strip().lower()
+    dbt_type = _DB_TYPE_MAP.get(conn.type.strip().lower(), conn.type.strip().lower())
 
-    if dbt_type in ("postgres", "postgresql"):
+    if dbt_type == "postgres":
         return _build_postgres_info(conn)
     elif dbt_type == "duckdb":
         return _build_duckdb_info(conn, dbt_home)
-    elif dbt_type == "sqlserver":
+    elif dbt_type == "mssql":
         return _build_mssql_info(conn)
     elif dbt_type == "mysql":
         return _build_mysql_info(conn)

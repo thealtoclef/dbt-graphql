@@ -30,6 +30,7 @@ _DB_TYPE_MAP: dict[str, str] = {
     "postgresql": "postgres",
     "mysql": "mysql",
     "mariadb": "mariadb",
+    "doris": "mysql",
     "sqlite": "sqlite",
     "oracle": "oracle",
     "snowflake": "snowflake",

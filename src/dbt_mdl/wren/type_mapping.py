@@ -1,21 +1,17 @@
 """Map raw database column types to Wren MDL type strings."""
 
-from __future__ import annotations
 
-from .models import DataSource
-
-
-def map_column_type(data_source: DataSource, source_type: str) -> str:
+def map_column_type(data_source: str, source_type: str) -> str:
     """Map a database-native column type to a Wren MDL type string."""
     upper = source_type.upper().strip()
 
-    if data_source == DataSource.bigquery:
+    if data_source == "bigquery":
         return _map_bigquery_type(upper)
-    elif data_source == DataSource.duckdb:
+    elif data_source == "duckdb":
         return _map_duckdb_type(upper)
-    elif data_source == DataSource.mssql:
+    elif data_source == "mssql":
         return _map_mssql_type(source_type.lower().strip())
-    elif data_source == DataSource.mysql:
+    elif data_source == "mysql":
         return _map_mysql_type(upper)
     else:
         # postgres, snowflake, redshift — pass through lowercase

@@ -145,7 +145,7 @@ def _write_wren(project, profiles_path: Path, output_dir: Path) -> None:
     connection_path.write_text(
         json.dumps(
             {
-                "dataSource": result.data_source.value if result.data_source else "",
+                "dataSource": result.data_source if result.data_source else "",
                 "connection": connection_info,
             },
             indent=2,

@@ -17,7 +17,6 @@ from ..domain.models import (
     RelationshipInfo,
 )
 from .models import (
-    DataSource,
     EnumDefinition,
     JoinType,
     Relationship,
@@ -29,12 +28,19 @@ from .models import (
 )
 from .type_mapping import map_column_type
 
+# dbt adapter type -> WrenMDL schema-compatible data_source value
+_DB_TYPE_MAP: dict[str, str] = {
+    "doris": "mysql",
+    "sqlserver": "mssql",
+    "postgresql": "postgres",
+}
+
 
 class ConvertResult(BaseModel):
     """Result of formatting dbt project info as Wren MDL."""
 
     manifest: WrenMDLManifest
-    data_source: DataSource | None = None
+    data_source: str | None = None
     connection_info: dict[str, Any] = Field(default_factory=dict)
 
     @property
@@ -96,10 +102,12 @@ def format_mdl(project: DbtProjectInfo) -> ConvertResult:
         mdl_catalog = first.database or ""
         mdl_schema = first.schema_ or ""
 
+    data_source_value = _DB_TYPE_MAP.get(conn_type.lower(), conn_type)
+
     wren_manifest = WrenMDLManifest(
         catalog=mdl_catalog,
         schema_=mdl_schema,
-        data_source=conn_type,
+        data_source=data_source_value,
         models=wren_models,
         relationships=wren_relationships,
         enum_definitions=enum_definitions if enum_definitions else None,
@@ -111,19 +119,14 @@ def format_mdl(project: DbtProjectInfo) -> ConvertResult:
     )
 
 
-def _parse_data_source(data_source: str) -> DataSource:
-    """Parse a data source string back to DataSource enum.
-
-    Accepts either bare values like ``"duckdb"`` or enum reprs like
-    ``"DataSource.duckdb"``.
-    """
-    # Handle "DataSource.duckdb" format
+def _parse_data_source(data_source: str) -> str:
+    """Parse a data source string, normalizing via _DB_TYPE_MAP."""
     if "." in data_source:
-        data_source = data_source.rsplit(".", 1)[-1]
-    return DataSource(data_source)
+        data_source = data_source.rsplit(".", 1)[-1].lower()
+    return _DB_TYPE_MAP.get(data_source, data_source)
 
 
-def _column_to_mdl(col: ColumnInfo, data_source: DataSource) -> WrenColumn:
+def _column_to_mdl(col: ColumnInfo, data_source: str) -> WrenColumn:
     """Convert a domain ColumnInfo to a Wren MDL Column."""
     wren_type = map_column_type(data_source, col.type)
 
