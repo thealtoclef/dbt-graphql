@@ -51,7 +51,7 @@ class ConvertResult(BaseModel):
 
 def format_mdl(project: DbtProjectInfo) -> ConvertResult:
     """Convert domain-neutral DbtProjectInfo into Wren MDL format."""
-    conn_type = project.connection.type
+    conn_type = project.adapter_type
     data_source = _parse_data_source(conn_type)
 
     # Map models

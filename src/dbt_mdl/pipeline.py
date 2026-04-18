@@ -11,7 +11,6 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from .dbt.connection import get_active_connection
 from .domain.models import ColumnInfo, DbtProjectInfo, ModelInfo, RelationshipInfo
 from .dbt.artifacts import load_catalog, load_manifest
 from .dbt.processors.constraints import extract_constraints
@@ -21,27 +20,20 @@ from .dbt.processors.tests_preprocessor import preprocess_tests
 
 
 def extract_project(
-    profiles_path: str | Path,
     catalog_path: str | Path,
     manifest_path: str | Path,
-    profile_name: Optional[str] = None,
-    target: Optional[str] = None,
     exclude_patterns: Optional[list[str]] = None,
 ) -> DbtProjectInfo:
     """Extract domain-neutral project information from a dbt project.
 
     Args:
-        profiles_path: Path to profiles.yml.
         catalog_path: Path to catalog.json.
         manifest_path: Path to manifest.json.
-        profile_name: Profile name to use. Defaults to the first profile found.
-        target: Target name within the profile. Defaults to the profile's default target.
         exclude_patterns: Regex patterns matched against model names; matching models excluded.
 
     Returns:
-        DbtProjectInfo with models, relationships, enums, lineage, and connection info.
+        DbtProjectInfo with models, relationships, enums, and lineage.
     """
-    profiles_path = Path(profiles_path)
     catalog_path = Path(catalog_path)
     manifest_path = Path(manifest_path)
 
@@ -60,28 +52,16 @@ def extract_project(
         )
     manifest = load_manifest(manifest_path)
 
-    # 3. Parse profiles
-    if not profiles_path.exists():
-        raise FileNotFoundError(f"profiles.yml not found at {profiles_path}")
+    # 3. Get adapter type from manifest metadata
+    adapter_type: str = getattr(manifest.metadata, "adapter_type", "") or ""
 
-    from .dbt.profiles_parser import analyze_dbt_profiles
-
-    profiles = analyze_dbt_profiles(profiles_path)
-
-    # 4. Get active connection
-    connection = get_active_connection(
-        profiles,
-        profile_name=profile_name,
-        target=target,
-    )
-
-    # 5. Preprocess tests (enums, not-null)
+    # 4. Preprocess tests (enums, not-null)
     tests_result = preprocess_tests(manifest)
 
-    # 6. Extract constraints (PK/FK from dbt v1.5+)
+    # 5. Extract constraints (PK/FK from dbt v1.5+)
     constraints_result = extract_constraints(manifest)
 
-    # 7. Build models from catalog nodes
+    # 6. Build models from catalog nodes
     models: list[ModelInfo] = []
     for key, catalog_node in catalog.nodes.items():
         if not key.startswith("model."):
@@ -139,19 +119,12 @@ def extract_project(
 
         columns.sort(key=sort_key)
 
-        # Get database and schema
-        database = catalog_node.metadata.database or next(
-            (
-                connection.model_extra.get(k)
-                for k in ("database", "project", "dbname", "service_name", "sid")
-                if connection.model_extra.get(k)
-            ),
-            None,
-        )
+        # Get database and schema from catalog
+        database = catalog_node.metadata.database
         if database is None:
             raise ValueError(
                 f"database is required for model {model_name} but could not be "
-                f"determined from catalog or connection"
+                f"determined from catalog"
             )
         schema = catalog_node.metadata.schema_
 
@@ -171,7 +144,7 @@ def extract_project(
             )
         )
 
-    # 8. Build relationships (merge: constraints > tests)
+    # 7. Build relationships (merge: constraints > tests)
     test_relationships = build_relationships(manifest)
     seen_names: set[str] = set()
     relationships: list[RelationshipInfo] = []
@@ -183,7 +156,7 @@ def extract_project(
         if rel.name not in seen_names:
             relationships.append(_wren_rel_to_domain(rel))
 
-    # 9. Attach relationships to models
+    # 8. Attach relationships to models
     model_by_name: dict[str, ModelInfo] = {m.name: m for m in models}
     for rel in relationships:
         from_model = model_by_name.get(rel.from_model)
@@ -193,7 +166,7 @@ def extract_project(
         if to_model:
             to_model.relationships.append(rel)
 
-    # 10. Extract lineage
+    # 9. Extract lineage
     table_lineage = extract_table_lineage(manifest)
 
     # Column lineage (via dbt-colibri)
@@ -217,7 +190,7 @@ def extract_project(
     except Exception:
         pass  # dbt-colibri not available
 
-    # 11. Build enums dict
+    # 10. Build enums dict
     enums: dict[str, list[str]] = {}
     for enum_def in tests_result.enum_definitions:
         enums[enum_def.name] = [v.name for v in enum_def.values]
@@ -228,7 +201,7 @@ def extract_project(
         enums=enums,
         table_lineage=table_lineage,
         column_lineage=column_lineage,
-        connection=connection,
+        adapter_type=adapter_type,
     )
 
 

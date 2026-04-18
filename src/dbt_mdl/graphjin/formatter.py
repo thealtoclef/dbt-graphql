@@ -14,9 +14,7 @@ SQL-style token that matches GraphJin's DDL mapper.
 from __future__ import annotations
 
 import re
-from typing import Any
 
-import yaml
 from pydantic import BaseModel
 
 from ..domain.models import ColumnInfo, DbtProjectInfo, ModelInfo, RelationshipInfo
@@ -52,7 +50,6 @@ class GraphJinResult(BaseModel):
     """GraphJin configuration output."""
 
     db_graphql: str
-    dev_yml: str
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +59,7 @@ class GraphJinResult(BaseModel):
 
 def format_graphjin(project: DbtProjectInfo) -> GraphJinResult:
     """Convert domain-neutral DbtProjectInfo into GraphJin config files."""
-    conn_type = project.connection.type
+    conn_type = project.adapter_type
     gj_db = _map_db_type(conn_type)
     if gj_db is None:
         supported = sorted(_DB_TYPE_MAP)
@@ -71,8 +68,7 @@ def format_graphjin(project: DbtProjectInfo) -> GraphJinResult:
             f"Supported adapters: {', '.join(supported)}"
         )
     return GraphJinResult(
-        db_graphql=_build_db_graphql(project),
-        dev_yml=_build_dev_yml(project),
+        db_graphql=_build_db_graphql(project, gj_db),
     )
 
 
@@ -198,15 +194,13 @@ def _sql_to_gql_type(raw: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _build_db_graphql(project: DbtProjectInfo) -> str:
+def _build_db_graphql(project: DbtProjectInfo, gj_db: str) -> str:
     """Build the GraphJin SDL schema (db.graphql).
 
     Generates a complete SDL schema for all dbt models with their types,
     columns, and @database/@schema/@table directives. This is the primary schema
     that GraphJin uses for query compilation.
     """
-    conn_type = project.connection.type
-    gj_db = _map_db_type(conn_type)
     schema_name = _default_schema(project)
     header = f"# dbinfo:{gj_db},,{schema_name}\n"
 
@@ -214,7 +208,7 @@ def _build_db_graphql(project: DbtProjectInfo) -> str:
     blocks: list[str] = [header]
     for model in project.models:
         blocks.append("")
-        blocks.append(_type_block(model, rel_map, project))
+        blocks.append(_type_block(model, rel_map))
     return "\n".join(blocks).rstrip() + "\n"
 
 
@@ -239,7 +233,6 @@ def _build_rel_map(
 def _type_block(
     model: ModelInfo,
     rel_map: dict[tuple[str, str], tuple[str, str]],
-    project: DbtProjectInfo,
 ) -> str:
     """Build a GraphJin SDL type block for a dbt model."""
     type_directives: list[str] = [
@@ -291,73 +284,3 @@ def _column_line(
     if dir_str:
         line += f" {dir_str}"
     return line
-
-
-# ---------------------------------------------------------------------------
-# config.yml builder
-# ---------------------------------------------------------------------------
-
-
-def _build_dev_yml(project: DbtProjectInfo) -> str:
-    """Build the development config YAML.
-
-    Named `dev.yml` so GraphJin loads it by default (GO_ENV unset → dev).
-    """
-    conn_type = project.connection.type
-    gj_db = _map_db_type(conn_type)
-
-    header_lines: list[str] = [
-        "# GraphJin configuration generated from a dbt project.",
-    ]
-
-    config: dict[str, Any] = {
-        "app_name": "dbt GraphJin API",
-        "host_port": "0.0.0.0:8080",
-        "web_ui": True,
-        "production": False,
-        "enable_schema": True,
-        "default_block": False,
-        "default_limit": 20,
-        "database": _database_block(project, gj_db),
-        "auth": {"type": "none"},
-    }
-
-    yml = yaml.safe_dump(config, sort_keys=False, width=100)
-    return "\n".join(header_lines) + "\n\n" + yml
-
-
-def _database_block(project: DbtProjectInfo, gj_db: str) -> dict[str, Any]:
-    conn = project.connection
-    extra = conn.model_extra if conn else {}
-
-    block: dict[str, Any] = {"type": gj_db}
-
-    # SQLite uses `host` for the database file path.
-    if gj_db == "sqlite":
-        schemas_and_paths = extra.get("schemas_and_paths") or {}
-        schema_dir = extra.get("schema_directory") or ""
-        schema_name = extra.get("schema") or "main"
-
-        path = schemas_and_paths.get(schema_name, "")
-        if path:
-            block["host"] = path
-        elif schema_dir:
-            block["host"] = f"{schema_dir}/{schema_name}.db"
-        return block
-
-    schema = _default_schema(project)
-    if schema and gj_db == "postgres":
-        block["schema"] = schema
-
-    for src_key, dst_key in [
-        ("host", "host"),
-        ("port", "port"),
-        ("database", "dbname"),
-        ("user", "user"),
-        ("password", "password"),
-    ]:
-        val = extra.get(src_key)
-        if val is not None and val != "":
-            block[dst_key] = val
-
-    return block

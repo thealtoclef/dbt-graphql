@@ -11,8 +11,6 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, constr
 
-from ..dbt.models import DbtConnection
-
 
 # ---------------------------------------------------------------------------
 # Project / model / column / relationship
@@ -76,7 +74,7 @@ class DbtProjectInfo(BaseModel):
     column_lineage: dict[str, dict[str, list[dict[str, str]]]] = Field(
         default_factory=dict
     )
-    connection: DbtConnection
+    adapter_type: str = ""
 
     def build_lineage_schema(self) -> LineageSchema:
         """Build a LineageSchema from the raw lineage data in this project."""
@@ -117,7 +115,7 @@ class DbtProjectInfo(BaseModel):
         return LineageSchema(
             database=first_model.database,
             schema=first_model.schema_,
-            data_source=self.connection.type,
+            data_source=self.adapter_type,
             table_lineage=table_lineage_items if table_lineage_items else [],
             column_lineage=column_lineage_items if column_lineage_items else [],
         )
