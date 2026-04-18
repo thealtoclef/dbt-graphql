@@ -5,15 +5,13 @@ Convert dbt project artifacts to model definition formats.
 ## Quickstart
 
 ```sh
-uvx git+https://github.com/thealtoclef/dbt-mdl.git all --profiles profiles.yml --catalog target/catalog.json --manifest target/manifest.json
+uvx git+https://github.com/thealtoclef/dbt-mdl.git all --catalog catalog.json --manifest manifest.json --output ./output
 ```
 
 ## CLI Reference
 
 ```
-usage: dbt-mdl [-h] --profiles PATH --catalog PATH --manifest PATH
-               [--output DIR] [--profile-name NAME] [--target TARGET]
-               [--exclude PATTERN]
+usage: dbt-mdl [-h] --catalog PATH --manifest PATH [--output DIR] [--exclude PATTERN]
                {domain,wren,graphjin,all}
 
 positional arguments:
@@ -21,14 +19,11 @@ positional arguments:
                         Comma-separated output formats: domain, wren, graphjin, or all.
 
 required arguments:
-  --profiles PATH       Path to profiles.yml.
   --catalog PATH        Path to catalog.json.
   --manifest PATH       Path to manifest.json.
 
 optional arguments:
   --output DIR          Output directory (default: current directory).
-  --profile-name NAME   dbt profile name (default: first profile in profiles.yml).
-  --target TARGET        dbt target within the profile.
   --exclude PATTERN     Regex pattern to exclude models (may be repeated).
 ```
 
@@ -36,8 +31,8 @@ optional arguments:
 
 | Format    | Output Files | Description |
 |-----------|-------------|-------------|
-| `wren`    | `mdl.json`, `connection.json` | Wren AI MDL manifest |
-| `graphjin`| `db.graphql`, `dev.yml` | GraphJin SDL schema + config |
+| `wren`    | `mdl.json` | Wren AI MDL manifest |
+| `graphjin`| `db.graphql` | GraphJin SDL schema |
 | `domain`  | `lineage.json` | Domain lineage schema |
 | `all`     | All of the above | All formats |
 

@@ -1,7 +1,7 @@
 """Core pipeline: extract domain-neutral project info from dbt artifacts.
 
 This module implements the parsing/extraction pipeline. It produces a
-:class:`DbtProjectInfo` which is then consumed by formatters to produce
+:class:`ProjectInfo` which is then consumed by formatters to produce
 format-specific output (MDL, GraphJin, etc.).
 """
 
@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from .domain.models import ColumnInfo, DbtProjectInfo, ModelInfo, RelationshipInfo
+from .ir.models import ColumnInfo, ProjectInfo, ModelInfo, RelationshipInfo
 from .dbt.artifacts import load_catalog, load_manifest
 from .dbt.processors.constraints import extract_constraints
 from .dbt.processors.lineage import extract_table_lineage
@@ -23,7 +23,7 @@ def extract_project(
     catalog_path: str | Path,
     manifest_path: str | Path,
     exclude_patterns: Optional[list[str]] = None,
-) -> DbtProjectInfo:
+) -> ProjectInfo:
     """Extract domain-neutral project information from a dbt project.
 
     Args:
@@ -32,7 +32,7 @@ def extract_project(
         exclude_patterns: Regex patterns matched against model names; matching models excluded.
 
     Returns:
-        DbtProjectInfo with models, relationships, enums, and lineage.
+        ProjectInfo with models, relationships, enums, and lineage.
     """
     catalog_path = Path(catalog_path)
     manifest_path = Path(manifest_path)
@@ -195,7 +195,7 @@ def extract_project(
     for enum_def in tests_result.enum_definitions:
         enums[enum_def.name] = [v.name for v in enum_def.values]
 
-    return DbtProjectInfo(
+    return ProjectInfo(
         models=models,
         relationships=relationships,
         enums=enums,

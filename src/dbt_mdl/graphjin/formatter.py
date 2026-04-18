@@ -17,7 +17,7 @@ import re
 
 from pydantic import BaseModel
 
-from ..domain.models import ColumnInfo, DbtProjectInfo, ModelInfo, RelationshipInfo
+from ..ir.models import ColumnInfo, ProjectInfo, ModelInfo, RelationshipInfo
 
 # ---------------------------------------------------------------------------
 # dbt adapter → GraphJin database type.
@@ -57,8 +57,8 @@ class GraphJinResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def format_graphjin(project: DbtProjectInfo) -> GraphJinResult:
-    """Convert domain-neutral DbtProjectInfo into GraphJin config files."""
+def format_graphjin(project: ProjectInfo) -> GraphJinResult:
+    """Convert domain-neutral ProjectInfo into GraphJin config files."""
     conn_type = project.adapter_type
     gj_db = _map_db_type(conn_type)
     if gj_db is None:
@@ -194,7 +194,7 @@ def _sql_to_gql_type(raw: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _build_db_graphql(project: DbtProjectInfo, gj_db: str) -> str:
+def _build_db_graphql(project: ProjectInfo, gj_db: str) -> str:
     """Build the GraphJin SDL schema (db.graphql).
 
     Generates a complete SDL schema for all dbt models with their types,
@@ -212,7 +212,7 @@ def _build_db_graphql(project: DbtProjectInfo, gj_db: str) -> str:
     return "\n".join(blocks).rstrip() + "\n"
 
 
-def _default_schema(project: DbtProjectInfo) -> str:
+def _default_schema(project: ProjectInfo) -> str:
     for m in project.models:
         if m.schema_:
             return m.schema_

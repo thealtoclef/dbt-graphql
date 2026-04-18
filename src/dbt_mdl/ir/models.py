@@ -61,7 +61,7 @@ class ModelInfo(BaseModel):
         return self.alias if self.alias else self.name
 
 
-class DbtProjectInfo(BaseModel):
+class ProjectInfo(BaseModel):
     """Complete extracted information from a dbt project.
 
     This is the intermediate representation that formatters consume.

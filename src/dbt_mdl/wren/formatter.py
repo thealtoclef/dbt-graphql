@@ -10,9 +10,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..domain.models import (
+from ..ir.models import (
     ColumnInfo,
-    DbtProjectInfo,
+    ProjectInfo,
     ModelInfo,
     RelationshipInfo,
 )
@@ -49,8 +49,8 @@ class ConvertResult(BaseModel):
         return base64.b64encode(payload.encode()).decode()
 
 
-def format_mdl(project: DbtProjectInfo) -> ConvertResult:
-    """Convert domain-neutral DbtProjectInfo into Wren MDL format."""
+def format_mdl(project: ProjectInfo) -> ConvertResult:
+    """Convert domain-neutral ProjectInfo into Wren MDL format."""
     conn_type = project.adapter_type
     data_source = _parse_data_source(conn_type)
 
