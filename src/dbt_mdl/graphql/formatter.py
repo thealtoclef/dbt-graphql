@@ -1,14 +1,11 @@
-"""Format dbt project info as GraphJin configuration.
+"""Format dbt project info as GraphQL db schema.
 
 Produces:
-- db.graphql: GraphJin SDL schema (consumed by `graphjin db diff` / `db sync`
-  and by the compiler when `enable_schema: true`).
-- dev.yml: connection + schema settings. Loaded by default when `GO_ENV` is unset.
+- db.graphql: GraphQL SDL schema used by the query compiler.
 
-Scalar emission follows GraphJin's template in `core/schema.go`: the SDL type
-is the raw SQL column type pascal-cased per whitespace-separated word. It
-roundtrips back through the query-compiler's `pascalToSnakeSpace` to a lowercase
-SQL-style token that matches GraphJin's DDL mapper.
+Scalar emission: the SDL type is the raw SQL column type pascal-cased per
+whitespace-separated word. It roundtrips back through the query-compiler's
+`pascalToSnakeSpace` to a lowercase SQL-style token.
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ from pydantic import BaseModel
 from ..ir.models import ColumnInfo, ProjectInfo, ModelInfo, RelationshipInfo
 
 # ---------------------------------------------------------------------------
-# dbt adapter → GraphJin database type.
+# dbt adapter → database type.
 # ---------------------------------------------------------------------------
 
 _DB_TYPE_MAP: dict[str, str] = {
@@ -30,6 +27,7 @@ _DB_TYPE_MAP: dict[str, str] = {
     "mariadb": "mariadb",
     "doris": "mysql",
     "sqlite": "sqlite",
+    "duckdb": "duckdb",
     "oracle": "oracle",
     "snowflake": "snowflake",
     "mssql": "mssql",
@@ -46,8 +44,8 @@ def _map_db_type(data_source: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-class GraphJinResult(BaseModel):
-    """GraphJin configuration output."""
+class GraphQLResult(BaseModel):
+    """GraphQL schema output."""
 
     db_graphql: str
 
@@ -57,17 +55,17 @@ class GraphJinResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def format_graphjin(project: ProjectInfo) -> GraphJinResult:
-    """Convert domain-neutral ProjectInfo into GraphJin config files."""
+def format_graphql(project: ProjectInfo) -> GraphQLResult:
+    """Convert domain-neutral ProjectInfo into GraphQL db schema."""
     conn_type = project.adapter_type
     gj_db = _map_db_type(conn_type)
     if gj_db is None:
         supported = sorted(_DB_TYPE_MAP)
         raise ValueError(
-            f"GraphJin does not support `{conn_type}`. "
+            f"Unsupported adapter type `{conn_type}`. "
             f"Supported adapters: {', '.join(supported)}"
         )
-    return GraphJinResult(
+    return GraphQLResult(
         db_graphql=_build_db_graphql(project, gj_db),
     )
 

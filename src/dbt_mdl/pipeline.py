@@ -121,12 +121,10 @@ def extract_project(
 
         # Get database and schema from catalog
         database = catalog_node.metadata.database
-        if database is None:
-            raise ValueError(
-                f"database is required for model {model_name} but could not be "
-                f"determined from catalog"
-            )
         schema = catalog_node.metadata.schema_
+        # MySQL dbt adapter doesn't populate database — fall back to schema
+        if database is None:
+            database = schema
 
         # Get alias and description from manifest node
         model_alias = getattr(manifest_node, "alias", None)

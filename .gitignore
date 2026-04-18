@@ -20,7 +20,8 @@
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*
@@ -264,3 +265,4 @@ dbt_packages/
 logs/
 
 vendored_references/
+*.*db

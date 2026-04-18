@@ -1,18 +1,27 @@
+import json
+from pathlib import Path
+
+from dbt_mdl.dbt.artifacts import load_manifest
 from dbt_mdl.dbt.processors.tests_preprocessor import (
     preprocess_tests,
     _sanitize_enum_name,
 )
 
 
-def test_not_null_extraction(manifest):
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "dbt-artifacts"
+MANIFEST = FIXTURES_DIR / "manifest.json"
+
+
+def test_not_null_extraction():
+    manifest = load_manifest(MANIFEST)
     result = preprocess_tests(manifest)
     key = "model.jaffle_shop.customers.customer_id"
     assert result.column_to_not_null.get(key) is True
 
 
-def test_accepted_values_enum_created(manifest):
+def test_accepted_values_enum_created():
+    manifest = load_manifest(MANIFEST)
     result = preprocess_tests(manifest)
-    # orders.status / stg_orders.status → deduped to 1; stg_payments.payment_method → 1 more
     assert len(result.enum_definitions) == 2
     all_value_sets = {
         tuple(sorted(v.name for v in e.values)) for e in result.enum_definitions
@@ -27,26 +36,24 @@ def test_accepted_values_enum_created(manifest):
     assert ("bank_transfer", "coupon", "credit_card", "gift_card") in all_value_sets
 
 
-def test_accepted_values_column_mapping(manifest):
+def test_accepted_values_column_mapping():
+    manifest = load_manifest(MANIFEST)
     result = preprocess_tests(manifest)
     key = "model.jaffle_shop.orders.status"
     assert key in result.column_to_enum_name
 
 
-def test_no_false_positives_for_non_test_nodes(manifest):
+def test_no_false_positives_for_non_test_nodes():
+    manifest = load_manifest(MANIFEST)
     result = preprocess_tests(manifest)
-    # customers.first_name has no not_null test
     key = "model.jaffle_shop.customers.first_name"
     assert key not in result.column_to_not_null
 
 
-def test_deduplication_same_value_set(manifest_path):
-    """Two accepted_values tests with the same sorted values → single EnumDefinition."""
+def test_deduplication_same_value_set():
     from dbt_artifacts_parser.parser import parse_manifest
-    import json
 
-    data = json.loads(manifest_path.read_text())
-    # Add a second accepted_values test on a different column, same values
+    data = json.loads(MANIFEST.read_text())
     data["nodes"]["test.jaffle_shop.accepted_values_orders_status.dup"] = {
         "resource_type": "test",
         "database": "dev",
@@ -71,13 +78,12 @@ def test_deduplication_same_value_set(manifest_path):
                     "returned",
                     "return_pending",
                 ]
-            },  # same set, different order
+            },
             "namespace": None,
         },
     }
     m = parse_manifest(data)
     result = preprocess_tests(m)
-    # 3 tests share same status values → 1 status enum; stg_payments.payment_method → 1 more = 2 total
     assert len(result.enum_definitions) == 2
 
 

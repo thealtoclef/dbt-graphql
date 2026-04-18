@@ -1,8 +1,17 @@
+import json
+from pathlib import Path
+
+from dbt_mdl.dbt.artifacts import load_manifest
 from dbt_mdl.dbt.processors.relationships import build_relationships
 from dbt_mdl.wren.models import Relationship, JoinType
 
 
-def test_builds_relationship_from_test(manifest):
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "dbt-artifacts"
+MANIFEST = FIXTURES_DIR / "manifest.json"
+
+
+def test_builds_relationship_from_test():
+    manifest = load_manifest(MANIFEST)
     rels = build_relationships(manifest)
     assert len(rels) == 1
     rel = rels[0]
@@ -14,13 +23,10 @@ def test_builds_relationship_from_test(manifest):
     assert set(rel.models) == {"orders", "customers"}
 
 
-def test_deduplication(manifest_path):
-    """Identical relationship test appearing twice → deduplicated to one."""
+def test_deduplication(tmp_path):
     from dbt_artifacts_parser.parser import parse_manifest
-    import json
 
-    data = json.loads(manifest_path.read_text())
-    # Duplicate the relationship test node
+    data = json.loads(MANIFEST.read_text())
     dup = dict(
         data["nodes"][
             "test.jaffle_shop.relationships_orders_customer_id__customer_id__ref_customers_.c6ec7f58f2"
@@ -33,16 +39,13 @@ def test_deduplication(manifest_path):
 
     m = parse_manifest(data)
     rels = build_relationships(m)
-    # Still only 1 unique relationship
     assert len(rels) == 1
 
 
-def test_missing_refs_skipped(manifest_path):
-    """Test node with no refs → not added."""
+def test_missing_refs_skipped(tmp_path):
     from dbt_artifacts_parser.parser import parse_manifest
-    import json
 
-    data = json.loads(manifest_path.read_text())
+    data = json.loads(MANIFEST.read_text())
     data["nodes"]["test.jaffle_shop.relationships_no_refs.x"] = {
         "resource_type": "test",
         "database": "dev",
@@ -66,11 +69,11 @@ def test_missing_refs_skipped(manifest_path):
     }
     m = parse_manifest(data)
     rels = build_relationships(m)
-    assert len(rels) == 1  # only the original
+    assert len(rels) == 1
 
 
-def test_non_relationship_tests_ignored(manifest):
-    """not_null and accepted_values tests are not turned into relationships."""
+def test_non_relationship_tests_ignored():
+    manifest = load_manifest(MANIFEST)
     rels = build_relationships(manifest)
     for rel in rels:
         assert "not_null" not in rel.name
