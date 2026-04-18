@@ -1,0 +1,11 @@
+jaffle_shop:
+  target: dev
+  outputs:
+    dev:
+      type: mysql
+      server: localhost
+      port: 3307
+      username: jaffle
+      password: jaffle
+      schema: jaffle_shop
+      threads: 8
