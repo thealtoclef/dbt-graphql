@@ -151,8 +151,8 @@ class ProjectInfo(BaseModel):
         return LineageSchema(
             project_name=self.project_name,
             adapter_type=self.adapter_type,
-            table_lineage=table_lineage_items if table_lineage_items else [],
-            column_lineage=column_lineage_items if column_lineage_items else [],
+            table_lineage=table_lineage_items,
+            column_lineage=column_lineage_items,
         )
 
 

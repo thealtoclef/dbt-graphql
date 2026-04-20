@@ -18,7 +18,6 @@ from graphql import (
     NamedTypeNode,
     NonNullTypeNode,
     ObjectTypeDefinitionNode,
-    StringValueNode,
     parse,
 )
 
@@ -36,7 +35,7 @@ class RelationDef:
 @dataclass
 class ColumnDef:
     name: str
-    gql_type: str  # PascalCase GraphQL-compatible type name
+    gql_type: str  # Standard GraphQL scalar (Int, Float, Boolean, String)
     is_array: bool = False
     not_null: bool = False
     is_pk: bool = False
@@ -91,10 +90,7 @@ def _directive_args(directive: DirectiveNode) -> dict[str, str]:
     """Flatten a directive's keyword arguments into a plain dict."""
     out: dict[str, str] = {}
     for arg in directive.arguments or []:
-        if isinstance(arg.value, StringValueNode):
-            out[arg.name.value] = arg.value.value
-        else:
-            out[arg.name.value] = arg.value.value  # type: ignore[assignment]
+        out[arg.name.value] = arg.value.value  # type: ignore[assignment]
     return out
 
 

@@ -8,7 +8,11 @@ from dbt_graphql.dbt.processors.data_tests import (
 )
 
 
-FIXTURES_DIR = next(p for p in Path(__file__).parents if p.name == "tests") / "fixtures" / "dbt-artifacts"
+FIXTURES_DIR = (
+    next(p for p in Path(__file__).parents if p.name == "tests")
+    / "fixtures"
+    / "dbt-artifacts"
+)
 MANIFEST = FIXTURES_DIR / "manifest.json"
 
 

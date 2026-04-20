@@ -85,6 +85,10 @@ def extract_project(
 
         pk_cols: list[str] = constraints_result.primary_keys.get(key, [])
 
+        enum_values_by_name: dict[str, list[str]] = {
+            ed.name: [v.name for v in ed.values] for ed in tests_result.enum_definitions
+        }
+
         columns: list[ColumnInfo] = []
         for raw_col_name, col_meta in catalog_columns.items():
             # Strip SQL quoting characters that some adapters emit in the catalog
@@ -95,12 +99,7 @@ def extract_project(
             not_null = tests_result.column_to_not_null.get(col_key, False)
             unique = tests_result.column_to_unique.get(col_key, False)
             enum_name = tests_result.column_to_enum_name.get(col_key)
-            enum_values = None
-            if enum_name:
-                for enum_def in tests_result.enum_definitions:
-                    if enum_def.name == enum_name:
-                        enum_values = [v.name for v in enum_def.values]
-                        break
+            enum_values = enum_values_by_name.get(enum_name) if enum_name else None
 
             description = (
                 getattr(manifest_columns.get(col_name), "description", None) or ""
@@ -125,12 +124,11 @@ def extract_project(
 
         columns.sort(key=sort_key)
 
-        # Get database and schema from catalog
-        database = catalog_node.metadata.database
-        schema = catalog_node.metadata.schema_
-        # MySQL dbt adapter doesn't populate database — fall back to schema
-        if database is None:
-            database = schema
+        # Get database and schema from catalog.
+        # MySQL doesn't populate database; fall back to schema.
+        # Both default to "" rather than crashing model construction.
+        schema = catalog_node.metadata.schema_ or ""
+        database = catalog_node.metadata.database or schema
 
         # Get alias and description from manifest node
         model_alias = getattr(manifest_node, "alias", None)
@@ -254,7 +252,7 @@ def _rel_to_domain(
     """Convert a ProcessorRelationship to domain RelationshipInfo."""
     from_col = ""
     to_col = ""
-    if hasattr(rel, "condition") and rel.condition:
+    if getattr(rel, "condition", ""):
         match = re.match(r'"(\w+)"\."(\w+)"\s*=\s*"(\w+)"\."(\w+)"', rel.condition)
         if match:
             from_col = match.group(2)

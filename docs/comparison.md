@@ -80,7 +80,7 @@ Two further differentiators are deliberate: dbt-graphql is **read-only** (no mut
 | **Read-only** (also a strength) | No mutations, writes, or upserts. Wrong tool for app backends — Hasura/PostGraphile remain the right call there. |
 | **No row-level security / auth layer** | Hasura has permission rules, pg_graphql inherits Postgres RLS, AppSync has Cognito. dbt-graphql has no equivalent today; multi-tenant serving needs an auth + policy layer in front of (or inside) the serve path. |
 | **Single-process Python serving** | The serve layer is async SQLAlchemy but still Python. Hasura/PostGraphile are Haskell/Rust/Node and handle high-throughput concurrent agent workloads more easily. |
-| **Compiler feature coverage** | No multi-hop nested relations; no filter/order on nested fields; `where` supports only equality; no operators, no aggregates. |
+| **Compiler feature coverage** | No filter/order on nested fields; `where` supports only equality; no operators, no aggregates. Multi-hop relation nesting is supported (recursive correlated subqueries, cycle-safe). |
 | **Maturity** | Hasura, PostGraphile, and pg_graphql each have years of production hardening. dbt-graphql needs an integration-test corpus covering real dbt projects across dialects. |
 | **GraphQL feature coverage** | No subscriptions, unions, federation, defer/stream. None are table stakes for analytics, but worth an explicit non-goals list so users aren't surprised. |
 | **No query-cost / safety guardrails** | No default `LIMIT`, no statement timeout, no cost estimation before execution. A warehouse LLM-agent tool almost certainly wants these. |

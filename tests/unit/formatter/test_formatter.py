@@ -6,7 +6,11 @@ from pathlib import Path
 from dbt_graphql import extract_project, format_graphql
 
 
-DUCKDB_DIR = next(p for p in Path(__file__).parents if p.name == "tests") / "fixtures" / "dbt-artifacts"
+DUCKDB_DIR = (
+    next(p for p in Path(__file__).parents if p.name == "tests")
+    / "fixtures"
+    / "dbt-artifacts"
+)
 CATALOG = DUCKDB_DIR / "catalog.json"
 MANIFEST = DUCKDB_DIR / "manifest.json"
 
@@ -30,7 +34,7 @@ class TestDbGraphQL:
     def test_required_fields_have_bang(self):
         project = _make_project()
         gj = format_graphql(project)
-        assert "Integer!" in gj.db_graphql or "Bigint!" in gj.db_graphql
+        assert "Int!" in gj.db_graphql
 
     def test_all_models_present(self):
         project = _make_project()
@@ -58,7 +62,7 @@ class TestDbGraphQL:
 
 
 class TestTypeMapping:
-    def test_pascal_case_type_names(self):
+    def test_standard_scalar_type_names(self):
         from dbt_graphql.formatter.graphql import _column_line
         from dbt_graphql.ir.models import ColumnInfo, ModelInfo
 
@@ -66,12 +70,12 @@ class TestTypeMapping:
 
         c = ColumnInfo(name="id", type="INTEGER", not_null=True)
         line = _column_line(m, c, rel_map={})
-        assert "id: Integer!" in line
+        assert "id: Int!" in line
         assert '@sql(type: "INTEGER")' in line
 
         c = ColumnInfo(name="name", type="VARCHAR(255)", not_null=False)
         line = _column_line(m, c, rel_map={})
-        assert "name: Varchar" in line
+        assert "name: String" in line
         assert '@sql(type: "VARCHAR", size: "255")' in line
 
     def test_multiword_types(self):
@@ -82,7 +86,7 @@ class TestTypeMapping:
 
         c = ColumnInfo(name="ts", type="TIMESTAMP WITH TIME ZONE", not_null=False)
         line = _column_line(m, c, rel_map={})
-        assert "ts: TimestampWithTimeZone" in line
+        assert "ts: String" in line
         assert '@sql(type: "TIMESTAMP WITH TIME ZONE")' in line
 
     def test_array_type(self):
@@ -93,7 +97,7 @@ class TestTypeMapping:
 
         c = ColumnInfo(name="tags", type="TEXT[]", not_null=False)
         line = _column_line(m, c, rel_map={})
-        assert "tags: [Text]" in line
+        assert "tags: [String]" in line
         assert '@sql(type: "TEXT")' in line
 
     def test_bigquery_array(self):
@@ -107,15 +111,14 @@ class TestTypeMapping:
         assert "items: [String]" in line
         assert '@sql(type: "STRING")' in line
 
-    def test_empty_type_no_fallback(self):
+    def test_empty_type_falls_back_to_string(self):
         from dbt_graphql.formatter.graphql import _column_line
         from dbt_graphql.ir.models import ColumnInfo, ModelInfo
 
         m = ModelInfo(name="t", database="db", schema_="public", columns=[])
         c = ColumnInfo(name="x", type="", not_null=False)
         line = _column_line(m, c, rel_map={})
-        # Empty type → empty pascal, but @sql still emitted with empty value
-        assert "x: " in line
+        assert "x: String" in line
         assert '@sql(type: "")' in line
 
 

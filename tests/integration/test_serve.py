@@ -54,14 +54,14 @@ def db_graphql_file(tmp_path_factory) -> Path:
     path = tmp_path_factory.mktemp("serve_schema") / "db.graphql"
     path.write_text(
         'type users @database(name: "test") @schema(name: "main") @table(name: "users") {\n'
-        '  id: Integer! @sql(type: "INTEGER") @id\n'
-        '  name: Text! @sql(type: "TEXT")\n'
+        '  id: Int! @sql(type: "INTEGER") @id\n'
+        '  name: String! @sql(type: "TEXT")\n'
         "}\n"
         "\n"
         'type posts @database(name: "test") @schema(name: "main") @table(name: "posts") {\n'
-        '  id: Integer! @sql(type: "INTEGER") @id\n'
-        '  user_id: Integer @sql(type: "INTEGER")\n'
-        '  title: Text @sql(type: "TEXT")\n'
+        '  id: Int! @sql(type: "INTEGER") @id\n'
+        '  user_id: Int @sql(type: "INTEGER")\n'
+        '  title: String @sql(type: "TEXT")\n'
         "}\n"
     )
     return path
@@ -139,3 +139,38 @@ class TestGraphQLHTTP:
         type_names = {t["name"] for t in data["data"]["__schema"]["types"]}
         assert "users" in type_names
         assert "posts" in type_names
+
+    def test_schema_exposes_where_input_types(self, client):
+        """Each table must have a WhereInput type so the where argument is usable."""
+        resp = client.post(
+            "/graphql",
+            json={"query": "{ __schema { types { name } } }"},
+        )
+        assert resp.status_code == 200
+        type_names = {t["name"] for t in resp.json()["data"]["__schema"]["types"]}
+        assert "usersWhereInput" in type_names
+        assert "postsWhereInput" in type_names
+
+    def test_where_filter_end_to_end(self, client):
+        """where arg must reach the SQL engine and filter rows correctly."""
+        resp = client.post(
+            "/graphql",
+            json={"query": "{ users(where: { id: 1 }) { id name } }"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        rows = data["data"]["users"]
+        assert len(rows) == 1
+        assert rows[0]["id"] == 1
+        assert rows[0]["name"] == "Alice"
+
+    def test_where_filter_no_match_returns_empty(self, client):
+        resp = client.post(
+            "/graphql",
+            json={"query": "{ users(where: { id: 999 }) { id name } }"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        assert data["data"]["users"] == []

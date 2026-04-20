@@ -7,7 +7,11 @@ import pytest
 
 from dbt_graphql.dbt.artifacts import load_catalog, load_manifest
 
-FIXTURES = next(p for p in Path(__file__).parents if p.name == "tests") / "fixtures" / "dbt-artifacts"
+FIXTURES = (
+    next(p for p in Path(__file__).parents if p.name == "tests")
+    / "fixtures"
+    / "dbt-artifacts"
+)
 CATALOG = FIXTURES / "catalog.json"
 MANIFEST = FIXTURES / "manifest.json"
 

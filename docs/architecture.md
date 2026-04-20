@@ -355,16 +355,16 @@ SQL generation stays dialect-agnostic until the moment of rendering. This is idi
 
 ### 9.4 `compile_query()` walkthrough
 
-Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus optional `limit` / `offset` / `where`.
+Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus optional `limit` / `offset` / `where` / `max_depth`.
 
 1. `_extract_scalar_fields()` partitions the selection into direct columns (`scalars`) and FK-backed relations.
-2. For each relation: build a correlated subquery (`_build_correlated_subquery`) that aggregates child rows into a JSON array correlated on the FK equality. The subquery labels itself with the relation field name so the result JSON has the right shape.
-3. `where` is a flat dict of `{col_name: value}` applied as equality predicates. No operator support today — next on the roadmap.
-4. `LIMIT` and `OFFSET` applied straight through to SQLAlchemy.
+2. For each relation: `_build_correlated_subquery` builds a correlated subquery that aggregates child rows into a JSON array, correlated on the FK equality. The subquery labels itself with the relation field name so the result JSON has the right shape.
+3. **Multi-hop nesting** — `_build_correlated_subquery` is recursive. Each level gets a unique alias (`child_1`, `child_2`, …). Two safety rails apply: a `visited` frozenset prevents any model from appearing twice in the same subquery stack (cycle guard), and an optional `max_depth` parameter (default: unlimited) caps nesting depth for performance. This mirrors the approach Hasura uses for Postgres: a single query with recursively nested correlated subqueries and JSON aggregation at each level — no N+1, no application-side reassembly.
+4. `where` is a flat dict of `{col_name: value}` applied as equality predicates. No operator support today — next on the roadmap.
+5. `LIMIT` and `OFFSET` applied straight through to SQLAlchemy.
 
 What is **not** supported (explicitly):
 
-- Multi-hop nesting (a relation of a relation) — needs recursion in `_build_correlated_subquery` with a proper alias scheme.
 - Filtering / ordering on nested fields.
 - Operators beyond `=` in `where`.
 - Aggregates, group-by, metrics — this is the job of a semantic layer (Cube, MetricFlow), not this compiler.
@@ -385,12 +385,12 @@ FastAPI + Ariadne, served via `granian` (Rust-based ASGI server).
 
 ### 10.1 Assembling the Ariadne schema
 
-`db.graphql` uses custom type names (`Integer`, `Varchar`, …) and custom directives. Ariadne needs a standard executable schema. `_build_ariadne_sdl()`:
+`db.graphql` uses standard GraphQL scalars (`Int`, `Float`, `Boolean`, `String`) and custom directives. Ariadne needs a clean executable schema without those directives. `_build_ariadne_sdl()`:
 
 1. Parses `db.graphql`.
-2. Collects every PascalCase type name that isn't a defined `type` (those are the scalars).
-3. Emits `scalar Integer`, `scalar Varchar`, … declarations.
-4. Builds a `Query` type with one field per table, each accepting `limit: Int`, `offset: Int`, and a `where: { ... }` input type.
+2. Collects any type names that aren't standard GraphQL scalars and declares them as `scalar` (rare — most types map to `Int`, `Float`, `Boolean`, or `String`).
+3. Builds a per-table `XxxWhereInput` input type for filtering.
+4. Builds a `Query` type with one field per table, each accepting `limit: Int`, `offset: Int`, and `where: XxxWhereInput`.
 
 This is a deliberate separation: `db.graphql` is the *description* of the warehouse; the Ariadne schema is the *executable GraphQL schema* derived from it at runtime.
 

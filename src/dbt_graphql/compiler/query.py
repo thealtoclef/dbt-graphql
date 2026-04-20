@@ -127,20 +127,56 @@ def _build_correlated_subquery(
     rel: RelationDef,
     target: TableDef,
     child_fields: list,
+    registry: TableRegistry,
+    depth: int = 1,
+    visited: frozenset[str] = frozenset(),
+    max_depth: int | None = None,
 ) -> Select:
-    """Build a correlated subquery for a nested relation.
+    """Build a correlated subquery for a nested relation, recursively.
 
     Uses SQLAlchemy expressions so dialect-specific compilation
     (JSON functions, quoting, etc.) is handled automatically.
+    Aliases each level as child_1, child_2, … to avoid name collisions.
     """
-    child_scalars, _ = _extract_scalar_fields(target, child_fields, TableRegistry())
-    child_table = _table_from_def(target).alias("child")
+    if max_depth is not None and depth > max_depth:
+        raise ValueError(f"Relation nesting exceeds maximum depth of {max_depth}")
+    if target.name in visited:
+        raise ValueError(
+            f"Circular relation detected: '{target.name}' is already in the join path"
+        )
 
-    # JSON_OBJECT('col', child.col, 'col2', child.col2, ...)
+    child_scalars, child_relations = _extract_scalar_fields(
+        target, child_fields, registry
+    )
+    child_table = _table_from_def(target).alias(f"child_{depth}")
+    new_visited = visited | {target.name}
+
+    # JSON_OBJECT('col', child_N.col, ...)
     json_args = []
     for col_name in child_scalars:
         json_args.append(literal(col_name))
         json_args.append(child_table.c[col_name])
+
+    # Recurse for nested relations
+    for child_col, child_rel, child_target in child_relations:
+        child_field_node = next(
+            (f for f in child_fields if f.name.value == child_col.name), None
+        )
+        if child_field_node is None or child_field_node.selection_set is None:
+            continue
+        nested_sub = _build_correlated_subquery(
+            parent_aliased=child_table,
+            parent_fk=child_col.name,
+            rel=child_rel,
+            target=child_target,
+            child_fields=child_field_node.selection_set.selections,
+            registry=registry,
+            depth=depth + 1,
+            visited=new_visited,
+            max_depth=max_depth,
+        )
+        json_args.append(literal(child_col.name))
+        json_args.append(nested_sub.scalar_subquery())
 
     inner = json_build_obj(*json_args)
     agg = json_agg(inner)
@@ -164,11 +200,15 @@ def compile_query(
     limit: int | None = None,
     offset: int | None = None,
     where: dict[str, object] | None = None,
+    max_depth: int | None = None,
 ) -> Select:
     """Build a SQLAlchemy Core ``Select`` for a root GraphQL field.
 
     The returned ``Select`` is dialect-agnostic — compile it against a
     specific dialect (or execute via an engine) to get the right SQL.
+
+    ``max_depth`` caps relation nesting (None = unlimited). Cycles in the
+    query selection are always rejected regardless of this setting.
     """
     selection = field_nodes[0] if field_nodes else None
     if selection is None:
@@ -199,6 +239,8 @@ def compile_query(
             rel=rel,
             target=target,
             child_fields=child_fields,
+            registry=registry,
+            max_depth=max_depth,
         )
         cols.append(subquery.label(col.name))
 
@@ -206,9 +248,11 @@ def compile_query(
 
     # WHERE
     if where:
+        unknown = [k for k in where if k not in aliased.c]
+        if unknown:
+            raise ValueError(f"Unknown where column(s): {', '.join(sorted(unknown))}")
         for col_name, value in where.items():
-            if col_name in aliased.c:
-                stmt = stmt.where(aliased.c[col_name] == value)
+            stmt = stmt.where(aliased.c[col_name] == value)
 
     # Pagination
     if limit is not None:

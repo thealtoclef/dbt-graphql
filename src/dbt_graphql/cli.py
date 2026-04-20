@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
     elif args.command == "generate":
-        _run_generate(args, parser)
+        _run_generate(args)
     elif args.command == "serve":
         _run_serve(args)
     elif args.command == "mcp":
@@ -88,11 +88,7 @@ def _add_generate_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _run_generate(args, parser: argparse.ArgumentParser) -> None:
-    if not args.format:
-        parser.print_help()
-        sys.exit(1)
-
+def _run_generate(args) -> None:
     if not args.catalog or not args.manifest:
         print(
             "Error: --catalog and --manifest are required for generation.",

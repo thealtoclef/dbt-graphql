@@ -129,5 +129,7 @@ class DatabaseManager:
     @property
     def dialect_name(self) -> str:
         if self._engine is None:
-            return ""
+            raise RuntimeError(
+                "DatabaseManager is not connected — call connect() first"
+            )
         return self._engine.dialect.name

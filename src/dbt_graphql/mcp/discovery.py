@@ -115,34 +115,38 @@ class SchemaDiscovery:
         )
 
     def find_path(self, from_table: str, to_table: str) -> list[JoinPath]:
-        """BFS to find all shortest join paths between two tables."""
+        """BFS to find all shortest join paths between two tables.
+
+        Processes nodes level-by-level so that multiple shortest paths through
+        shared intermediate nodes are all returned, not just the first found.
+        """
         if from_table == to_table:
             return [JoinPath()]
 
-        queue: list[tuple[str, list[JoinStep]]] = [(from_table, [])]
+        # current_level: node → all partial paths (as step lists) that reach it
+        current_level: dict[str, list[list[JoinStep]]] = {from_table: [[]]}
         visited: set[str] = {from_table}
         shortest: list[JoinPath] = []
-        shortest_len: int | None = None
 
-        while queue:
-            current, path = queue.pop(0)
-            if shortest_len is not None and len(path) >= shortest_len:
-                break
+        while current_level and not shortest:
+            next_level: dict[str, list[list[JoinStep]]] = {}
+            for current, paths in current_level.items():
+                for via_col, neighbor, neighbor_col in self._adj.get(current, []):
+                    step = JoinStep(
+                        from_table=current,
+                        from_column=via_col,
+                        to_table=neighbor,
+                        to_column=neighbor_col,
+                    )
+                    for path in paths:
+                        new_path = path + [step]
+                        if neighbor == to_table:
+                            shortest.append(JoinPath(steps=new_path))
+                        elif neighbor not in visited:
+                            next_level.setdefault(neighbor, []).append(new_path)
 
-            for via_col, neighbor, neighbor_col in self._adj.get(current, []):
-                step = JoinStep(
-                    from_table=current,
-                    from_column=via_col,
-                    to_table=neighbor,
-                    to_column=neighbor_col,
-                )
-                new_path = path + [step]
-                if neighbor == to_table:
-                    shortest_len = len(new_path)
-                    shortest.append(JoinPath(steps=new_path))
-                elif neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, new_path))
+            visited.update(next_level.keys())
+            current_level = next_level
 
         return shortest
 
@@ -170,10 +174,16 @@ class SchemaDiscovery:
 
     # ---- Live enrichment (requires db connection) ----
 
+    @staticmethod
+    def _qi(name: str) -> str:
+        """Double-quote an identifier, escaping any embedded double-quotes."""
+        return '"' + name.replace('"', '""') + '"'
+
     async def get_row_count(self, table: str) -> int | None:
         if self._db is None:
             return None
-        rows = await self._db.execute_text(f"SELECT COUNT(*) AS cnt FROM {table}")
+        qt = self._qi(table)
+        rows = await self._db.execute_text(f"SELECT COUNT(*) AS cnt FROM {qt}")
         return rows[0]["cnt"] if rows else None
 
     async def get_distinct_values(
@@ -181,8 +191,9 @@ class SchemaDiscovery:
     ) -> list:
         if self._db is None:
             return []
+        qt, qc = self._qi(table), self._qi(column)
         rows = await self._db.execute_text(
-            f"SELECT DISTINCT {column} FROM {table} LIMIT {limit}"
+            f"SELECT DISTINCT {qc} FROM {qt} LIMIT {limit}"
         )
         return [r[column] for r in rows]
 
@@ -191,8 +202,9 @@ class SchemaDiscovery:
     ) -> tuple[str | None, str | None]:
         if self._db is None:
             return None, None
+        qt, qc = self._qi(table), self._qi(column)
         rows = await self._db.execute_text(
-            f"SELECT MIN({column}) AS mn, MAX({column}) AS mx FROM {table}"
+            f"SELECT MIN({qc}) AS mn, MAX({qc}) AS mx FROM {qt}"
         )
         if not rows:
             return None, None
@@ -201,4 +213,5 @@ class SchemaDiscovery:
     async def get_sample_rows(self, table: str, limit: int = 5) -> list[dict]:
         if self._db is None:
             return []
-        return await self._db.execute_text(f"SELECT * FROM {table} LIMIT {limit}")
+        qt = self._qi(table)
+        return await self._db.execute_text(f"SELECT * FROM {qt} LIMIT {limit}")

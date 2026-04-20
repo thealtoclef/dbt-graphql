@@ -4,6 +4,7 @@ Verifies that generated SQL uses the correct dialect-specific functions
 when compiled against different SQLAlchemy dialects.
 """
 
+import pytest
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 
 from dbt_graphql.compiler.query import compile_query
@@ -127,6 +128,281 @@ class TestWhereFilter:
         sql = _sql(stmt, sqlite)
         assert "WHERE" in sql
         assert "1" in sql
+
+    def test_unknown_column_raises(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        with pytest.raises(ValueError, match="nonexistent"):
+            compile_query(customers, [fn], registry, where={"nonexistent": 1})
+
+    def test_empty_where_does_not_raise(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        stmt = compile_query(customers, [fn], registry, where={})
+        sql = _sql(stmt, sqlite)
+        assert "WHERE" not in sql
+
+
+def _three_table_registry():
+    """addresses ← customers ← orders (2-hop chain)."""
+    addresses = TableDef(
+        name="addresses",
+        database="mydb",
+        schema="main",
+        table="addresses",
+        columns=[
+            ColumnDef(name="address_id", gql_type="Int", not_null=True),
+            ColumnDef(name="city", gql_type="String"),
+        ],
+    )
+    customers = TableDef(
+        name="customers",
+        database="mydb",
+        schema="main",
+        table="customers",
+        columns=[
+            ColumnDef(name="customer_id", gql_type="Int", not_null=True),
+            ColumnDef(
+                name="address_id",
+                gql_type="Int",
+                relation=RelationDef(
+                    target_model="addresses", target_column="address_id"
+                ),
+            ),
+        ],
+    )
+    orders = TableDef(
+        name="orders",
+        database="mydb",
+        schema="main",
+        table="orders",
+        columns=[
+            ColumnDef(name="order_id", gql_type="Int", not_null=True),
+            ColumnDef(
+                name="customer_id",
+                gql_type="Int",
+                relation=RelationDef(
+                    target_model="customers", target_column="customer_id"
+                ),
+            ),
+        ],
+    )
+    return orders, TableRegistry([addresses, customers, orders])
+
+
+class TestMultiHopNesting:
+    def test_two_hop_compiles_without_error(self):
+        """orders → customers → addresses (2-hop) must produce valid SQL."""
+        orders, registry = _three_table_registry()
+        # orders { order_id customer_id { customer_id address_id { city } } }
+        fn = _field_node(
+            "orders",
+            [
+                _field_node("order_id"),
+                _field_node(
+                    "customer_id",
+                    [
+                        _field_node("customer_id"),
+                        _field_node("address_id", [_field_node("city")]),
+                    ],
+                ),
+            ],
+        )
+        stmt = compile_query(orders, [fn], registry)
+        sql = _sql(stmt, sqlite)
+        assert "child_1" in sql
+        assert "child_2" in sql
+        assert "LATERAL" not in sql
+
+    def test_two_hop_contains_nested_json(self):
+        """SQL must nest JSON aggregation at both levels."""
+        orders, registry = _three_table_registry()
+        fn = _field_node(
+            "orders",
+            [
+                _field_node("order_id"),
+                _field_node(
+                    "customer_id",
+                    [
+                        _field_node("customer_id"),
+                        _field_node("address_id", [_field_node("city")]),
+                    ],
+                ),
+            ],
+        )
+        stmt = compile_query(orders, [fn], registry)
+        sql = _sql(stmt, sqlite)
+        # Both levels must aggregate JSON
+        assert sql.count("JSON_GROUP_ARRAY") == 2
+        assert sql.count("JSON_OBJECT") == 2
+
+    def test_cycle_detection_raises(self):
+        """A → B → A → B must raise ValueError when the query follows the cycle.
+
+        The cycle guard fires when the same model appears twice in the subquery
+        stack (visited set). The query must explicitly select the back-edge
+        field for the cycle to materialise — just having a cycle in the schema
+        does not trigger it.
+        """
+        a = TableDef(
+            name="A",
+            database="db",
+            schema="s",
+            table="a",
+            columns=[
+                ColumnDef(name="id", gql_type="Int"),
+                ColumnDef(
+                    name="b_id",
+                    gql_type="Int",
+                    relation=RelationDef(target_model="B", target_column="id"),
+                ),
+            ],
+        )
+        b = TableDef(
+            name="B",
+            database="db",
+            schema="s",
+            table="b",
+            columns=[
+                ColumnDef(name="id", gql_type="Int"),
+                ColumnDef(
+                    name="a_id",
+                    gql_type="Int",
+                    relation=RelationDef(target_model="A", target_column="id"),
+                ),
+            ],
+        )
+        registry = TableRegistry([a, b])
+        # A → B (depth 1) → A (depth 2) → B (depth 3): "B" already in visited → raises
+        fn = _field_node(
+            "A",
+            [
+                _field_node("id"),
+                _field_node(
+                    "b_id",
+                    [
+                        _field_node("id"),
+                        _field_node(
+                            "a_id",
+                            [
+                                _field_node("id"),
+                                _field_node("b_id", [_field_node("id")]),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        with pytest.raises(ValueError, match="Circular"):
+            compile_query(a, [fn], registry)
+
+    def test_depth_limit_raises_when_max_depth_set(self):
+        """compile_query(max_depth=N) must raise once nesting exceeds N."""
+        max_depth = 2
+        # Build a linear chain: T0 → T1 → T2 → T3 (3 hops, exceeds max_depth=2)
+        tables = []
+        for i in range(4):
+            cols = [ColumnDef(name="id", gql_type="Int")]
+            if i < 3:
+                cols.append(
+                    ColumnDef(
+                        name="next_id",
+                        gql_type="Int",
+                        relation=RelationDef(
+                            target_model=f"T{i + 1}", target_column="id"
+                        ),
+                    )
+                )
+            tables.append(
+                TableDef(
+                    name=f"T{i}", database="db", schema="s", table=f"t{i}", columns=cols
+                )
+            )
+        registry = TableRegistry(tables)
+
+        def chain_node(level):
+            if level == 3:
+                return _field_node("next_id", [_field_node("id")])
+            return _field_node("next_id", [_field_node("id"), chain_node(level + 1)])
+
+        fn = _field_node("T0", [_field_node("id"), chain_node(0)])
+        with pytest.raises(ValueError, match="depth"):
+            compile_query(tables[0], [fn], registry, max_depth=max_depth)
+
+    def test_no_depth_limit_by_default(self):
+        """Without max_depth, a deep non-cyclic chain compiles without error."""
+        orders, registry = _three_table_registry()
+        fn = _field_node(
+            "orders",
+            [
+                _field_node("order_id"),
+                _field_node(
+                    "customer_id",
+                    [
+                        _field_node("customer_id"),
+                        _field_node("address_id", [_field_node("city")]),
+                    ],
+                ),
+            ],
+        )
+        # Should not raise — no max_depth means unlimited
+        stmt = compile_query(orders, [fn], registry)
+        assert stmt is not None
+
+    def test_two_hop_executes_correctly(self):
+        """2-hop query must return the right nested data from a real SQLite DB."""
+        import json
+        from sqlalchemy import create_engine, text
+
+        # Some Python/SQLite/SQLAlchemy combinations auto-parse JSON aggregates
+        # into Python objects; others return raw strings. _load handles both.
+        def _load(val):
+            return json.loads(val) if isinstance(val, str) else val
+
+        engine = create_engine("sqlite:///:memory:")
+        with engine.connect() as conn:
+            conn.execute(text("CREATE TABLE addresses (address_id INTEGER, city TEXT)"))
+            conn.execute(
+                text("CREATE TABLE customers (customer_id INTEGER, address_id INTEGER)")
+            )
+            conn.execute(
+                text("CREATE TABLE orders (order_id INTEGER, customer_id INTEGER)")
+            )
+            conn.execute(text("INSERT INTO addresses VALUES (10, 'NYC'), (20, 'LA')"))
+            conn.execute(text("INSERT INTO customers VALUES (1, 10), (2, 20)"))
+            conn.execute(text("INSERT INTO orders VALUES (100, 1), (200, 2)"))
+            conn.commit()
+
+        orders, registry = _three_table_registry()
+        fn = _field_node(
+            "orders",
+            [
+                _field_node("order_id"),
+                _field_node(
+                    "customer_id",
+                    [
+                        _field_node("customer_id"),
+                        _field_node("address_id", [_field_node("city")]),
+                    ],
+                ),
+            ],
+        )
+        stmt = compile_query(orders, [fn], registry)
+
+        with engine.connect() as conn:
+            rows = [dict(r._mapping) for r in conn.execute(stmt)]
+
+        assert len(rows) == 2
+        for row in rows:
+            customer_data = _load(row["customer_id"])
+            assert isinstance(customer_data, list)
+            assert len(customer_data) == 1
+            customer = customer_data[0]
+            assert "customer_id" in customer
+            addr_data = _load(customer["address_id"])
+            assert isinstance(addr_data, list)
+            assert len(addr_data) == 1
+            assert "city" in addr_data[0]
 
 
 # ---------------------------------------------------------------------------

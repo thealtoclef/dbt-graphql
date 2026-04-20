@@ -202,19 +202,10 @@ def qualify_model_sql(sql: str, dialect: str, schema: dict) -> Scope | None:
     sanitized = sanitize_sql(sql, dialect)
     try:
         expression = parse_one(sanitized, read=dialect or None)
-    except SqlglotError as e:
-        logger.debug("sqlglot parse failed (%s): %s", dialect, e)
-        return None
-    except Exception as e:  # noqa: BLE001
-        logger.debug("unexpected parse error (%s): %s", dialect, e)
-        return None
-
-    if dialect == "postgres":
-        expression = _remove_identifier_quotes(expression)
-    elif dialect == "bigquery":
-        expression = _lowercase_quoted_identifiers(expression)
-
-    try:
+        if dialect == "postgres":
+            expression = _remove_identifier_quotes(expression)
+        elif dialect == "bigquery":
+            expression = _lowercase_quoted_identifiers(expression)
         qualified = qualify(
             expression,
             dialect=dialect or None,
@@ -222,17 +213,13 @@ def qualify_model_sql(sql: str, dialect: str, schema: dict) -> Scope | None:
             validate_qualify_columns=False,
             identify=False,
         )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("sqlglot qualify failed: %s", e)
+        return build_scope(qualified)
+    except SqlglotError as e:
+        logger.debug("sqlglot processing failed (%s): %s", dialect, e)
         return None
-
-    try:
-        scope = build_scope(qualified)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("sqlglot build_scope failed: %s", e)
+    except Exception as e:  # Compiled user SQL can trigger unexpected internal errors
+        logger.debug("unexpected error processing SQL (%s): %s", dialect, e)
         return None
-
-    return scope
 
 
 def resolve_table_to_model(
@@ -293,6 +280,7 @@ def extract_table_lineage(manifest: DbtManifest) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 # Column lineage — ported from dbt-colibri (MIT), itself derived from sqlglot
 # ---------------------------------------------------------------------------
+
 
 # _LineageNode is an internal intermediate representation.
 # ColumnLineageEdge is the public output type.
@@ -356,23 +344,33 @@ def _to_node(
 
     if isinstance(scope.expression, exp.Subquery):
         for src in scope.subquery_scopes:
-            return _to_node(column, scope=src, dialect=dialect, upstream=upstream, visited=visited)
+            return _to_node(
+                column, scope=src, dialect=dialect, upstream=upstream, visited=visited
+            )
 
     if isinstance(scope.expression, exp.SetOperation):
         name = type(scope.expression).__name__.upper()
-        upstream = upstream or _LineageNode(name=name, source=scope.expression, expression=select)
+        upstream = upstream or _LineageNode(
+            name=name, source=scope.expression, expression=select
+        )
         index = (
             column
             if isinstance(column, int)
             else next(
-                (i for i, s in enumerate(scope.expression.selects) if s.alias_or_name == column or s.is_star),
+                (
+                    i
+                    for i, s in enumerate(scope.expression.selects)
+                    if s.alias_or_name == column or s.is_star
+                ),
                 -1,
             )
         )
         if index == -1:
             return upstream
         for s in scope.union_scopes:
-            _to_node(index, scope=s, dialect=dialect, upstream=upstream, visited=visited)
+            _to_node(
+                index, scope=s, dialect=dialect, upstream=upstream, visited=visited
+            )
         agg = "pass_through"
         for child in upstream.downstream:
             if child is not None:
@@ -380,7 +378,12 @@ def _to_node(
         upstream.lineage_type = agg
         return upstream
 
-    node = _LineageNode(name=str(column), source=scope.expression, expression=select, lineage_type=lineage_type)
+    node = _LineageNode(
+        name=str(column),
+        source=scope.expression,
+        expression=select,
+        lineage_type=lineage_type,
+    )
     if upstream is not None:
         upstream.downstream.append(node)
 
@@ -390,7 +393,9 @@ def _to_node(
         if not sq_scope:
             continue
         for name in subquery.named_selects:
-            _to_node(name, scope=sq_scope, dialect=dialect, upstream=node, visited=visited)
+            _to_node(
+                name, scope=sq_scope, dialect=dialect, upstream=node, visited=visited
+            )
 
     if select.is_star:
         for src in scope.sources.values():
@@ -408,7 +413,13 @@ def _to_node(
             if pivot and hasattr(src, "this") and hasattr(src.this, "alias_or_name"):
                 pivot_scope = scope.sources.get(src.this.alias_or_name)
                 if isinstance(pivot_scope, Scope):
-                    _to_node(c.name, scope=pivot_scope, dialect=dialect, upstream=node, visited=visited)
+                    _to_node(
+                        c.name,
+                        scope=pivot_scope,
+                        dialect=dialect,
+                        upstream=node,
+                        visited=visited,
+                    )
                     continue
             node.downstream.append(_LineageNode(name=c.name, source=src, expression=c))
 
@@ -437,12 +448,14 @@ def _edges_from_node(
         if key in seen:
             continue
         seen.add(key)
-        edges.append(ColumnLineageEdge(
-            source_model=source_model,
-            source_column=n.name,
-            target_column=target_col,
-            lineage_type=root.lineage_type,
-        ))
+        edges.append(
+            ColumnLineageEdge(
+                source_model=source_model,
+                source_column=n.name,
+                target_column=target_col,
+                lineage_type=root.lineage_type,
+            )
+        )
     return edges
 
 

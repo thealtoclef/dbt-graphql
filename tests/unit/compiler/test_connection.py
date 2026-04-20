@@ -82,3 +82,8 @@ class TestDatabaseManager:
         db = DatabaseManager(db_url="sqlite+aiosqlite:///:memory:")
         with pytest.raises(RuntimeError, match="not connected"):
             await db.execute_text("SELECT 1")
+
+    def test_dialect_name_without_connect_raises(self):
+        db = DatabaseManager(db_url="sqlite+aiosqlite:///:memory:")
+        with pytest.raises(RuntimeError, match="not connected"):
+            _ = db.dialect_name

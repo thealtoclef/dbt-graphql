@@ -13,7 +13,11 @@ from dbt_graphql.dbt.processors.compiled_sql import (
 )
 from dbt_graphql.ir.models import RelationshipOrigin
 
-FIXTURES_DIR = next(p for p in Path(__file__).parents if p.name == "tests") / "fixtures" / "dbt-artifacts"
+FIXTURES_DIR = (
+    next(p for p in Path(__file__).parents if p.name == "tests")
+    / "fixtures"
+    / "dbt-artifacts"
+)
 CATALOG = FIXTURES_DIR / "catalog.json"
 MANIFEST = FIXTURES_DIR / "manifest.json"
 
