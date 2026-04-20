@@ -50,13 +50,6 @@ def main(argv: list[str] | None = None) -> None:
 
 def _add_generate_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--format",
-        required=True,
-        choices=["graphql"],
-        metavar="FMT",
-        help="Output format: graphql.",
-    )
-    parser.add_argument(
         "--catalog",
         type=Path,
         metavar="PATH",
