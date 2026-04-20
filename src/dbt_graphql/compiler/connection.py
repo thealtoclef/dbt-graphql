@@ -33,19 +33,21 @@ _DRIVER_MAP: dict[str, str] = {
 def build_db_url(config: dict[str, Any]) -> str:
     """Build a SQLAlchemy async URL from a config dict.
 
-    Expected keys (matches our generated ``db.yml`` format)::
+    Expected keys (the ``db:`` section from ``config.yml``)::
 
-        type: mysql        # or postgres, sqlite, doris, mariadb
-        host: localhost
-        port: 3306
-        dbname: mydb
-        user: root
-        password: secret
+        db:
+          type: mysql        # or postgres, sqlite, doris, mariadb
+          host: localhost
+          port: 3306
+          dbname: mydb
+          user: root
+          password: secret
 
     For SQLite::
 
-        type: sqlite
-        host: /path/to/file.db
+        db:
+          type: sqlite
+          host: /path/to/file.db
     """
     db_type = config.get("type", "").lower()
     scheme = _DRIVER_MAP.get(db_type)
@@ -72,11 +74,14 @@ def build_db_url(config: dict[str, Any]) -> str:
 
 
 def load_db_config(path: str | Path) -> dict[str, Any]:
-    """Load a ``db.yml`` config file and return the parsed dict."""
+    """Load a ``config.yml`` file and return the ``db:`` section."""
     data = yaml.safe_load(Path(path).read_text())
     if not isinstance(data, dict):
-        raise ValueError("db config YAML must be a mapping")
-    return data
+        raise ValueError("config.yml must be a YAML mapping")
+    db = data.get("db")
+    if not isinstance(db, dict):
+        raise ValueError("config.yml must have a 'db:' section")
+    return db
 
 
 # ---------------------------------------------------------------------------

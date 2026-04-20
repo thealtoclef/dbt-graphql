@@ -140,16 +140,11 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
         help="Path to db.graphql SDL file.",
     )
     parser.add_argument(
-        "--db-url",
-        type=str,
-        metavar="URL",
-        help="SQLAlchemy async connection URL (e.g. mysql+aiomysql://user:pass@host/db).",
-    )
-    parser.add_argument(
-        "--db-config",
+        "--config",
         type=Path,
+        required=True,
         metavar="PATH",
-        help="Path to db.yml config file (alternative to --db-url).",
+        help="Path to config.yml.",
     )
     parser.add_argument(
         "--host",
@@ -169,18 +164,9 @@ def _run_serve(args) -> None:
     from .serve import serve
     from .compiler.connection import load_db_config
 
-    if not args.db_url and not args.db_config:
-        print("Error: provide either --db-url or --db-config.", file=sys.stderr)
-        sys.exit(1)
-
-    config = None
-    if args.db_config:
-        config = load_db_config(args.db_config)
-
     serve(
         db_graphql_path=args.db_graphql,
-        db_url=args.db_url,
-        config=config,
+        config=load_db_config(args.config),
         host=args.host,
         port=args.port,
     )
@@ -207,10 +193,10 @@ def _add_mcp_args(parser: argparse.ArgumentParser) -> None:
         help="Path to manifest.json.",
     )
     parser.add_argument(
-        "--db-url",
-        type=str,
-        metavar="URL",
-        help="SQLAlchemy async connection URL for live enrichment (optional).",
+        "--config",
+        type=Path,
+        metavar="PATH",
+        help="Path to config.yml for live enrichment (optional).",
     )
     parser.add_argument(
         "--exclude",
@@ -235,9 +221,9 @@ def _run_mcp(args) -> None:
         sys.exit(1)
 
     db = None
-    if args.db_url:
-        from .compiler.connection import DatabaseManager
+    if args.config:
+        from .compiler.connection import DatabaseManager, load_db_config
 
-        db = DatabaseManager(db_url=args.db_url)
+        db = DatabaseManager(config=load_db_config(args.config))
 
     serve_mcp(project, db=db)
