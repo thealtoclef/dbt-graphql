@@ -312,6 +312,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "dbt-artifacts-parser" },
+    { name = "graphql-core" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlglot", extra = ["c"] },
@@ -363,6 +364,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.136.0" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.2.4" },
     { name = "granian", marker = "extra == 'api'", specifier = ">=2.7.3" },
+    { name = "graphql-core", specifier = ">=3.2.8" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.49" },
     { name = "sqlglot", extras = ["c"], specifier = ">=30.4.3" },
