@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-def configure_telemetry(
+def configure_monitoring(
     service_name: str = "dbt-graphql",
     exporter: str = "otlp",
     endpoint: str | None = None,

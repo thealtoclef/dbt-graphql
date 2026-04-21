@@ -187,7 +187,7 @@ def _parse_targets(raw: str) -> set[str]:
 
 def _run_serve(args) -> None:
     from .config import load_config
-    from .telemetry import configure_telemetry
+    from .monitoring import configure_monitoring
 
     config = None
     if args.config:
@@ -199,14 +199,14 @@ def _run_serve(args) -> None:
 
     if config is not None:
         mon = config.monitoring
-        configure_telemetry(
+        configure_monitoring(
             service_name=mon.service_name,
             exporter=mon.exporter,
             endpoint=mon.endpoint,
             log_level=mon.log_level,
         )
     else:
-        configure_telemetry()
+        configure_monitoring()
 
     targets = _parse_targets(args.target)
 

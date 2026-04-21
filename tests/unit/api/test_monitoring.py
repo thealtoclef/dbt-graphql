@@ -1,4 +1,4 @@
-"""Unit tests for api/telemetry.py.
+"""Unit tests for api/monitoring.py.
 
 All OTel packages are mocked so these tests run without the [api] extra installed.
 The critical invariant: instrument_sqlalchemy must pass engine.sync_engine (the
@@ -30,7 +30,7 @@ class TestInstrumentSqlalchemy:
             },
         ):
             from importlib import reload
-            import dbt_graphql.api.telemetry as tel
+            import dbt_graphql.api.monitoring as tel
 
             reload(tel)
             tel.instrument_sqlalchemy(async_engine)
@@ -56,7 +56,7 @@ class TestInstrumentSqlalchemy:
             },
         ):
             from importlib import reload
-            import dbt_graphql.api.telemetry as tel
+            import dbt_graphql.api.monitoring as tel
 
             reload(tel)
             tel.instrument_sqlalchemy(async_engine)
@@ -74,7 +74,7 @@ class TestInstrumentSqlalchemy:
             {"opentelemetry.instrumentation.sqlalchemy": None},
         ):
             from importlib import reload
-            import dbt_graphql.api.telemetry as tel
+            import dbt_graphql.api.monitoring as tel
 
             reload(tel)
             tel.instrument_sqlalchemy(MagicMock())  # must not raise
@@ -95,7 +95,7 @@ class TestInstrumentStarlette:
             },
         ):
             from importlib import reload
-            import dbt_graphql.api.telemetry as tel
+            import dbt_graphql.api.monitoring as tel
 
             reload(tel)
             tel.instrument_starlette(app)
@@ -108,7 +108,7 @@ class TestInstrumentStarlette:
             {"opentelemetry.instrumentation.starlette": None},
         ):
             from importlib import reload
-            import dbt_graphql.api.telemetry as tel
+            import dbt_graphql.api.monitoring as tel
 
             reload(tel)
             tel.instrument_starlette(MagicMock())  # must not raise
@@ -133,7 +133,7 @@ class TestBuildGraphqlHttpHandler:
             },
         ):
             from importlib import reload
-            import dbt_graphql.api.telemetry as tel
+            import dbt_graphql.api.monitoring as tel
 
             reload(tel)
             result = tel.build_graphql_http_handler()
@@ -153,7 +153,7 @@ class TestBuildGraphqlHttpHandler:
             {"ariadne.contrib.tracing.opentelemetry": None},
         ):
             from importlib import reload
-            import dbt_graphql.api.telemetry as tel
+            import dbt_graphql.api.monitoring as tel
 
             reload(tel)
             result = tel.build_graphql_http_handler()

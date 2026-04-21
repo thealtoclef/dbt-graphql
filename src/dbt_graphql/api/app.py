@@ -12,7 +12,7 @@ from ..compiler.connection import DatabaseManager
 from ..config import DbConfig
 from ..formatter.schema import TableRegistry, load_db_graphql
 from .resolvers import create_query_type
-from .telemetry import (
+from .monitoring import (
     build_graphql_http_handler,
     instrument_sqlalchemy,
     instrument_starlette,

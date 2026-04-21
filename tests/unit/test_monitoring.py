@@ -1,4 +1,4 @@
-"""Unit tests for dbt_graphql.telemetry.configure_telemetry."""
+"""Unit tests for dbt_graphql.monitoring.configure_monitoring."""
 
 from __future__ import annotations
 
@@ -21,24 +21,35 @@ def _make_otel_mocks():
     }
 
 
-class TestConfigureTelemetry:
+class TestConfigureMonitoring:
     def test_noop_when_sdk_missing(self):
-        with patch.dict("sys.modules", {"opentelemetry": None, "opentelemetry.sdk": None, "opentelemetry.sdk.trace": None}):
+        with patch.dict(
+            "sys.modules",
+            {
+                "opentelemetry": None,
+                "opentelemetry.sdk": None,
+                "opentelemetry.sdk.trace": None,
+            },
+        ):
             from importlib import reload
-            import dbt_graphql.telemetry as tel
+            import dbt_graphql.monitoring as tel
+
             reload(tel)
-            tel.configure_telemetry()  # must not raise
+            tel.configure_monitoring()  # must not raise
 
     def test_console_exporter_used_when_specified(self):
         mocks = _make_otel_mocks()
         console_exporter_cls = MagicMock()
-        mocks["opentelemetry.sdk.trace.export"].ConsoleSpanExporter = console_exporter_cls
+        mocks[
+            "opentelemetry.sdk.trace.export"
+        ].ConsoleSpanExporter = console_exporter_cls
 
         with patch.dict("sys.modules", mocks):
             from importlib import reload
-            import dbt_graphql.telemetry as tel
+            import dbt_graphql.monitoring as tel
+
             reload(tel)
-            tel.configure_telemetry(exporter="console")
+            tel.configure_monitoring(exporter="console")
 
         console_exporter_cls.assert_called_once()
 
@@ -55,9 +66,10 @@ class TestConfigureTelemetry:
 
         with patch.dict("sys.modules", mocks):
             from importlib import reload
-            import dbt_graphql.telemetry as tel
+            import dbt_graphql.monitoring as tel
+
             reload(tel)
-            tel.configure_telemetry()
+            tel.configure_monitoring()
 
         otlp_exporter_cls.assert_called_once_with()
 
@@ -74,9 +86,10 @@ class TestConfigureTelemetry:
 
         with patch.dict("sys.modules", mocks):
             from importlib import reload
-            import dbt_graphql.telemetry as tel
+            import dbt_graphql.monitoring as tel
+
             reload(tel)
-            tel.configure_telemetry(endpoint="http://collector:4317")
+            tel.configure_monitoring(endpoint="http://collector:4317")
 
         otlp_exporter_cls.assert_called_once_with(endpoint="http://collector:4317")
 
@@ -93,8 +106,9 @@ class TestConfigureTelemetry:
 
         with patch.dict("sys.modules", mocks):
             from importlib import reload
-            import dbt_graphql.telemetry as tel
+            import dbt_graphql.monitoring as tel
+
             reload(tel)
-            tel.configure_telemetry(service_name="my-service")
+            tel.configure_monitoring(service_name="my-service")
 
         resource_cls.assert_called_once_with({"service.name": "my-service"})
