@@ -9,11 +9,14 @@ so resolvers don't need to close over mutable objects.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ariadne import QueryType
 
 from ..compiler.query import compile_query
+
+logger = logging.getLogger(__name__)
 
 
 def create_query_type(registry) -> QueryType:
@@ -51,6 +54,9 @@ def _make_resolver(table_name: str):
             offset=kwargs.get("offset"),
             where=kwargs.get("where"),
         )
-        return await ctx["db"].execute(stmt)
+        logger.debug("query %s: %s", table_name, stmt)
+        rows = await ctx["db"].execute(stmt)
+        logger.debug("query %s returned %d rows", table_name, len(rows))
+        return rows
 
     return resolve_table

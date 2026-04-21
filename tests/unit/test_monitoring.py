@@ -18,6 +18,10 @@ def _make_otel_mocks():
         "opentelemetry.sdk.resources": sdk_resources,
         "opentelemetry.sdk.trace": sdk_trace,
         "opentelemetry.sdk.trace.export": sdk_export,
+        # Disable log instrumentation so the real LoggingInstrumentor doesn't
+        # run against mock modules and pollute the global log-record factory.
+        "opentelemetry.instrumentation": MagicMock(),
+        "opentelemetry.instrumentation.logging": None,
     }
 
 

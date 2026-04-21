@@ -23,7 +23,6 @@ def configure_monitoring(
 
     level = getattr(logging, log_level.upper(), logging.INFO)
     logging.getLogger("dbt_graphql").setLevel(level)
-    logging.getLogger("opentelemetry").setLevel(logging.DEBUG)
 
     resource = Resource({SERVICE_NAME: service_name})
     provider = TracerProvider(resource=resource)

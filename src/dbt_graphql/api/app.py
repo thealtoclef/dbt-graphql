@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from .monitoring import (
     instrument_sqlalchemy,
     instrument_starlette,
 )
+
+logger = logging.getLogger(__name__)
 
 _STANDARD_GQL_SCALARS = {"String", "Int", "Float", "Boolean", "ID"}
 
@@ -92,10 +95,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
+        logger.info("connecting to database")
         await db.connect()
         instrument_sqlalchemy(db._engine)
+        logger.info("app ready — serving GraphQL at /graphql")
         yield
         await db.close()
+        logger.info("database connection closed")
 
     app = Starlette(lifespan=lifespan, routes=[Mount("/graphql", graphql_app)])
     instrument_starlette(app)
