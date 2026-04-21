@@ -29,7 +29,7 @@ public extractors.
 from __future__ import annotations
 
 import gc
-import logging
+from dbt_graphql.log import get_logger
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,7 +43,7 @@ from sqlglot.optimizer.scope import Scope, build_scope
 from ...ir.models import JoinType, ProcessorRelationship, RelationshipOrigin
 from ..artifacts import DbtCatalog, DbtManifest
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

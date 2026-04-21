@@ -198,11 +198,12 @@ def _run_serve(args) -> None:
             sys.exit(1)
 
     if config is not None:
-        tel = config.telemetry
+        mon = config.monitoring
         configure_telemetry(
-            service_name=tel.service_name,
-            exporter=tel.exporter,
-            endpoint=tel.endpoint,
+            service_name=mon.service_name,
+            exporter=mon.exporter,
+            endpoint=mon.endpoint,
+            log_level=mon.log_level,
         )
     else:
         configure_telemetry()

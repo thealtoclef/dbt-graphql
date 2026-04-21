@@ -5,8 +5,9 @@ def configure_telemetry(
     service_name: str = "dbt-graphql",
     exporter: str = "otlp",
     endpoint: str | None = None,
+    log_level: str = "INFO",
 ) -> None:
-    """Bootstrap the OTel SDK from config.yml values (telemetry section).
+    """Bootstrap the OTel SDK from config.yml values (monitoring section).
 
     No-op if opentelemetry-sdk is not installed or the [api] extra is absent.
     """
@@ -17,6 +18,12 @@ def configure_telemetry(
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except ImportError:
         return
+
+    import logging
+
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    logging.getLogger("dbt_graphql").setLevel(level)
+    logging.getLogger("opentelemetry").setLevel(logging.DEBUG)
 
     resource = Resource({SERVICE_NAME: service_name})
     provider = TracerProvider(resource=resource)
