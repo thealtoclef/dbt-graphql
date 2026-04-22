@@ -3,14 +3,14 @@ name = "dbt-graphql"
 version = "0.1.0"
 description = "Convert dbt artifacts to GraphQL schema and serve a SQL-backed GraphQL API"
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.11,<3.14"
 license = "MIT"
 dependencies = [
     "dbt-artifacts-parser>=0.13.0",
+    "dbt-colibri>=0.3.0,<0.4",
     "graphql-core>=3.2.8",
     "pyyaml>=6.0.2",
     "sqlalchemy[asyncio]>=2.0.49",
-    "sqlglot[c]>=30.4.3",
 ]
 
 [project.optional-dependencies]
