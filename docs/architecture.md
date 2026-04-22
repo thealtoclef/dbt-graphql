@@ -177,7 +177,6 @@ Where we differ: Wren's interface to agents is "write SQL against MDL" (text-to-
 
 #### Other influences
 
-- **[`dbterd`](https://github.com/datnguye/dbterd)** — the pattern of consuming `manifest.json` + `catalog.json` to reverse-engineer ERDs. Relationship test → FK inference comes from this tradition.
 - **[`dbt-colibri`](https://github.com/Datatonic/dbt-colibri)** — sqlglot-based column lineage over dbt artifacts. Its `lineage.py` is a modified fork of sqlglot's own lineage module (MIT). We absorbed the core traversal logic directly.
 - **[PostGraphile](https://postgraphile.org)** — the principle that a schema-driven GraphQL API is a *projection* of a richer upstream model, not a hand-authored artifact.
 
