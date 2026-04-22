@@ -7,8 +7,11 @@ inference from tests. They appear in manifest.json when models use
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+
+from sqlglot import exp
+from sqlglot import parse_one as _sqlglot_parse
+from sqlglot.errors import SqlglotError
 
 from ...ir.models import ProcessorRelationship, JoinType, RelationshipOrigin
 from ..artifacts import DbtManifest
@@ -52,20 +55,29 @@ def _resolve_to_model(to_str: str, manifest_nodes: dict) -> str | None:
 def _parse_fk_expression(expression: str) -> tuple[str, str] | None:
     """Parse a dbt foreign_key expression like 'other_table(column)' into (table, column).
 
-    Returns None if the expression cannot be parsed.
+    Formats: ``table(col)``, ``schema.table(col)``, ``catalog.schema.table(col)``.
+    Uses sqlglot to parse each identifier so quoted forms (``"tbl"``, backtick) are handled.
     """
-    # Common formats:
-    #   table_name(column_name)
-    #   schema.table_name(column_name)
-    #   catalog.schema.table_name(column_name)
-    match = re.match(r"^(.+?)\((.+?)\)$", expression.strip())
-    if not match:
+    stripped = expression.strip()
+    paren_start = stripped.find("(")
+    if paren_start <= 0 or not stripped.endswith(")"):
         return None
-    table_ref, col = match.group(1), match.group(2)
-    # Extract just the table name (last part before the paren)
-    parts = table_ref.strip().split(".")
-    table_name = parts[-1].strip().strip('"').strip("`")
-    return table_name, col.strip().strip('"').strip("`")
+    table_ref = stripped[:paren_start].strip()
+    col_raw = stripped[paren_start + 1 : -1].strip()
+    if not table_ref or not col_raw:
+        return None
+
+    try:
+        table_name = _sqlglot_parse(table_ref, into=exp.Table).name
+    except (SqlglotError, Exception):
+        table_name = table_ref.split(".")[-1].strip('"').strip("`")
+
+    try:
+        col = _sqlglot_parse(col_raw, into=exp.Column).name
+    except (SqlglotError, Exception):
+        col = col_raw.strip('"').strip("`")
+
+    return (table_name, col) if table_name and col else None
 
 
 def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
@@ -125,17 +137,16 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                 ) or []
 
                 to_table: str | None = None
-                to_col: str | None = None
-                from_col: str | None = None
+                to_col_list: list[str] = []
+                from_col_list: list[str] = []
 
                 if expression and fk_columns:
                     # Older format: expression="customers(customer_id)", columns=["customer_id"]
                     parsed = _parse_fk_expression(expression)
                     if parsed:
                         to_table, to_col = parsed
-                        from_col = fk_columns[0]
                         to_col_list = [to_col]
-                        from_col_list = [from_col]
+                        from_col_list = [fk_columns[0]]
                 elif to_str and fk_columns and to_columns:
                     # dbt v1.9+ format: to="db.schema.customers", to_columns=["id"], columns=["customer_id"]
                     to_table = _resolve_to_model(to_str, manifest.nodes)
@@ -206,8 +217,7 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                             # Older format: expression="customers(customer_id)"
                             parsed = _parse_fk_expression(expression)
                             if parsed:
-                                to_table, to_col = parsed
-                                to_col_list = [to_col]
+                                to_table, to_col_list = parsed[0], [parsed[1]]
                         elif to_str and to_columns:
                             # dbt v1.9+ format: to="db.schema.customers", to_columns=["id"]
                             to_table = _resolve_to_model(to_str, manifest.nodes)

@@ -123,10 +123,9 @@ def _parse_sql_type(raw: str) -> tuple[str, str, bool]:
 def _build_db_graphql(project: ProjectInfo) -> str:
     """Build a GraphQL SDL schema for all dbt models."""
     rel_map = _build_rel_map(project.relationships)
-    incoming_rels = _build_incoming_rels(project.relationships)
     blocks: list[str] = []
     for model in project.models:
-        blocks.append(_type_block(model, rel_map, incoming_rels))
+        blocks.append(_type_block(model, rel_map))
     return "\n".join(blocks).rstrip() + "\n"
 
 
@@ -142,22 +141,9 @@ def _build_rel_map(
     return rel_map
 
 
-def _build_incoming_rels(
-    relationships: list[RelationshipInfo],
-) -> dict[str, list[RelationshipInfo]]:
-    """Map target model name to list of relationships pointing into it."""
-    incoming: dict[str, list[RelationshipInfo]] = {}
-    for rel in relationships:
-        if not rel.from_columns or not rel.to_columns:
-            continue
-        incoming.setdefault(rel.to_model, []).append(rel)
-    return incoming
-
-
 def _type_block(
     model: ModelInfo,
     rel_map: dict[tuple[str, tuple[str, ...]], RelationshipInfo],
-    incoming_rels: dict[str, list[RelationshipInfo]],
 ) -> str:
     """Build a GraphQL SDL type block for a dbt model."""
     type_directives: list[str] = [
@@ -167,30 +153,10 @@ def _type_block(
     header = f"type {model.name} " + " ".join(type_directives) + " {"
 
     lines = [header]
-    existing_names: set[str] = set()
     for col in model.columns:
         lines.append("  " + _column_line(model, col, rel_map))
-        existing_names.add(col.name)
-
-    # Reverse-relation fields
-    for rel in incoming_rels.get(model.name, []):
-        rev_line = _reverse_relation_line(rel, existing_names)
-        if rev_line:
-            lines.append("  " + rev_line)
-
     lines.append("}")
     return "\n".join(lines)
-
-
-def _reverse_relation_line(
-    rel: RelationshipInfo, existing_names: set[str]
-) -> str | None:
-    """Emit a reverse-relation field on the target model."""
-    field_name = rel.from_model + "s"  # simple plural
-    if field_name in existing_names:
-        field_name += "_rev"
-    existing_names.add(field_name)
-    return f'{field_name}: [{rel.from_model}] @reverseRelation(from: {rel.from_model}, via: "{rel.from_columns[0]}")'
 
 
 def _column_line(
@@ -214,7 +180,6 @@ def _column_line(
     if col.unique and not is_sole_pk and not col.is_primary_key:
         directives.append("@unique")
 
-    # Look up by single-column key (most common path)
     rel = rel_map.get((model.name, (col.name,)))
     if rel:
         args = [f"type: {rel.to_model}"]

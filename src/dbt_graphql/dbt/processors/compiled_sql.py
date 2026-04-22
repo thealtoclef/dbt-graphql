@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import gc
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 from sqlglot import exp, parse_one
@@ -25,23 +24,18 @@ from dbt_colibri.utils.parsing_utils import (
     remove_upper,
 )
 
-from ...ir.models import JoinType, ProcessorRelationship, RelationshipOrigin
+from ...ir.models import (
+    Column,
+    ColumnLineageItem,
+    JoinType,
+    LineageType,
+    ProcessorRelationship,
+    RelationshipOrigin,
+    TableLineageItem,
+)
 from ..artifacts import DbtCatalog, DbtManifest
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Public data types
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ColumnLineageEdge:
-    source_model: str
-    source_column: str
-    target_column: str
-    lineage_type: str  # "pass_through" | "rename" | "transformation"
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +152,7 @@ def qualify_model_sql(sql: str, dialect: str, schema: dict) -> Scope | None:
         logger.debug("sqlglot processing failed (%s): %s", dialect, e)
         return None
     except Exception as e:  # Compiled user SQL can trigger unexpected internal errors
-        logger.debug("unexpected error processing SQL (%s): %s", dialect, e)
+        logger.warning("unexpected error processing SQL (%s): %s", dialect, e)
         return None
 
 
@@ -192,9 +186,9 @@ def resolve_table_to_model(
 # ---------------------------------------------------------------------------
 
 
-def extract_table_lineage(manifest: DbtManifest) -> dict[str, list[str]]:
-    """Build table-level lineage from manifest ``depends_on.nodes``."""
-    result: dict[str, list[str]] = {}
+def extract_table_lineage(manifest: DbtManifest) -> list[TableLineageItem]:
+    """Build table-level lineage edges from manifest ``depends_on.nodes``."""
+    result: list[TableLineageItem] = []
 
     for unique_id, node in manifest.nodes.items():
         if not unique_id.startswith("model."):
@@ -202,17 +196,16 @@ def extract_table_lineage(manifest: DbtManifest) -> dict[str, list[str]]:
 
         model_name = _model_name_from_unique_id(unique_id)
         deps = getattr(node, "depends_on", None)
-        if deps is None:
-            continue
+        dep_nodes = list(getattr(deps, "nodes", None) or []) if deps else []
 
-        dep_nodes = getattr(deps, "nodes", None) or []
-        upstream = [
-            _model_name_from_unique_id(d)
-            for d in dep_nodes
-            if d.startswith(("model.", "seed.", "source."))
-        ]
-        if upstream:
-            result[model_name] = upstream
+        for d in dep_nodes:
+            if d.startswith(("model.", "seed.", "source.")):
+                result.append(
+                    TableLineageItem(  # type:ignore[ty:unknown-argument]
+                        source=_model_name_from_unique_id(d),
+                        target=model_name,
+                    )
+                )
 
     return result
 
@@ -223,14 +216,18 @@ def extract_table_lineage(manifest: DbtManifest) -> dict[str, list[str]]:
 
 
 def _edges_for_model(
-    scope: Scope, table_lookup: dict[str, str], dialect: str
-) -> dict[str, list[ColumnLineageEdge]]:
+    model_name: str,
+    scope: Scope,
+    table_lookup: dict[str, str],
+    dialect: str,
+) -> list[ColumnLineageItem]:
     """Walk all SELECT columns in ``scope`` via colibri's ``to_node`` and
-    collect leaf-table edges for each output column.
+    emit typed column lineage edges grouped by source model.
     """
-    result: dict[str, list[ColumnLineageEdge]] = {}
     if not hasattr(scope.expression, "selects"):
-        return result
+        return []
+
+    by_source: dict[str, list[Column]] = {}
 
     for select in scope.expression.selects:
         if isinstance(select, exp.Star):
@@ -243,48 +240,49 @@ def _edges_for_model(
         if root is None:
             continue
 
-        edges: list[ColumnLineageEdge] = []
+        # colibri uses hyphens ("pass-through"); LineageType uses underscores.
+        lineage_type = LineageType(root.lineage_type.replace("-", "_"))
         seen: set[tuple[str, str]] = set()
+
         for n in root.walk():
-            if n is None or n.downstream:
+            if n.downstream:
                 continue
             if not isinstance(n.source, exp.Table):
                 continue
             source_model = resolve_table_to_model(n.source, table_lookup)
             if source_model is None:
                 continue
-            # colibri leaf names are "table_alias.column" (e.g. "t.a");
-            # strip the table prefix to get the raw column name.
+            # colibri leaf names are "table_alias.column" — strip table prefix.
             col_name = n.name.rsplit(".", 1)[-1].strip('"').strip("`")
             key = (source_model, col_name)
             if key in seen:
                 continue
             seen.add(key)
-            # colibri uses "pass-through" (hyphen); normalise to our underscore convention
-            lineage_type = root.lineage_type.replace("-", "_")
-            edges.append(
-                ColumnLineageEdge(
-                    source_model=source_model,
+            by_source.setdefault(source_model, []).append(
+                Column(  # type:ignore[ty:unknown-argument]
                     source_column=col_name,
                     target_column=target_col,
                     lineage_type=lineage_type,
                 )
             )
 
-        if edges:
-            result[target_col] = edges
-
-    return result
+    return [
+        ColumnLineageItem(  # type:ignore[ty:unknown-argument]
+            source=src,
+            target=model_name,
+            columns=cols,
+        )
+        for src, cols in by_source.items()
+    ]
 
 
 def extract_column_lineage(
     manifest: DbtManifest,
     catalog: DbtCatalog,
-) -> dict[str, dict[str, list[ColumnLineageEdge]]]:
+) -> list[ColumnLineageItem]:
     """Extract column-level lineage for every materialized model in the project.
 
-    Returns a dict keyed by model name, then by target column name, with a list
-    of :class:`ColumnLineageEdge` values.
+    Returns a list of :class:`ColumnLineageItem` directed edges (source → target model).
     """
     result, _ = _extract_both(manifest, catalog)
     return result
@@ -432,15 +430,12 @@ def extract_join_relationships(
 def _extract_both(
     manifest: DbtManifest,
     catalog: DbtCatalog,
-) -> tuple[
-    dict[str, dict[str, list[ColumnLineageEdge]]],
-    list[ProcessorRelationship],
-]:
+) -> tuple[list[ColumnLineageItem], list[ProcessorRelationship]]:
     """Single pass over compiled SQL producing both column lineage and join relationships."""
     table_lookup = build_table_lookup(manifest)
     dialect = detect_dialect(manifest)
 
-    col_result: dict[str, dict[str, list[ColumnLineageEdge]]] = {}
+    col_result: list[ColumnLineageItem] = []
     join_seen_names: set[str] = set()
     join_result: list[ProcessorRelationship] = []
     processed = 0
@@ -461,9 +456,7 @@ def _extract_both(
         model_name = _model_name_from_unique_id(unique_id)
 
         # Column lineage
-        edges = _edges_for_model(scope, table_lookup, dialect)
-        if edges:
-            col_result[model_name] = edges
+        col_result.extend(_edges_for_model(model_name, scope, table_lookup, dialect))
 
         # JOIN relationships
         for rel in _relationships_for_model(model_name, scope, table_lookup):

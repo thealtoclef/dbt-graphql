@@ -1,11 +1,8 @@
 from pathlib import Path
 
 from dbt_graphql.dbt.artifacts import load_catalog, load_manifest
-from dbt_graphql.dbt.processors.compiled_sql import (
-    ColumnLineageEdge,
-    extract_table_lineage,
-    extract_column_lineage,
-)
+from dbt_graphql.dbt.processors.compiled_sql import extract_table_lineage
+from dbt_graphql.ir.models import TableLineageItem
 
 
 FIXTURES_DIR = (
@@ -21,76 +18,33 @@ class TestTableLineage:
     def test_customers_depends_on_three_stg_models(self):
         manifest = load_manifest(MANIFEST)
         result = extract_table_lineage(manifest)
-        assert set(result["customers"]) == {
-            "stg_customers",
-            "stg_orders",
-            "stg_payments",
-        }
+        customers_sources = {e.source for e in result if e.target == "customers"}
+        assert customers_sources == {"stg_customers", "stg_orders", "stg_payments"}
 
     def test_orders_depends_on_two_stg_models(self):
         manifest = load_manifest(MANIFEST)
         result = extract_table_lineage(manifest)
-        assert set(result["orders"]) == {"stg_orders", "stg_payments"}
+        orders_sources = {e.source for e in result if e.target == "orders"}
+        assert orders_sources == {"stg_orders", "stg_payments"}
 
     def test_stg_models_depend_on_seeds(self):
         manifest = load_manifest(MANIFEST)
         result = extract_table_lineage(manifest)
-        assert result["stg_customers"] == ["raw_customers"]
-        assert result["stg_orders"] == ["raw_orders"]
-        assert result["stg_payments"] == ["raw_payments"]
+        assert {e.source for e in result if e.target == "stg_customers"} == {"raw_customers"}
+        assert {e.source for e in result if e.target == "stg_orders"} == {"raw_orders"}
+        assert {e.source for e in result if e.target == "stg_payments"} == {"raw_payments"}
 
-    def test_only_model_nodes_in_keys(self):
+    def test_only_model_nodes_as_targets(self):
         manifest = load_manifest(MANIFEST)
         result = extract_table_lineage(manifest)
-        for key in result:
-            assert key in {
-                "customers",
-                "orders",
-                "stg_customers",
-                "stg_orders",
-                "stg_payments",
-            }
+        known_models = {"customers", "orders", "stg_customers", "stg_orders", "stg_payments"}
+        assert {e.target for e in result} <= known_models
 
-    def test_returns_dict(self):
+    def test_returns_list_of_table_lineage_items(self):
         manifest = load_manifest(MANIFEST)
         result = extract_table_lineage(manifest)
-        assert isinstance(result, dict)
-
-
-class TestColumnLineage:
-    def test_returns_dict_of_dicts(self):
-        result = extract_column_lineage(load_manifest(MANIFEST), load_catalog(CATALOG))
-        assert isinstance(result, dict)
-        for model_name, col_map in result.items():
-            assert isinstance(model_name, str)
-            assert isinstance(col_map, dict)
-
-    def test_edges_have_required_fields(self):
-        result = extract_column_lineage(load_manifest(MANIFEST), load_catalog(CATALOG))
-        for model_name, col_map in result.items():
-            for col_name, edges in col_map.items():
-                for edge in edges:
-                    assert isinstance(edge, ColumnLineageEdge)
-                    assert edge.source_model
-                    assert edge.source_column
-                    assert edge.target_column == col_name
-                    assert edge.lineage_type in (
-                        "pass_through",
-                        "rename",
-                        "transformation",
-                    )
-
-    def test_customers_has_column_lineage(self):
-        result = extract_column_lineage(load_manifest(MANIFEST), load_catalog(CATALOG))
-        assert "customers" in result
-        assert isinstance(result["customers"], dict)
-        assert len(result["customers"]) > 0
-
-    def test_stg_models_have_column_lineage(self):
-        result = extract_column_lineage(load_manifest(MANIFEST), load_catalog(CATALOG))
-        assert "stg_customers" in result
-        assert "stg_orders" in result
-        assert "stg_payments" in result
+        assert isinstance(result, list)
+        assert all(isinstance(e, TableLineageItem) for e in result)
 
 
 class TestConvertResultLineage:

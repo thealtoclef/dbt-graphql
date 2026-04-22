@@ -118,50 +118,17 @@ class ProjectInfo(BaseModel):
     models: list[ModelInfo] = Field(default_factory=list)
     relationships: list[RelationshipInfo] = Field(default_factory=list)
     enums: dict[str, list[str]] = Field(default_factory=dict)
-    table_lineage: dict[str, list[str]] = Field(default_factory=dict)
-    column_lineage: dict[str, dict[str, list[dict[str, str]]]] = Field(
-        default_factory=dict
-    )
+    table_lineage: list[TableLineageItem] = Field(default_factory=list)
+    column_lineage: list[ColumnLineageItem] = Field(default_factory=list)
 
     def build_lineage_schema(self) -> LineageSchema:
-        """Build a LineageSchema from the raw lineage data in this project."""
-        table_lineage_items = [
-            TableLineageItem(source=source, target=target)
-            for target, sources in self.table_lineage.items()
-            for source in sources
-        ]
-
-        # Group column lineage by (source, target)
-        grouped: dict[tuple[str, str], list[Column]] = {}
-        for target, col_map in self.column_lineage.items():
-            for _col_name, edges in col_map.items():
-                for edge in edges:
-                    key = (edge["source_model"], target)
-                    try:
-                        lt = LineageType(edge["lineage_type"])
-                    except ValueError:
-                        lt = LineageType.unknown
-                    grouped.setdefault(key, []).append(
-                        Column(
-                            source_column=edge["source_column"],  # type:ignore[ty:unknown-argument]
-                            target_column=edge["target_column"],  # type:ignore[ty:unknown-argument]
-                            lineage_type=lt,  # type:ignore[ty:unknown-argument]
-                        )
-                    )
-
-        column_lineage_items = [
-            ColumnLineageItem(source=s, target=t, columns=c)
-            for (s, t), c in grouped.items()
-        ]
-
         if not self.models:
             raise ValueError("Cannot build lineage schema: no models in project")
-
         return LineageSchema(
             project_name=self.project_name,  # type:ignore[ty:unknown-argument]
             adapter_type=self.adapter_type,  # type:ignore[ty:unknown-argument]
-            table_lineage=table_lineage_items,  # type:ignore[ty:unknown-argument]
-            column_lineage=column_lineage_items,  # type:ignore[ty:unknown-argument]
+            table_lineage=self.table_lineage,  # type:ignore[ty:unknown-argument]
+            column_lineage=self.column_lineage,  # type:ignore[ty:unknown-argument]
         )
 
 
@@ -184,14 +151,11 @@ class TableLineageItem(BaseModel):
 
 
 class LineageType(StrEnum):
-    """Classification of how a column value is propagated."""
+    """Classification of how a column value is propagated (mirrors dbt-colibri)."""
 
     pass_through = auto()
     rename = auto()
     transformation = auto()
-    filter = auto()
-    join = auto()
-    unknown = auto()
 
 
 class Column(BaseModel):

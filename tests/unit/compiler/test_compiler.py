@@ -462,3 +462,93 @@ class TestDialectCompilation:
         for mod in [mysql, sqlite, postgresql]:
             sql = _relation_sql(mod)
             assert "LATERAL" not in sql, f"LATERAL found in {mod.__name__}: {sql}"
+
+
+class TestCompositeFKCorrelation:
+    """Composite FK join predicate uses AND of all column pairs."""
+
+    def _make_composite_registry(self) -> tuple[TableDef, TableRegistry]:
+        # order_items(tenant_id, order_id) → orders(tenant_id, id)
+        orders = TableDef(
+            name="orders",
+            database="db",
+            schema="main",
+            table="orders",
+            columns=[
+                ColumnDef(name="tenant_id", gql_type="Int", not_null=True),
+                ColumnDef(name="id", gql_type="Int", not_null=True, is_pk=True),
+            ],
+        )
+        order_items = TableDef(
+            name="order_items",
+            database="db",
+            schema="main",
+            table="order_items",
+            columns=[
+                ColumnDef(name="item_id", gql_type="Int", not_null=True, is_pk=True),
+                ColumnDef(name="tenant_id", gql_type="Int", not_null=True),
+                ColumnDef(
+                    name="order_id",
+                    gql_type="Int",
+                    not_null=True,
+                    relation=RelationDef(
+                        target_model="orders",
+                        target_column="id",
+                        from_columns=["tenant_id", "order_id"],
+                        to_columns=["tenant_id", "id"],
+                    ),
+                ),
+            ],
+        )
+        return order_items, TableRegistry([orders, order_items])
+
+    def _composite_sql(self) -> str:
+        order_items, registry = self._make_composite_registry()
+        fn = _field_node(
+            "order_items",
+            [
+                _field_node("item_id"),
+                _relation_field_node("order_id", ["tenant_id", "id"]),
+            ],
+        )
+        return _sql(compile_query(order_items, [fn], registry), sqlite)
+
+    def test_composite_predicate_contains_both_column_pairs(self):
+        sql = self._composite_sql()
+        assert "tenant_id" in sql
+        assert "order_id" in sql
+
+    def test_composite_predicate_uses_and(self):
+        sql = self._composite_sql()
+        assert " AND " in sql.upper()
+
+    def test_composite_fk_executes_against_sqlite(self):
+        from sqlalchemy import create_engine, text
+        import json
+
+        def _load(val):
+            return json.loads(val) if isinstance(val, str) else val
+
+        order_items, registry = self._make_composite_registry()
+        engine = create_engine("sqlite:///:memory:")
+        with engine.connect() as conn:
+            conn.execute(text("CREATE TABLE orders (tenant_id INTEGER, id INTEGER)"))
+            conn.execute(
+                text(
+                    "CREATE TABLE order_items (item_id INTEGER, tenant_id INTEGER, order_id INTEGER)"
+                )
+            )
+            conn.execute(text("INSERT INTO orders VALUES (1, 10), (1, 20)"))
+            conn.execute(text("INSERT INTO order_items VALUES (1, 1, 10), (2, 1, 20)"))
+            conn.commit()
+
+            fn = _field_node(
+                "order_items",
+                [
+                    _field_node("item_id"),
+                    _relation_field_node("order_id", ["tenant_id", "id"]),
+                ],
+            )
+            stmt = compile_query(order_items, [fn], registry)
+            rows = conn.execute(stmt).fetchall()
+            assert len(rows) == 2

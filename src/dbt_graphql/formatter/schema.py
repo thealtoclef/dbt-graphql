@@ -42,12 +42,6 @@ class RelationDef:
 
 
 @dataclass
-class ReverseRelationDef:
-    from_model: str
-    via_column: str
-
-
-@dataclass
 class ColumnDef:
     name: str
     gql_type: str  # Standard GraphQL scalar (Int, Float, Boolean, String)
@@ -67,7 +61,6 @@ class TableDef:
     schema: str = ""
     table: str = ""  # physical table name (may differ from GraphQL type name)
     columns: list[ColumnDef] = field(default_factory=list)
-    reverse_relations: list[ReverseRelationDef] = field(default_factory=list)
 
 
 @dataclass
@@ -159,8 +152,8 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
             col.is_unique = True
         elif dname == "column":
             args = _directive_args(directive)
-            col.sql_type = args.get("type", "")
-            col.sql_size = args.get("size", "")
+            col.sql_type = str(args.get("type", ""))
+            col.sql_size = str(args.get("size", ""))
         elif dname == "relation":
             args = _directive_args(directive)
             target_col = args.get("field", "")
@@ -215,26 +208,15 @@ def parse_db_graphql(sdl: str) -> tuple[SchemaInfo, TableRegistry]:
         for directive in defn.directives or []:
             args = _directive_args(directive)
             if directive.name.value == "table":
-                table.database = args.get("database", "")
-                table.schema = args.get("schema", "")
-                table.table = args.get("name", "")
+                table.database = str(args.get("database", ""))
+                table.schema = str(args.get("schema", ""))
+                table.table = str(args.get("name", ""))
 
         if not table.table:
             table.table = table.name
 
         for field_node in defn.fields or []:
-            col = _parse_column(field_node)
-            table.columns.append(col)
-            # Check for @reverseRelation on fields that are reverse relations
-            for directive in field_node.directives or []:
-                if directive.name.value == "reverseRelation":
-                    args = _directive_args(directive)
-                    table.reverse_relations.append(
-                        ReverseRelationDef(
-                            from_model=str(args.get("from", "")),
-                            via_column=str(args.get("via", "")),
-                        )
-                    )
+            table.columns.append(_parse_column(field_node))
 
         tables.append(table)
 

@@ -153,24 +153,6 @@ class TestCompositeRelationDirective:
         assert col.relation.to_columns == ["tenant_id", "id"]
 
 
-class TestReverseRelationDirective:
-    """Parse @reverseRelation fields into TableDef.reverse_relations."""
-
-    SDL_REVERSE = """\
-    type customers @table(database: db, schema: main, name: customers) {
-      customer_id: Integer! @column(type: "INTEGER") @id
-      orders: [orders] @reverseRelation(from: orders, via: "customer_id")
-    }
-    """
-
-    def test_reverse_relation_parsed(self):
-        info, _ = parse_db_graphql(self.SDL_REVERSE)
-        assert len(info.tables[0].reverse_relations) == 1
-        rev = info.tables[0].reverse_relations[0]
-        assert rev.from_model == "orders"
-        assert rev.via_column == "customer_id"
-
-
 class TestRegistry:
     def test_get_existing(self):
         _, reg = _parse()

@@ -287,19 +287,7 @@ class TestNoRelationships:
         assert "@relation" not in gj.db_graphql
 
 
-class TestReverseRelationEmission:
-    def test_reverse_relation_appears_on_target(self):
-        project = _make_project()
-        gj = format_graphql(project)
-        # orders → customers means customers type gets an orders reverse field
-        assert "@reverseRelation(from: orders" in gj.db_graphql
-
-    def test_reverse_relation_is_list_type(self):
-        project = _make_project()
-        gj = format_graphql(project)
-        # The reverse field should be [orders] (list type)
-        assert "[orders]" in gj.db_graphql
-
+class TestRelationDirectiveMetadata:
     def test_relation_directive_has_origin_and_confidence(self):
         project = _make_project()
         gj = format_graphql(project)

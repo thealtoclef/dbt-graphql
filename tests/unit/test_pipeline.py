@@ -79,13 +79,9 @@ class TestRelToDomain:
         assert result.from_columns == []
         assert result.to_columns == []
 
-    def test_no_from_to_columns_attribute(self):
-        rel = SimpleNamespace(
-            name="a_b",
-            models=["a", "b"],
-            join_type=JoinType.many_to_one,
-            origin=RelationshipOrigin.data_test,
-        )
+    def test_empty_from_to_columns(self):
+        rel = _rel("a_b", ["a", "b"], JoinType.many_to_one)
+        # from_columns/to_columns default to [] via _rel helper
         result = _rel_to_domain(rel)
         assert result.from_columns == []
         assert result.to_columns == []
@@ -133,6 +129,33 @@ class TestRelToDomain:
         )
         result = _rel_to_domain(rel, unique_cols=set())
         assert result.cardinality_confidence == "assumed"
+
+    def test_lineage_edge_no_unique_becomes_join_hint(self):
+        rel = _rel(
+            name="x_y",
+            models=["x", "y"],
+            join_type=JoinType.many_to_one,
+            origin=RelationshipOrigin.lineage,
+            from_columns=["x_id"],
+            to_columns=["id"],
+        )
+        result = _rel_to_domain(rel, unique_cols=set())
+        assert result.origin == RelationshipOrigin.join_hint
+        assert result.cardinality_confidence == "assumed"
+
+    def test_lineage_edge_with_unique_stays_lineage(self):
+        rel = _rel(
+            name="x_y",
+            models=["x", "y"],
+            join_type=JoinType.many_to_one,
+            origin=RelationshipOrigin.lineage,
+            from_columns=["x_id"],
+            to_columns=["id"],
+        )
+        # "y".id is unique → inferred, stays lineage
+        result = _rel_to_domain(rel, unique_cols={("y", "id")})
+        assert result.origin == RelationshipOrigin.lineage
+        assert result.cardinality_confidence == "inferred"
 
 
 class TestExtractProjectErrors:

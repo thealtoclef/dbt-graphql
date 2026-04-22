@@ -197,21 +197,7 @@ def extract_project(
 
     # 9. Extract lineage
     table_lineage = extract_table_lineage(manifest)
-
-    column_lineage: dict[str, dict[str, list[dict[str, str]]]] = {}
-    col_result = extract_column_lineage(manifest, catalog)
-    for model_name, col_map in col_result.items():
-        column_lineage[model_name] = {}
-        for col_name, edges in col_map.items():
-            column_lineage[model_name][col_name] = [
-                {
-                    "source_model": e.source_model,
-                    "source_column": e.source_column,
-                    "target_column": e.target_column,
-                    "lineage_type": e.lineage_type,
-                }
-                for e in edges
-            ]
+    column_lineage = extract_column_lineage(manifest, catalog)
 
     # 10. Build enums dict
     enums: dict[str, list[str]] = {}
@@ -235,12 +221,8 @@ def _infer_join_type(
     to_model: str,
     to_cols: list[str],
     unique_cols: set[tuple[str, str]],
-) -> tuple[JoinType, str]:
-    """Infer cardinality from known-unique columns on each side.
-
-    Returns (join_type, confidence) where confidence is one of
-    "declared", "inferred", "assumed".
-    """
+) -> tuple[JoinType, Literal["inferred", "assumed"]]:
+    """Infer cardinality from known-unique columns on each side."""
     from_unique = any((from_model, c) in unique_cols for c in from_cols)
     to_unique = any((to_model, c) in unique_cols for c in to_cols)
     if from_unique and to_unique:
@@ -256,21 +238,23 @@ def _rel_to_domain(
     rel: Any, unique_cols: set[tuple[str, str]] | None = None
 ) -> RelationshipInfo:
     """Convert a ProcessorRelationship to domain RelationshipInfo."""
-    from_cols = list(getattr(rel, "from_columns", None) or [])
-    to_cols = list(getattr(rel, "to_columns", None) or [])
+    from_cols = list(rel.from_columns)
+    to_cols = list(rel.to_columns)
 
     from_model = rel.models[0]
     to_model = rel.models[1]
 
-    # Determine cardinality confidence and join type
-    confidence: Literal["declared", "inferred", "assumed"]
-    if rel.origin in (RelationshipOrigin.constraint,):
-        confidence = "declared"
+    origin = rel.origin
+    if rel.origin == RelationshipOrigin.constraint:
+        confidence: Literal["declared", "inferred", "assumed"] = "declared"
         join_type = rel.join_type
-    elif from_cols and to_cols and unique_cols:
+    elif from_cols and to_cols and unique_cols is not None:
         join_type, confidence = _infer_join_type(
             from_model, from_cols, to_model, to_cols, unique_cols
         )
+        # JOIN-mined edges with no uniqueness evidence on either side are hints only.
+        if rel.origin == RelationshipOrigin.lineage and confidence == "assumed":
+            origin = RelationshipOrigin.join_hint
     else:
         confidence = "assumed"
         join_type = rel.join_type
@@ -282,8 +266,8 @@ def _rel_to_domain(
         from_columns=from_cols,
         to_columns=to_cols,
         join_type=join_type,
-        origin=rel.origin,
+        origin=origin,
         cardinality_confidence=confidence,
-        business_name=getattr(rel, "business_name", "") or "",
-        description=getattr(rel, "description", "") or "",
+        business_name=rel.business_name,
+        description=rel.description,
     )
