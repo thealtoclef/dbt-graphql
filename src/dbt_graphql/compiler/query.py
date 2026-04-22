@@ -10,7 +10,7 @@ extension so the query builder stays database-agnostic.
 
 from __future__ import annotations
 
-from sqlalchemy import Column, Select, literal, select, table
+from sqlalchemy import Column, Select, and_, literal, select, table
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.expression import FunctionElement
 
@@ -182,11 +182,19 @@ def _build_correlated_subquery(
     inner = json_build_obj(*json_args)
     agg = json_agg(inner)
 
-    return (
-        select(agg)
-        .where(child_table.c[rel.target_column] == parent_aliased.c[parent_fk])
-        .correlate(parent_aliased)
-    )
+    # Build join predicate — composite FK if to_columns has multiple entries
+    if rel.to_columns and len(rel.to_columns) > 1:
+        parent_cols = rel.from_columns if rel.from_columns else [parent_fk]
+        predicate = and_(
+            *(
+                child_table.c[tc] == parent_aliased.c[fc]
+                for fc, tc in zip(parent_cols, rel.to_columns)
+            )
+        )
+    else:
+        predicate = child_table.c[rel.target_column] == parent_aliased.c[parent_fk]
+
+    return select(agg).where(predicate).correlate(parent_aliased)
 
 
 # ---------------------------------------------------------------------------

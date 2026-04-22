@@ -204,6 +204,7 @@ def _run_serve(args) -> None:
             exporter=mon.exporter,
             endpoint=mon.endpoint,
             log_level=mon.log_level,
+            protocol=mon.protocol,
         )
     else:
         configure_monitoring()

@@ -70,11 +70,13 @@ class SchemaDiscovery:
             str, list[tuple[str, str, str]]
         ] = {}  # table → [(via_col, to_table, to_col)]
         for rel in project.relationships:
+            from_col = rel.from_columns[0] if rel.from_columns else ""
+            to_col = rel.to_columns[0] if rel.to_columns else ""
             self._adj.setdefault(rel.from_model, []).append(
-                (rel.from_column, rel.to_model, rel.to_column)
+                (from_col, rel.to_model, to_col)
             )
             self._adj.setdefault(rel.to_model, []).append(
-                (rel.to_column, rel.from_model, rel.from_column)
+                (to_col, rel.from_model, from_col)
             )
 
     def list_tables(self) -> list[TableSummary]:
@@ -104,7 +106,8 @@ class SchemaDiscovery:
             for c in model.columns
         ]
         relationships = [
-            f"{rel.from_model}.{rel.from_column} → {rel.to_model}.{rel.to_column}"
+            f"{rel.from_model}.{rel.from_columns[0] if rel.from_columns else ''} → "
+            f"{rel.to_model}.{rel.to_columns[0] if rel.to_columns else ''}"
             for rel in model.relationships
         ]
         return TableDetail(
@@ -158,7 +161,7 @@ class SchemaDiscovery:
                 result.append(
                     RelatedTable(
                         name=rel.to_model,
-                        via_column=rel.from_column,
+                        via_column=rel.from_columns[0] if rel.from_columns else "",
                         direction="outgoing",
                     )
                 )
@@ -166,7 +169,7 @@ class SchemaDiscovery:
                 result.append(
                     RelatedTable(
                         name=rel.from_model,
-                        via_column=rel.to_column,
+                        via_column=rel.to_columns[0] if rel.to_columns else "",
                         direction="incoming",
                     )
                 )

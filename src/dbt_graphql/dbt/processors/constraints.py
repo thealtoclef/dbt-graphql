@@ -76,7 +76,7 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
     - foreign_key constraints → relationship candidates
     """
     result = ConstraintsResult()
-    seen_fk: set[tuple] = set()
+    seen_fk: set[str] = set()
 
     for unique_id, node in manifest.nodes.items():
         if not unique_id.startswith("model."):
@@ -134,17 +134,20 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                     if parsed:
                         to_table, to_col = parsed
                         from_col = fk_columns[0]
+                        to_col_list = [to_col]
+                        from_col_list = [from_col]
                 elif to_str and fk_columns and to_columns:
                     # dbt v1.9+ format: to="db.schema.customers", to_columns=["id"], columns=["customer_id"]
                     to_table = _resolve_to_model(to_str, manifest.nodes)
-                    to_col = to_columns[0]
-                    from_col = fk_columns[0]
+                    to_col_list = list(to_columns)
+                    from_col_list = list(fk_columns)
 
-                if to_table and to_col and from_col:
-                    rel_name = f"{from_model}_{from_col}_{to_table}_{to_col}"
-                    condition = f'"{from_model}"."{from_col}" = "{to_table}"."{to_col}"'
+                if to_table and to_col_list and from_col_list:
+                    first_from = from_col_list[0]
+                    first_to = to_col_list[0]
+                    rel_name = f"{from_model}_{first_from}_{to_table}_{first_to}"
 
-                    dedup_key = (rel_name, condition)
+                    dedup_key = rel_name
                     if dedup_key not in seen_fk:
                         seen_fk.add(dedup_key)
                         result.foreign_key_relationships.append(
@@ -153,7 +156,8 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                                 models=[from_model, to_table],
                                 join_type=JoinType.many_to_one,
                                 origin=RelationshipOrigin.constraint,
-                                condition=condition,
+                                from_columns=from_col_list,
+                                to_columns=to_col_list,
                             )
                         )
 
@@ -196,25 +200,24 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                         ) or []
 
                         to_table = None
-                        to_col = None
+                        to_col_list: list[str] = []
 
                         if expression:
                             # Older format: expression="customers(customer_id)"
                             parsed = _parse_fk_expression(expression)
                             if parsed:
                                 to_table, to_col = parsed
+                                to_col_list = [to_col]
                         elif to_str and to_columns:
                             # dbt v1.9+ format: to="db.schema.customers", to_columns=["id"]
                             to_table = _resolve_to_model(to_str, manifest.nodes)
-                            to_col = to_columns[0]
+                            to_col_list = list(to_columns)
 
-                        if to_table and to_col:
-                            rel_name = f"{from_model}_{col_name}_{to_table}_{to_col}"
-                            condition = (
-                                f'"{from_model}"."{col_name}" = "{to_table}"."{to_col}"'
-                            )
+                        if to_table and to_col_list:
+                            first_to = to_col_list[0]
+                            rel_name = f"{from_model}_{col_name}_{to_table}_{first_to}"
 
-                            dedup_key = (rel_name, condition)
+                            dedup_key = rel_name
                             if dedup_key not in seen_fk:
                                 seen_fk.add(dedup_key)
                                 result.foreign_key_relationships.append(
@@ -223,7 +226,8 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                                         models=[from_model, to_table],
                                         join_type=JoinType.many_to_one,
                                         origin=RelationshipOrigin.constraint,
-                                        condition=condition,
+                                        from_columns=[col_name],
+                                        to_columns=to_col_list,
                                     )
                                 )
 

@@ -23,7 +23,8 @@ def test_builds_relationship_from_test():
     assert "orders" in rel.name
     assert "customers" in rel.name
     assert rel.join_type == JoinType.many_to_one
-    assert '"orders"."customer_id" = "customers"."customer_id"' == rel.condition
+    assert rel.from_columns == ["customer_id"]
+    assert rel.to_columns == ["customer_id"]
     assert set(rel.models) == {"orders", "customers"}
 
 
@@ -101,4 +102,5 @@ def test_quoted_column_names_stripped(tmp_path):
     m = parse_manifest(data)
     rels = build_relationships(m)
     assert len(rels) == 1
-    assert rels[0].condition == '"orders"."customer_id" = "customers"."customer_id"'
+    assert rels[0].from_columns == ["customer_id"]
+    assert rels[0].to_columns == ["customer_id"]

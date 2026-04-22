@@ -13,11 +13,14 @@ from pathlib import Path
 from graphql import (
     DirectiveNode,
     DocumentNode,
+    EnumValueNode,
     FieldDefinitionNode,
     ListTypeNode,
+    ListValueNode,
     NamedTypeNode,
     NonNullTypeNode,
     ObjectTypeDefinitionNode,
+    StringValueNode,
     parse,
 )
 
@@ -29,7 +32,19 @@ from graphql import (
 @dataclass
 class RelationDef:
     target_model: str
-    target_column: str
+    target_column: str  # single-column alias (first of to_columns)
+    from_columns: list[str] = field(default_factory=list)
+    to_columns: list[str] = field(default_factory=list)
+    origin: str = ""
+    confidence: str = ""
+    business_name: str = ""
+    description: str = ""
+
+
+@dataclass
+class ReverseRelationDef:
+    from_model: str
+    via_column: str
 
 
 @dataclass
@@ -52,6 +67,7 @@ class TableDef:
     schema: str = ""
     table: str = ""  # physical table name (may differ from GraphQL type name)
     columns: list[ColumnDef] = field(default_factory=list)
+    reverse_relations: list[ReverseRelationDef] = field(default_factory=list)
 
 
 @dataclass
@@ -86,11 +102,21 @@ class TableRegistry:
 # ---------------------------------------------------------------------------
 
 
-def _directive_args(directive: DirectiveNode) -> dict[str, str]:
+def _directive_args(directive: DirectiveNode) -> dict[str, str | list[str]]:
     """Flatten a directive's keyword arguments into a plain dict."""
-    out: dict[str, str] = {}
+    out: dict[str, str | list[str]] = {}
     for arg in directive.arguments or []:
-        out[arg.name.value] = arg.value.value  # type: ignore[ty:unresolved-attribute]
+        val = arg.value
+        if isinstance(val, ListValueNode):
+            items: list[str] = []
+            for v in val.values:
+                if isinstance(v, StringValueNode):
+                    items.append(v.value)
+                elif isinstance(v, EnumValueNode):
+                    items.append(v.value)
+            out[arg.name.value] = items
+        else:
+            out[arg.name.value] = val.value  # type: ignore[ty:unresolved-attribute]
     return out
 
 
@@ -137,9 +163,34 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
             col.sql_size = args.get("size", "")
         elif dname == "relation":
             args = _directive_args(directive)
+            target_col = args.get("field", "")
+            to_fields = args.get("toFields", [])
+            from_fields = args.get("fields", [])
+            # Normalize to list form
+            if isinstance(from_fields, list):
+                fc = from_fields
+            elif from_fields:
+                fc = [str(from_fields)]
+            else:
+                fc = []
+            if isinstance(to_fields, list):
+                tc = to_fields
+            elif to_fields:
+                tc = [str(to_fields)]
+            elif target_col:
+                tc = [str(target_col)]
+            else:
+                tc = []
+
             col.relation = RelationDef(
-                target_model=args.get("type", ""),
-                target_column=args.get("field", ""),
+                target_model=str(args.get("type", "")),
+                target_column=str(target_col),
+                from_columns=fc,
+                to_columns=tc,
+                origin=str(args.get("origin", "")),
+                confidence=str(args.get("confidence", "")),
+                business_name=str(args.get("name", "")),
+                description=str(args.get("description", "")),
             )
 
     return col
@@ -172,7 +223,18 @@ def parse_db_graphql(sdl: str) -> tuple[SchemaInfo, TableRegistry]:
             table.table = table.name
 
         for field_node in defn.fields or []:
-            table.columns.append(_parse_column(field_node))
+            col = _parse_column(field_node)
+            table.columns.append(col)
+            # Check for @reverseRelation on fields that are reverse relations
+            for directive in field_node.directives or []:
+                if directive.name.value == "reverseRelation":
+                    args = _directive_args(directive)
+                    table.reverse_relations.append(
+                        ReverseRelationDef(
+                            from_model=str(args.get("from", "")),
+                            via_column=str(args.get("via", "")),
+                        )
+                    )
 
         tables.append(table)
 

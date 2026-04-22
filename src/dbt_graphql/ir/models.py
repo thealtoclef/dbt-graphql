@@ -10,8 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from enum import StrEnum, auto
-
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -32,6 +31,7 @@ class RelationshipOrigin(StrEnum):
     constraint = auto()
     data_test = auto()
     lineage = auto()
+    join_hint = auto()
 
 
 @dataclass
@@ -40,7 +40,10 @@ class ProcessorRelationship:
     models: list[str]
     join_type: JoinType
     origin: RelationshipOrigin
-    condition: str = ""
+    from_columns: list[str] = dc_field(default_factory=list)
+    to_columns: list[str] = dc_field(default_factory=list)
+    business_name: str = ""
+    description: str = ""
 
 
 @dataclass
@@ -64,6 +67,7 @@ class ColumnInfo(BaseModel):
     type: str  # raw DB type from catalog.json (e.g. "INTEGER", "VARCHAR(255)")
     not_null: bool = False
     unique: bool = False
+    is_primary_key: bool = False
     description: str = ""
     enum_values: list[str] | None = None
 
@@ -73,11 +77,14 @@ class RelationshipInfo(BaseModel):
 
     name: str
     from_model: str
-    from_column: str
     to_model: str
-    to_column: str
+    from_columns: list[str] = Field(default_factory=list)
+    to_columns: list[str] = Field(default_factory=list)
     join_type: JoinType
     origin: RelationshipOrigin
+    cardinality_confidence: Literal["declared", "inferred", "assumed"] = "assumed"
+    business_name: str = ""
+    description: str = ""
 
 
 class ModelInfo(BaseModel):

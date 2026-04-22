@@ -9,9 +9,16 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from .ir.models import ColumnInfo, JoinType, ProjectInfo, ModelInfo, RelationshipInfo
+from .ir.models import (
+    ColumnInfo,
+    JoinType,
+    ProjectInfo,
+    ModelInfo,
+    RelationshipInfo,
+    RelationshipOrigin,
+)
 from .dbt.artifacts import load_catalog, load_manifest
 from .dbt.processors.compiled_sql import (
     extract_column_lineage,
@@ -111,6 +118,7 @@ def extract_project(
                     type=raw_type,
                     not_null=not_null,
                     unique=unique,
+                    is_primary_key=col_name in pk_cols,
                     description=description,
                     enum_values=enum_values,
                 )
@@ -223,57 +231,59 @@ def extract_project(
 
 def _infer_join_type(
     from_model: str,
-    from_col: str,
+    from_cols: list[str],
     to_model: str,
-    to_col: str,
+    to_cols: list[str],
     unique_cols: set[tuple[str, str]],
-) -> JoinType:
-    """Infer cardinality from known-unique columns on each side of the relationship.
+) -> tuple[JoinType, str]:
+    """Infer cardinality from known-unique columns on each side.
 
-    A column is "unique" if it has a dbt unique test or is declared as a primary key.
-    When uniqueness is unknown on both sides we fall back to many_to_one, which is the
-    correct assumption for a dbt relationships test (the "to" side is always referenced
-    as a lookup key, implying it should be unique even if we lack the test to prove it).
+    Returns (join_type, confidence) where confidence is one of
+    "declared", "inferred", "assumed".
     """
-    from_unique = (from_model, from_col) in unique_cols
-    to_unique = (to_model, to_col) in unique_cols
+    from_unique = any((from_model, c) in unique_cols for c in from_cols)
+    to_unique = any((to_model, c) in unique_cols for c in to_cols)
     if from_unique and to_unique:
-        return JoinType.one_to_one
+        return JoinType.one_to_one, "inferred"
     if from_unique:
-        return JoinType.one_to_many
+        return JoinType.one_to_many, "inferred"
     if to_unique:
-        return JoinType.many_to_one
-    return JoinType.many_to_one  # fallback: assume standard FK pattern
+        return JoinType.many_to_one, "inferred"
+    return JoinType.many_to_one, "assumed"
 
 
 def _rel_to_domain(
     rel: Any, unique_cols: set[tuple[str, str]] | None = None
 ) -> RelationshipInfo:
     """Convert a ProcessorRelationship to domain RelationshipInfo."""
-    from_col = ""
-    to_col = ""
-    if getattr(rel, "condition", ""):
-        match = re.match(r'"(\w+)"\."(\w+)"\s*=\s*"(\w+)"\."(\w+)"', rel.condition)
-        if match:
-            from_col = match.group(2)
-            to_col = match.group(4)
+    from_cols = list(getattr(rel, "from_columns", None) or [])
+    to_cols = list(getattr(rel, "to_columns", None) or [])
 
     from_model = rel.models[0]
     to_model = rel.models[1]
 
-    if unique_cols and from_col and to_col:
-        join_type = _infer_join_type(
-            from_model, from_col, to_model, to_col, unique_cols
+    # Determine cardinality confidence and join type
+    confidence: Literal["declared", "inferred", "assumed"]
+    if rel.origin in (RelationshipOrigin.constraint,):
+        confidence = "declared"
+        join_type = rel.join_type
+    elif from_cols and to_cols and unique_cols:
+        join_type, confidence = _infer_join_type(
+            from_model, from_cols, to_model, to_cols, unique_cols
         )
     else:
+        confidence = "assumed"
         join_type = rel.join_type
 
     return RelationshipInfo(
         name=rel.name,
         from_model=from_model,
-        from_column=from_col,
         to_model=to_model,
-        to_column=to_col,
+        from_columns=from_cols,
+        to_columns=to_cols,
         join_type=join_type,
         origin=rel.origin,
+        cardinality_confidence=confidence,
+        business_name=getattr(rel, "business_name", "") or "",
+        description=getattr(rel, "description", "") or "",
     )

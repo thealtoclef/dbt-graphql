@@ -136,7 +136,7 @@ def build_relationships(manifest: DbtManifest) -> list[ProcessorRelationship]:
       node.refs[0].name                 → target model name
       node.test_metadata.kwargs["field"] → target column
     """
-    seen: set[tuple] = set()
+    seen: set[str] = set()
     relationships: list[ProcessorRelationship] = []
 
     for unique_id, node in manifest.nodes.items():
@@ -161,12 +161,10 @@ def build_relationships(manifest: DbtManifest) -> list[ProcessorRelationship]:
             continue
 
         rel_name = f"{from_model}_{from_col}_{to_model}_{to_col}"
-        condition = f'"{from_model}"."{from_col}" = "{to_model}"."{to_col}"'
 
-        dedup_key = (rel_name, condition)
-        if dedup_key in seen:
+        if rel_name in seen:
             continue
-        seen.add(dedup_key)
+        seen.add(rel_name)
 
         relationships.append(
             ProcessorRelationship(
@@ -174,7 +172,8 @@ def build_relationships(manifest: DbtManifest) -> list[ProcessorRelationship]:
                 models=[from_model, to_model],
                 join_type=JoinType.many_to_one,
                 origin=RelationshipOrigin.data_test,
-                condition=condition,
+                from_columns=[from_col],
+                to_columns=[to_col],
             )
         )
 

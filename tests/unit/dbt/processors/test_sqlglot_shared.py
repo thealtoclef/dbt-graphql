@@ -8,7 +8,6 @@ from dbt_graphql.dbt.processors.compiled_sql import (
     build_table_lookup,
     detect_dialect,
     qualify_model_sql,
-    sanitize_sql,
 )
 
 FIXTURES_DIR = (
@@ -28,17 +27,26 @@ class TestBuildTableLookup:
         assert lookup["jaffle_shop.main.customers"] == "customers"
         assert lookup["jaffle_shop.main.orders"] == "orders"
 
-    def test_alias_resolves_to_model_name(self):
+    def test_schema_alias_resolves_to_model_name(self):
         manifest = load_manifest(MANIFEST)
         lookup = build_table_lookup(manifest)
-        assert lookup["customers"] == "customers"
-        assert lookup["stg_customers"] == "stg_customers"
+        # schema.alias form: "main.customers"
+        assert lookup["main.customers"] == "customers"
+        assert lookup["main.stg_customers"] == "stg_customers"
+
+    def test_alias_only_not_present(self):
+        # Alias-only key intentionally excluded to prevent cross-package collisions
+        manifest = load_manifest(MANIFEST)
+        lookup = build_table_lookup(manifest)
+        assert "customers" not in lookup
+        assert "stg_customers" not in lookup
 
     def test_includes_seeds(self):
         manifest = load_manifest(MANIFEST)
         lookup = build_table_lookup(manifest)
-        assert lookup["raw_customers"] == "raw_customers"
-        assert lookup["raw_orders"] == "raw_orders"
+        # Seeds are keyed by schema.alias (e.g. "main.raw_customers")
+        assert lookup["main.raw_customers"] == "raw_customers"
+        assert lookup["main.raw_orders"] == "raw_orders"
 
 
 class TestBuildSchemaForModel:
@@ -85,26 +93,6 @@ class TestDetectDialect:
             metadata = _Meta()
 
         assert detect_dialect(_Man()) == ""
-
-
-class TestSanitizeSql:
-    def test_oracle_strips_listagg_distinct(self):
-        sql = "SELECT LISTAGG(DISTINCT name, ',') FROM t"
-        out = sanitize_sql(sql, "oracle")
-        assert "LISTAGG(DISTINCT" not in out
-        assert "LISTAGG(name" in out
-
-    def test_oracle_strips_on_overflow(self):
-        sql = (
-            "SELECT LISTAGG(x, ',') ON OVERFLOW TRUNCATE '...' WITH COUNT "
-            "WITHIN GROUP (ORDER BY x) FROM t"
-        )
-        out = sanitize_sql(sql, "oracle")
-        assert "ON OVERFLOW" not in out
-
-    def test_non_oracle_is_passthrough(self):
-        sql = "SELECT LISTAGG(DISTINCT x) FROM t"
-        assert sanitize_sql(sql, "duckdb") == sql
 
 
 class TestQualifyModelSql:

@@ -19,13 +19,23 @@ MANIFEST = FIXTURES / "manifest.json"
 # ---------------------------------------------------------------------------
 
 
-def _rel(name, models, join_type, condition="", origin=RelationshipOrigin.data_test):
+def _rel(
+    name,
+    models,
+    join_type,
+    origin=RelationshipOrigin.data_test,
+    from_columns=None,
+    to_columns=None,
+):
     return SimpleNamespace(
         name=name,
         models=models,
         join_type=join_type,
-        condition=condition,
         origin=origin,
+        from_columns=from_columns or [],
+        to_columns=to_columns or [],
+        business_name="",
+        description="",
     )
 
 
@@ -35,15 +45,16 @@ class TestRelToDomain:
             name="orders_customers",
             models=["orders", "customers"],
             join_type=JoinType.many_to_one,
-            condition='"orders"."customer_id" = "customers"."customer_id"',
+            from_columns=["customer_id"],
+            to_columns=["customer_id"],
         )
         result = _rel_to_domain(rel)
         assert isinstance(result, RelationshipInfo)
         assert result.name == "orders_customers"
         assert result.from_model == "orders"
         assert result.to_model == "customers"
-        assert result.from_column == "customer_id"
-        assert result.to_column == "customer_id"
+        assert result.from_columns == ["customer_id"]
+        assert result.to_columns == ["customer_id"]
         assert result.join_type == "many_to_one"
 
     def test_different_column_names(self):
@@ -51,24 +62,24 @@ class TestRelToDomain:
             name="line_items_orders",
             models=["line_items", "orders"],
             join_type=JoinType.many_to_one,
-            condition='"line_items"."order_ref" = "orders"."order_id"',
+            from_columns=["order_ref"],
+            to_columns=["order_id"],
         )
         result = _rel_to_domain(rel)
-        assert result.from_column == "order_ref"
-        assert result.to_column == "order_id"
+        assert result.from_columns == ["order_ref"]
+        assert result.to_columns == ["order_id"]
 
-    def test_empty_condition_yields_empty_columns(self):
+    def test_empty_columns(self):
         rel = _rel(
             name="a_b",
             models=["a", "b"],
             join_type=JoinType.many_to_one,
-            condition="",
         )
         result = _rel_to_domain(rel)
-        assert result.from_column == ""
-        assert result.to_column == ""
+        assert result.from_columns == []
+        assert result.to_columns == []
 
-    def test_no_condition_attribute(self):
+    def test_no_from_to_columns_attribute(self):
         rel = SimpleNamespace(
             name="a_b",
             models=["a", "b"],
@@ -76,8 +87,8 @@ class TestRelToDomain:
             origin=RelationshipOrigin.data_test,
         )
         result = _rel_to_domain(rel)
-        assert result.from_column == ""
-        assert result.to_column == ""
+        assert result.from_columns == []
+        assert result.to_columns == []
 
     def test_join_type_string(self):
         for jt in JoinType:
@@ -85,21 +96,43 @@ class TestRelToDomain:
             result = _rel_to_domain(rel)
             assert result.join_type == str(jt)
 
-    def test_malformed_condition_yields_empty_columns(self):
-        rel = _rel(
-            name="a_b",
-            models=["a", "b"],
+    def test_business_name_and_description_propagated(self):
+        rel = SimpleNamespace(
+            name="orders_customers",
+            models=["orders", "customers"],
             join_type=JoinType.many_to_one,
-            condition="a.id = b.ref",  # no quotes → regex doesn't match
+            origin=RelationshipOrigin.constraint,
+            from_columns=["customer_id"],
+            to_columns=["customer_id"],
+            business_name="order customer",
+            description="FK from orders to customers",
         )
         result = _rel_to_domain(rel)
-        assert result.from_column == ""
-        assert result.to_column == ""
+        assert result.business_name == "order customer"
+        assert result.description == "FK from orders to customers"
 
+    def test_constraint_origin_gives_declared_confidence(self):
+        rel = _rel(
+            name="x_y",
+            models=["x", "y"],
+            join_type=JoinType.many_to_one,
+            origin=RelationshipOrigin.constraint,
+            from_columns=["x_id"],
+            to_columns=["id"],
+        )
+        result = _rel_to_domain(rel)
+        assert result.cardinality_confidence == "declared"
 
-# ---------------------------------------------------------------------------
-# extract_project
-# ---------------------------------------------------------------------------
+    def test_no_unique_cols_gives_assumed_confidence(self):
+        rel = _rel(
+            name="x_y",
+            models=["x", "y"],
+            join_type=JoinType.many_to_one,
+            from_columns=["x_id"],
+            to_columns=["id"],
+        )
+        result = _rel_to_domain(rel, unique_cols=set())
+        assert result.cardinality_confidence == "assumed"
 
 
 class TestExtractProjectErrors:
@@ -222,30 +255,31 @@ class TestCardinalityInference:
 
         unique = {("customers", "customer_id"), ("orders", "order_id")}
 
-        assert (
-            _infer_join_type(
-                "orders", "customer_id", "customers", "customer_id", unique
-            )
-            == "many_to_one"
+        jt, conf = _infer_join_type(
+            "orders", ["customer_id"], "customers", ["customer_id"], unique
         )
-        assert (
-            _infer_join_type("orders", "order_id", "customers", "customer_id", unique)
-            == "one_to_one"
+        assert jt == "many_to_one"
+        assert conf == "inferred"
+
+        jt, conf = _infer_join_type(
+            "orders", ["order_id"], "customers", ["customer_id"], unique
         )
-        assert (
-            _infer_join_type("orders", "order_id", "line_items", "order_id", set())
-            == "many_to_one"
+        assert jt == "one_to_one"
+
+        jt, conf = _infer_join_type(
+            "orders", ["order_id"], "line_items", ["order_id"], set()
         )
-        assert (
-            _infer_join_type(
-                "orders",
-                "order_id",
-                "customers",
-                "customer_id",
-                {("orders", "order_id")},
-            )
-            == "one_to_many"
+        assert jt == "many_to_one"
+        assert conf == "assumed"
+
+        jt, conf = _infer_join_type(
+            "orders",
+            ["order_id"],
+            "customers",
+            ["customer_id"],
+            {("orders", "order_id")},
         )
+        assert jt == "one_to_many"
 
 
 class TestOriginPropagation:
@@ -256,7 +290,6 @@ class TestOriginPropagation:
             name="orders_customers",
             models=["orders", "customers"],
             join_type=JoinType.many_to_one,
-            condition='"orders"."customer_id" = "customers"."customer_id"',
             origin=RelationshipOrigin.data_test,
         )
         assert _rel_to_domain(rel).origin == RelationshipOrigin.data_test
@@ -323,5 +356,5 @@ class TestConstraintVsTestPriority:
         assert len(matching) >= 1
         # The constraint-derived one should be first (it's added first).
         constraint_rel = matching[0]
-        assert constraint_rel.from_column == "customer_id"
-        assert constraint_rel.to_column == "customer_id"
+        assert constraint_rel.from_columns == ["customer_id"]
+        assert constraint_rel.to_columns == ["customer_id"]

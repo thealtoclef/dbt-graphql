@@ -23,6 +23,7 @@ class ServeConfig(BaseModel):
 class MonitoringConfig(BaseModel):
     service_name: str = "dbt-graphql"
     exporter: str = "otlp"
+    protocol: str = "grpc"  # "grpc" or "http"
     endpoint: str | None = None
     log_level: str = "INFO"
 

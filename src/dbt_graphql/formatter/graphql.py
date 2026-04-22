@@ -123,26 +123,41 @@ def _parse_sql_type(raw: str) -> tuple[str, str, bool]:
 def _build_db_graphql(project: ProjectInfo) -> str:
     """Build a GraphQL SDL schema for all dbt models."""
     rel_map = _build_rel_map(project.relationships)
+    incoming_rels = _build_incoming_rels(project.relationships)
     blocks: list[str] = []
     for model in project.models:
-        blocks.append(_type_block(model, rel_map))
+        blocks.append(_type_block(model, rel_map, incoming_rels))
     return "\n".join(blocks).rstrip() + "\n"
 
 
 def _build_rel_map(
     relationships: list[RelationshipInfo],
-) -> dict[tuple[str, str], tuple[str, str]]:
-    rel_map: dict[tuple[str, str], tuple[str, str]] = {}
+) -> dict[tuple[str, tuple[str, ...]], RelationshipInfo]:
+    rel_map: dict[tuple[str, tuple[str, ...]], RelationshipInfo] = {}
     for rel in relationships:
-        if not rel.from_column or not rel.to_column:
+        if not rel.from_columns or not rel.to_columns:
             continue
-        rel_map[(rel.from_model, rel.from_column)] = (rel.to_model, rel.to_column)
+        key = (rel.from_model, tuple(rel.from_columns))
+        rel_map[key] = rel
     return rel_map
+
+
+def _build_incoming_rels(
+    relationships: list[RelationshipInfo],
+) -> dict[str, list[RelationshipInfo]]:
+    """Map target model name to list of relationships pointing into it."""
+    incoming: dict[str, list[RelationshipInfo]] = {}
+    for rel in relationships:
+        if not rel.from_columns or not rel.to_columns:
+            continue
+        incoming.setdefault(rel.to_model, []).append(rel)
+    return incoming
 
 
 def _type_block(
     model: ModelInfo,
-    rel_map: dict[tuple[str, str], tuple[str, str]],
+    rel_map: dict[tuple[str, tuple[str, ...]], RelationshipInfo],
+    incoming_rels: dict[str, list[RelationshipInfo]],
 ) -> str:
     """Build a GraphQL SDL type block for a dbt model."""
     type_directives: list[str] = [
@@ -152,16 +167,36 @@ def _type_block(
     header = f"type {model.name} " + " ".join(type_directives) + " {"
 
     lines = [header]
+    existing_names: set[str] = set()
     for col in model.columns:
         lines.append("  " + _column_line(model, col, rel_map))
+        existing_names.add(col.name)
+
+    # Reverse-relation fields
+    for rel in incoming_rels.get(model.name, []):
+        rev_line = _reverse_relation_line(rel, existing_names)
+        if rev_line:
+            lines.append("  " + rev_line)
+
     lines.append("}")
     return "\n".join(lines)
+
+
+def _reverse_relation_line(
+    rel: RelationshipInfo, existing_names: set[str]
+) -> str | None:
+    """Emit a reverse-relation field on the target model."""
+    field_name = rel.from_model + "s"  # simple plural
+    if field_name in existing_names:
+        field_name += "_rev"
+    existing_names.add(field_name)
+    return f'{field_name}: [{rel.from_model}] @reverseRelation(from: {rel.from_model}, via: "{rel.from_columns[0]}")'
 
 
 def _column_line(
     model: ModelInfo,
     col: ColumnInfo,
-    rel_map: dict[tuple[str, str], tuple[str, str]],
+    rel_map: dict[tuple[str, tuple[str, ...]], RelationshipInfo],
 ) -> str:
     base, size, is_array = _parse_sql_type(col.type)
     scalar = _sql_to_gql_scalar(base)
@@ -174,15 +209,27 @@ def _column_line(
         sql_args += f', size: "{size}"'
     directives: list[str] = [f"@column({sql_args})"]
     is_sole_pk = len(model.primary_keys) == 1 and col.name in model.primary_keys
-    if is_sole_pk:
+    if is_sole_pk or col.is_primary_key:
         directives.append("@id")
-    if col.unique and not is_sole_pk:
+    if col.unique and not is_sole_pk and not col.is_primary_key:
         directives.append("@unique")
 
-    rel = rel_map.get((model.name, col.name))
+    # Look up by single-column key (most common path)
+    rel = rel_map.get((model.name, (col.name,)))
     if rel:
-        target_model, target_col = rel
-        directives.append(f"@relation(type: {target_model}, field: {target_col})")
+        args = [f"type: {rel.to_model}"]
+        if len(rel.to_columns) == 1:
+            args.append(f"field: {rel.to_columns[0]}")
+        else:
+            args.append(f"fields: [{', '.join(rel.from_columns)}]")
+            args.append(f"toFields: [{', '.join(rel.to_columns)}]")
+        args.append(f"origin: {rel.origin}")
+        args.append(f"confidence: {rel.cardinality_confidence}")
+        if rel.business_name:
+            args.append(f'name: "{rel.business_name}"')
+        if rel.description:
+            args.append(f'description: "{rel.description}"')
+        directives.append(f"@relation({', '.join(args)})")
 
     dir_str = " ".join(directives)
     line = f"{col.name}: {gql_type}"

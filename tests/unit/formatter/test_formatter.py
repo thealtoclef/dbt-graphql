@@ -29,7 +29,7 @@ class TestDbGraphQL:
     def test_has_relation_directive(self):
         project = _make_project()
         gj = format_graphql(project)
-        assert "@relation(type: customers, field: customer_id)" in gj.db_graphql
+        assert "@relation(type: customers, field: customer_id" in gj.db_graphql
 
     def test_required_fields_have_bang(self):
         project = _make_project()
@@ -243,13 +243,29 @@ class TestColumnDirectives:
 
     def test_relation_directive(self):
         from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
+        from dbt_graphql.ir.models import (
+            ColumnInfo,
+            JoinType,
+            ModelInfo,
+            RelationshipInfo,
+            RelationshipOrigin,
+        )
 
         m = ModelInfo(name="orders", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
         c = ColumnInfo(name="customer_id", type="INTEGER", not_null=True)
-        rel_map = {("orders", "customer_id"): ("customers", "customer_id")}
+        rel = RelationshipInfo(
+            name="orders_customer_id_customers_customer_id",
+            from_model="orders",
+            to_model="customers",
+            from_columns=["customer_id"],
+            to_columns=["customer_id"],
+            join_type=JoinType.many_to_one,
+            origin=RelationshipOrigin.data_test,
+            cardinality_confidence="inferred",
+        )
+        rel_map = {("orders", ("customer_id",)): rel}
         line = _column_line(m, c, rel_map=rel_map)
-        assert "@relation(type: customers, field: customer_id)" in line
+        assert "@relation(type: customers, field: customer_id" in line
 
 
 class TestNoRelationships:
@@ -269,3 +285,23 @@ class TestNoRelationships:
 
         gj = format_graphql(project)
         assert "@relation" not in gj.db_graphql
+
+
+class TestReverseRelationEmission:
+    def test_reverse_relation_appears_on_target(self):
+        project = _make_project()
+        gj = format_graphql(project)
+        # orders → customers means customers type gets an orders reverse field
+        assert "@reverseRelation(from: orders" in gj.db_graphql
+
+    def test_reverse_relation_is_list_type(self):
+        project = _make_project()
+        gj = format_graphql(project)
+        # The reverse field should be [orders] (list type)
+        assert "[orders]" in gj.db_graphql
+
+    def test_relation_directive_has_origin_and_confidence(self):
+        project = _make_project()
+        gj = format_graphql(project)
+        assert "origin:" in gj.db_graphql
+        assert "confidence:" in gj.db_graphql

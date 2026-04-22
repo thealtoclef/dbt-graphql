@@ -179,7 +179,8 @@ class TestExtractConstraints:
         assert isinstance(rel, ProcessorRelationship)
         assert rel.models == ["orders", "customers"]
         assert rel.join_type == JoinType.many_to_one
-        assert '"orders"."customer_id" = "customers"."customer_id"' in rel.condition
+        assert rel.from_columns == ["customer_id"]
+        assert rel.to_columns == ["customer_id"]
 
     def test_column_level_foreign_key(self):
         uid = "model.project.orders"
@@ -203,7 +204,8 @@ class TestExtractConstraints:
         assert len(result.foreign_key_relationships) == 1
         rel = result.foreign_key_relationships[0]
         assert rel.models == ["orders", "customers"]
-        assert '"orders"."customer_id" = "customers"."id"' in rel.condition
+        assert rel.from_columns == ["customer_id"]
+        assert rel.to_columns == ["id"]
 
     def test_duplicate_fk_deduplicated(self):
         uid = "model.project.orders"
@@ -350,7 +352,8 @@ class TestExtractConstraintsToFormat:
         assert len(result.foreign_key_relationships) == 1
         rel = result.foreign_key_relationships[0]
         assert rel.models == ["orders", "customers"]
-        assert '"orders"."customer_id" = "customers"."id"' in rel.condition
+        assert rel.from_columns == ["customer_id"]
+        assert rel.to_columns == ["id"]
 
     def test_column_level_fk_via_to_field(self):
         customers_uid = "model.project.customers"
@@ -428,4 +431,4 @@ class TestExtractConstraintsToFormat:
         assert len(result.foreign_key_relationships) == 1
         rel = result.foreign_key_relationships[0]
         # expression-derived: to_col = "customer_id" (from expression), not "id" (from to_columns)
-        assert '"customers"."customer_id"' in rel.condition
+        assert rel.to_columns == ["customer_id"]

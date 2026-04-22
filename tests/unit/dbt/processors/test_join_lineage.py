@@ -58,7 +58,8 @@ class TestBasicJoin:
         rel = rels[0]
         assert rel.origin == RelationshipOrigin.lineage
         assert rel.models == ["m", "a"]
-        assert rel.condition == '"m"."a_id" = "a"."id"'
+        assert rel.from_columns == ["a_id"]
+        assert rel.to_columns == ["id"]
 
     def test_direction_current_model_is_from(self):
         # Current model is `m`; join condition is a.id = m.a_id (right side is m)
@@ -77,10 +78,21 @@ class TestBasicJoin:
         rels = _rels("m", sql)
         assert rels == []
 
-    def test_self_join_skipped(self):
+    def test_self_join_different_columns_preserved(self):
+        # Hierarchical FK: m.id → m.a_id on the same table — should be kept
         sql = (
             'SELECT m1.id FROM "db"."sch"."m" m1 '
             'JOIN "db"."sch"."m" m2 ON m1.id = m2.a_id'
+        )
+        rels = _rels("m", sql)
+        assert len(rels) == 1
+        assert rels[0].models == ["m", "m"]
+
+    def test_self_join_same_column_skipped(self):
+        # True self-reference on the same column — should be skipped
+        sql = (
+            'SELECT m1.id FROM "db"."sch"."m" m1 '
+            'JOIN "db"."sch"."m" m2 ON m1.id = m2.id'
         )
         rels = _rels("m", sql)
         assert rels == []

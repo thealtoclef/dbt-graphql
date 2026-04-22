@@ -1,44 +1,29 @@
-"""Extract facts from dbt's **compiled SQL** via sqlglot.
+"""Extract facts from dbt's **compiled SQL** via sqlglot + dbt-colibri.
 
-This module is the third input surface (alongside ``constraints.py`` and
-``data_tests.py``). Compiled SQL is the source; sqlglot is the tool.
+Public functions:
+- :func:`extract_table_lineage` — table edges from ``depends_on.nodes``.
+- :func:`extract_column_lineage` — column-level lineage via dbt-colibri.
+- :func:`extract_join_relationships` — JOIN-derived FK relationships.
 
-Public functions, ordered by output:
-
-- :func:`extract_table_lineage` — table edges from ``depends_on.nodes``. No SQL
-  parsing needed, but it lives here because "what came from the compiled DAG"
-  is the conceptual fit.
-- :func:`extract_column_lineage` — column-level lineage. For each materialized
-  model, compiled SQL is parsed, qualified against the parent-model schema,
-  and every output column is traced through CTEs and subqueries to leaf source
-  tables. Each hop is classified (``pass-through`` / ``rename`` /
-  ``transformation``) and the overall lineage type is the max rank across the
-  chain.
-- :func:`extract_join_relationships` — JOIN-derived foreign-key relationships.
-  Mines every ``JOIN ... ON <eq>`` in compiled SQL, resolves each column to
-  its origin dbt model, and emits :class:`ProcessorRelationship` objects
-  tagged ``origin="lineage"``. Direction rule: the current dbt model being
-  processed is always ``from_model``. Joins where neither side resolves to
-  the current model are skipped; self-joins are skipped.
-
-Everything else (``build_table_lookup``, ``qualify_model_sql``,
-``detect_dialect``, …) is internal sqlglot plumbing shared across the three
-public extractors.
+Everything else is internal plumbing shared across the three public extractors.
 """
 
 from __future__ import annotations
 
 import gc
 import logging
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from sqlglot import exp, parse_one
 from sqlglot.errors import SqlglotError
-from sqlglot.optimizer import find_all_in_scope
-from sqlglot.optimizer.qualify import qualify
-from sqlglot.optimizer.scope import Scope, build_scope
+from sqlglot.optimizer.scope import Scope
+from dbt_colibri.lineage_extractor.lineage import prepare_scope, to_node
+from dbt_colibri.utils.parsing_utils import (
+    normalize_table_relation_name,
+    remove_quotes,
+    remove_upper,
+)
 
 from ...ir.models import JoinType, ProcessorRelationship, RelationshipOrigin
 from ..artifacts import DbtCatalog, DbtManifest
@@ -69,17 +54,12 @@ def _model_name_from_unique_id(unique_id: str) -> str:
     return parts[-1] if parts else unique_id
 
 
-def _normalize_relation_name(name: str) -> str:
-    """Strip quotes/backticks from a relation name and lowercase it for lookup."""
-    return name.replace('"', "").replace("`", "").lower()
-
-
 def build_table_lookup(manifest: DbtManifest) -> dict[str, str]:
-    """Map normalized identifiers (relation_name, alias, database.schema.alias)
-    to the dbt model name used downstream.
+    """Map normalized identifiers to the dbt model name used downstream.
 
-    Handles model, source, seed, and snapshot nodes. Ephemeral nodes have no
-    ``relation_name`` — build one from ``database.schema.alias``.
+    Keys: ``relation_name``, ``database.schema.alias``, ``schema.alias``.
+    The alias-only key is intentionally omitted to prevent cross-package
+    collisions where two packages both define a model with the same short name.
     """
     lookup: dict[str, str] = {}
 
@@ -87,19 +67,17 @@ def build_table_lookup(manifest: DbtManifest) -> dict[str, str]:
         model_name = _model_name_from_unique_id(node_id)
         relation_name = getattr(node, "relation_name", None) or ""
         if relation_name:
-            lookup[_normalize_relation_name(relation_name)] = model_name
+            lookup[normalize_table_relation_name(relation_name)] = model_name
 
         database = getattr(node, "database", None) or ""
-        schema = getattr(node, "schema", None) or ""
+        schema = getattr(node, "schema_", None) or ""
         alias = getattr(node, "alias", None) or getattr(node, "name", None) or ""
         if database and schema and alias:
-            lookup[_normalize_relation_name(f"{database}.{schema}.{alias}")] = (
+            lookup[normalize_table_relation_name(f"{database}.{schema}.{alias}")] = (
                 model_name
             )
         if schema and alias:
-            lookup[_normalize_relation_name(f"{schema}.{alias}")] = model_name
-        if alias:
-            lookup[alias.lower()] = model_name
+            lookup[normalize_table_relation_name(f"{schema}.{alias}")] = model_name
 
     allowed = {"model", "source", "seed", "snapshot"}
     for node_id, node in manifest.nodes.items():
@@ -160,60 +138,22 @@ def detect_dialect(manifest: DbtManifest) -> str:
     return _ADAPTER_TO_DIALECT.get(adapter_type, adapter_type)
 
 
-def sanitize_sql(sql: str, dialect: str) -> str:
-    """Dialect-specific SQL rewrites that sqlglot can't parse as-is."""
-    if dialect == "oracle":
-        sql = re.sub(r"(?i)\bLISTAGG\s*\(\s*DISTINCT\s+", "LISTAGG(", sql)
-        sql = re.sub(
-            r"(?is)\bON\s+OVERFLOW\s+(?:TRUNCATE|ERROR)\b"
-            r"(?:\s+'[^']*')?(?:\s+(?:WITH|WITHOUT)\s+COUNT)?",
-            "",
-            sql,
-        )
-    return sql
-
-
-def _remove_identifier_quotes(expression: exp.Expression) -> exp.Expression:
-    def _transform(node: exp.Expression) -> exp.Expression:
-        if isinstance(node, exp.Identifier) and node.quoted:
-            return exp.Identifier(this=node.this, quoted=False)
-        return node
-
-    return expression.transform(_transform)
-
-
-def _lowercase_quoted_identifiers(expression: exp.Expression) -> exp.Expression:
-    def _transform(node: exp.Expression) -> exp.Expression:
-        if isinstance(node, exp.Identifier) and node.quoted:
-            return exp.Identifier(this=node.this.lower(), quoted=True)
-        return node
-
-    return expression.transform(_transform)
-
-
 def qualify_model_sql(sql: str, dialect: str, schema: dict) -> Scope | None:
-    """Parse, sanitize, qualify, and scope a model's compiled SQL.
+    """Parse, qualify, and scope a model's compiled SQL.
 
     Returns the root :class:`Scope`, or ``None`` if parsing/qualification failed.
     """
     if not sql:
         return None
 
-    sanitized = sanitize_sql(sql, dialect)
     try:
-        expression = parse_one(sanitized, read=dialect or None)
+        expression = parse_one(sql, read=dialect or None)
         if dialect == "postgres":
-            expression = _remove_identifier_quotes(expression)
+            expression = remove_quotes(expression)
         elif dialect == "bigquery":
-            expression = _lowercase_quoted_identifiers(expression)
-        qualified = qualify(
-            expression,
-            dialect=dialect or None,
-            schema=schema,
-            validate_qualify_columns=False,
-            identify=False,
-        )
-        return build_scope(qualified)
+            expression = remove_upper(expression)
+        _, scope = prepare_scope(expression, schema=schema, dialect=dialect or None)
+        return scope
     except SqlglotError as e:
         logger.debug("sqlglot processing failed (%s): %s", dialect, e)
         return None
@@ -241,7 +181,7 @@ def resolve_table_to_model(
     candidates.append(name_part)
 
     for candidate in candidates:
-        hit = table_lookup.get(_normalize_relation_name(candidate))
+        hit = table_lookup.get(normalize_table_relation_name(candidate))
         if hit is not None:
             return hit
     return None
@@ -278,190 +218,16 @@ def extract_table_lineage(manifest: DbtManifest) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Column lineage — ported from dbt-colibri (MIT), itself derived from sqlglot
+# Column lineage
 # ---------------------------------------------------------------------------
-
-
-# _LineageNode is an internal intermediate representation.
-# ColumnLineageEdge is the public output type.
-@dataclass
-class _LineageNode:
-    name: str
-    expression: exp.Expression
-    source: exp.Expression
-    downstream: list[_LineageNode] = field(default_factory=list)
-    lineage_type: str = ""
-
-    def walk(self) -> list[_LineageNode]:
-        result = [self]
-        for d in self.downstream:
-            if d is not None:
-                result.extend(d.walk())
-        return result
-
-
-def _classify(select: exp.Expression) -> str:
-    if isinstance(select, exp.Column):
-        return "pass_through"
-    if isinstance(select, exp.Alias):
-        inner = select.this
-        if isinstance(inner, exp.Column):
-            return "pass_through" if inner.name == select.alias_or_name else "rename"
-        return "transformation"
-    return "transformation"
-
-
-_RANK = {"pass_through": 0, "rename": 1, "transformation": 2}
-
-
-def _max_lineage(a: str, b: str) -> str:
-    return a if _RANK.get(a, 0) >= _RANK.get(b, 0) else b
-
-
-def _to_node(
-    column: str | int,
-    scope: Scope,
-    dialect: str,
-    upstream: _LineageNode | None = None,
-    visited: set | None = None,
-) -> _LineageNode | None:
-    if visited is None:
-        visited = set()
-    key = (column, id(scope))
-    if key in visited:
-        return None
-    visited.add(key)
-
-    select = (
-        scope.expression.selects[column]
-        if isinstance(column, int)
-        else next(
-            (s for s in scope.expression.selects if s.alias_or_name == column),
-            exp.Star() if scope.expression.is_star else scope.expression,
-        )
-    )
-    lineage_type = _classify(select)
-
-    if isinstance(scope.expression, exp.Subquery):
-        for src in scope.subquery_scopes:
-            return _to_node(
-                column, scope=src, dialect=dialect, upstream=upstream, visited=visited
-            )
-
-    if isinstance(scope.expression, exp.SetOperation):
-        name = type(scope.expression).__name__.upper()
-        upstream = upstream or _LineageNode(
-            name=name, source=scope.expression, expression=select
-        )
-        index = (
-            column
-            if isinstance(column, int)
-            else next(
-                (
-                    i
-                    for i, s in enumerate(scope.expression.selects)
-                    if s.alias_or_name == column or s.is_star
-                ),
-                -1,
-            )
-        )
-        if index == -1:
-            return upstream
-        for s in scope.union_scopes:
-            _to_node(
-                index, scope=s, dialect=dialect, upstream=upstream, visited=visited
-            )
-        agg = "pass_through"
-        for child in upstream.downstream:
-            if child is not None:
-                agg = _max_lineage(agg, child.lineage_type)
-        upstream.lineage_type = agg
-        return upstream
-
-    node = _LineageNode(
-        name=str(column),
-        source=scope.expression,
-        expression=select,
-        lineage_type=lineage_type,
-    )
-    if upstream is not None:
-        upstream.downstream.append(node)
-
-    subquery_scopes = {id(sq.expression): sq for sq in scope.subquery_scopes}
-    for subquery in find_all_in_scope(select, exp.UNWRAPPED_QUERIES):
-        sq_scope = subquery_scopes.get(id(subquery))
-        if not sq_scope:
-            continue
-        for name in subquery.named_selects:
-            _to_node(
-                name, scope=sq_scope, dialect=dialect, upstream=node, visited=visited
-            )
-
-    if select.is_star:
-        for src in scope.sources.values():
-            if isinstance(src, Scope):
-                src = src.expression
-            node.downstream.append(_LineageNode(name="*", source=src, expression=src))
-
-    for c in find_all_in_scope(select, exp.Column):
-        table = c.table
-        src = scope.sources.get(table)
-        if isinstance(src, Scope):
-            _to_node(c.name, scope=src, dialect=dialect, upstream=node, visited=visited)
-        elif isinstance(src, exp.Table):
-            pivot = src.find(exp.Pivot)
-            if pivot and hasattr(src, "this") and hasattr(src.this, "alias_or_name"):
-                pivot_scope = scope.sources.get(src.this.alias_or_name)
-                if isinstance(pivot_scope, Scope):
-                    _to_node(
-                        c.name,
-                        scope=pivot_scope,
-                        dialect=dialect,
-                        upstream=node,
-                        visited=visited,
-                    )
-                    continue
-            node.downstream.append(_LineageNode(name=c.name, source=src, expression=c))
-
-    agg = lineage_type
-    for child in node.downstream:
-        if child is not None:
-            agg = _max_lineage(agg, child.lineage_type)
-    node.lineage_type = agg
-    return node
-
-
-def _edges_from_node(
-    root: _LineageNode, target_col: str, table_lookup: dict[str, str]
-) -> list[ColumnLineageEdge]:
-    edges: list[ColumnLineageEdge] = []
-    seen: set[tuple[str, str]] = set()
-    for n in root.walk():
-        if n.downstream:
-            continue
-        if not isinstance(n.source, exp.Table):
-            continue
-        source_model = resolve_table_to_model(n.source, table_lookup)
-        if source_model is None:
-            continue
-        key = (source_model, n.name)
-        if key in seen:
-            continue
-        seen.add(key)
-        edges.append(
-            ColumnLineageEdge(
-                source_model=source_model,
-                source_column=n.name,
-                target_column=target_col,
-                lineage_type=root.lineage_type,
-            )
-        )
-    return edges
 
 
 def _edges_for_model(
     scope: Scope, table_lookup: dict[str, str], dialect: str
 ) -> dict[str, list[ColumnLineageEdge]]:
+    """Walk all SELECT columns in ``scope`` via colibri's ``to_node`` and
+    collect leaf-table edges for each output column.
+    """
     result: dict[str, list[ColumnLineageEdge]] = {}
     if not hasattr(scope.expression, "selects"):
         return result
@@ -473,10 +239,38 @@ def _edges_for_model(
         if not target_col:
             continue
 
-        root = _to_node(target_col, scope, dialect, visited=set())
+        root = to_node(target_col, scope, dialect, visited=set())
         if root is None:
             continue
-        edges = _edges_from_node(root, target_col, table_lookup)
+
+        edges: list[ColumnLineageEdge] = []
+        seen: set[tuple[str, str]] = set()
+        for n in root.walk():
+            if n is None or n.downstream:
+                continue
+            if not isinstance(n.source, exp.Table):
+                continue
+            source_model = resolve_table_to_model(n.source, table_lookup)
+            if source_model is None:
+                continue
+            # colibri leaf names are "table_alias.column" (e.g. "t.a");
+            # strip the table prefix to get the raw column name.
+            col_name = n.name.rsplit(".", 1)[-1].strip('"').strip("`")
+            key = (source_model, col_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            # colibri uses "pass-through" (hyphen); normalise to our underscore convention
+            lineage_type = root.lineage_type.replace("-", "_")
+            edges.append(
+                ColumnLineageEdge(
+                    source_model=source_model,
+                    source_column=col_name,
+                    target_column=target_col,
+                    lineage_type=lineage_type,
+                )
+            )
+
         if edges:
             result[target_col] = edges
 
@@ -492,33 +286,7 @@ def extract_column_lineage(
     Returns a dict keyed by model name, then by target column name, with a list
     of :class:`ColumnLineageEdge` values.
     """
-    table_lookup = build_table_lookup(manifest)
-    dialect = detect_dialect(manifest)
-
-    result: dict[str, dict[str, list[ColumnLineageEdge]]] = {}
-    processed = 0
-
-    for unique_id, node in manifest.nodes.items():
-        if getattr(node, "resource_type", None) not in ("model", "snapshot"):
-            continue
-
-        compiled_code = getattr(node, "compiled_code", None) or ""
-        if not compiled_code:
-            continue
-
-        schema = build_schema_for_model(node, manifest, catalog)
-        scope = qualify_model_sql(compiled_code, dialect, schema)
-        if scope is None:
-            continue
-
-        edges = _edges_for_model(scope, table_lookup, dialect)
-        if edges:
-            result[_model_name_from_unique_id(unique_id)] = edges
-
-        processed += 1
-        if processed % 50 == 0:
-            gc.collect()
-
+    result, _ = _extract_both(manifest, catalog)
     return result
 
 
@@ -547,11 +315,7 @@ def _resolve_column_to_model(
     table_lookup: dict[str, str],
     visited: set[tuple[int, str]] | None = None,
 ) -> str | None:
-    """Resolve a join-column reference to its origin dbt model.
-
-    Walks through CTE/subquery scopes via the inner select expression's first
-    column reference until it lands on a leaf ``exp.Table``.
-    """
+    """Resolve a join-column reference to its origin dbt model."""
     if visited is None:
         visited = set()
 
@@ -618,7 +382,10 @@ def _relationships_for_model(
                 )
                 if left_model is None or right_model is None:
                     continue
-                if left_model == right_model:
+                # Skip self-joins only when the column is identical on both sides
+                # (true self-reference); hierarchical FKs like employee.manager_id
+                # → employee.employee_id are preserved.
+                if left_model == right_model and left_col.name == right_col.name:
                     continue
 
                 if left_model == current_model:
@@ -636,14 +403,14 @@ def _relationships_for_model(
                 seen.add(key)
 
                 rel_name = f"{from_model}_{from_col}_{to_model}_{to_col}"
-                condition = f'"{from_model}"."{from_col}" = "{to_model}"."{to_col}"'
                 relationships.append(
                     ProcessorRelationship(
                         name=rel_name,
                         models=[from_model, to_model],
                         join_type=JoinType.many_to_one,
                         origin=RelationshipOrigin.lineage,
-                        condition=condition,
+                        from_columns=[from_col],
+                        to_columns=[to_col],
                     )
                 )
 
@@ -658,11 +425,24 @@ def extract_join_relationships(
 
     Output is deduplicated by relationship name.
     """
+    _, result = _extract_both(manifest, catalog)
+    return result
+
+
+def _extract_both(
+    manifest: DbtManifest,
+    catalog: DbtCatalog,
+) -> tuple[
+    dict[str, dict[str, list[ColumnLineageEdge]]],
+    list[ProcessorRelationship],
+]:
+    """Single pass over compiled SQL producing both column lineage and join relationships."""
     table_lookup = build_table_lookup(manifest)
     dialect = detect_dialect(manifest)
 
-    seen_names: set[str] = set()
-    result: list[ProcessorRelationship] = []
+    col_result: dict[str, dict[str, list[ColumnLineageEdge]]] = {}
+    join_seen_names: set[str] = set()
+    join_result: list[ProcessorRelationship] = []
     processed = 0
 
     for unique_id, node in manifest.nodes.items():
@@ -678,15 +458,21 @@ def extract_join_relationships(
         if scope is None:
             continue
 
-        current_model = _model_name_from_unique_id(unique_id)
-        for rel in _relationships_for_model(current_model, scope, table_lookup):
-            if rel.name in seen_names:
-                continue
-            seen_names.add(rel.name)
-            result.append(rel)
+        model_name = _model_name_from_unique_id(unique_id)
+
+        # Column lineage
+        edges = _edges_for_model(scope, table_lookup, dialect)
+        if edges:
+            col_result[model_name] = edges
+
+        # JOIN relationships
+        for rel in _relationships_for_model(model_name, scope, table_lookup):
+            if rel.name not in join_seen_names:
+                join_seen_names.add(rel.name)
+                join_result.append(rel)
 
         processed += 1
         if processed % 50 == 0:
             gc.collect()
 
-    return result
+    return col_result, join_result

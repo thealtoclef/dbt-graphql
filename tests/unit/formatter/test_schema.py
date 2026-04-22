@@ -103,6 +103,74 @@ class TestDirectives:
         assert col.relation.target_column == "customer_id"
 
 
+class TestExtendedRelationDirective:
+    """Parse @relation with origin, confidence, composite fields, etc."""
+
+    SDL_EXTENDED = """\
+    type orders @table(database: db, schema: main, name: orders) {
+      customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, field: customer_id, origin: constraint, confidence: declared, name: "order customer", description: "FK to customers")
+    }
+    """
+
+    def test_origin_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_EXTENDED)
+        col = info.tables[0].columns[0]
+        assert col.relation.origin == "constraint"
+
+    def test_confidence_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_EXTENDED)
+        col = info.tables[0].columns[0]
+        assert col.relation.confidence == "declared"
+
+    def test_business_name_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_EXTENDED)
+        col = info.tables[0].columns[0]
+        assert col.relation.business_name == "order customer"
+
+    def test_description_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_EXTENDED)
+        col = info.tables[0].columns[0]
+        assert col.relation.description == "FK to customers"
+
+
+class TestCompositeRelationDirective:
+    """Parse @relation with fields/toFields for composite FKs."""
+
+    SDL_COMPOSITE = """\
+    type order_items @table(database: db, schema: main, name: order_items) {
+      order_id: Integer! @column(type: "INTEGER") @relation(type: orders, fields: [tenant_id, order_id], toFields: [tenant_id, id])
+    }
+    """
+
+    def test_from_columns_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_COMPOSITE)
+        col = info.tables[0].columns[0]
+        assert col.relation.from_columns == ["tenant_id", "order_id"]
+
+    def test_to_columns_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_COMPOSITE)
+        col = info.tables[0].columns[0]
+        assert col.relation.to_columns == ["tenant_id", "id"]
+
+
+class TestReverseRelationDirective:
+    """Parse @reverseRelation fields into TableDef.reverse_relations."""
+
+    SDL_REVERSE = """\
+    type customers @table(database: db, schema: main, name: customers) {
+      customer_id: Integer! @column(type: "INTEGER") @id
+      orders: [orders] @reverseRelation(from: orders, via: "customer_id")
+    }
+    """
+
+    def test_reverse_relation_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_REVERSE)
+        assert len(info.tables[0].reverse_relations) == 1
+        rev = info.tables[0].reverse_relations[0]
+        assert rev.from_model == "orders"
+        assert rev.via_column == "customer_id"
+
+
 class TestRegistry:
     def test_get_existing(self):
         _, reg = _parse()
