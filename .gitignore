@@ -265,4 +265,5 @@ dbt_packages/
 logs/
 
 vendored_references/
+playground/
 *.*db
