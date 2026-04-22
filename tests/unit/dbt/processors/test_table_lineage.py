@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from dbt_graphql.dbt.artifacts import load_catalog, load_manifest
+from dbt_graphql.dbt.artifacts import load_manifest
 from dbt_graphql.dbt.processors.compiled_sql import extract_table_lineage
 from dbt_graphql.ir.models import TableLineageItem
 
@@ -30,14 +30,24 @@ class TestTableLineage:
     def test_stg_models_depend_on_seeds(self):
         manifest = load_manifest(MANIFEST)
         result = extract_table_lineage(manifest)
-        assert {e.source for e in result if e.target == "stg_customers"} == {"raw_customers"}
+        assert {e.source for e in result if e.target == "stg_customers"} == {
+            "raw_customers"
+        }
         assert {e.source for e in result if e.target == "stg_orders"} == {"raw_orders"}
-        assert {e.source for e in result if e.target == "stg_payments"} == {"raw_payments"}
+        assert {e.source for e in result if e.target == "stg_payments"} == {
+            "raw_payments"
+        }
 
     def test_only_model_nodes_as_targets(self):
         manifest = load_manifest(MANIFEST)
         result = extract_table_lineage(manifest)
-        known_models = {"customers", "orders", "stg_customers", "stg_orders", "stg_payments"}
+        known_models = {
+            "customers",
+            "orders",
+            "stg_customers",
+            "stg_orders",
+            "stg_payments",
+        }
         assert {e.target for e in result} <= known_models
 
     def test_returns_list_of_table_lineage_items(self):

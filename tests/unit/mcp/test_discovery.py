@@ -67,7 +67,9 @@ class TestDescribeTable:
                 assert col.value_summary is None
 
     def test_enum_column_gets_value_summary_without_db(self):
-        col = ColumnInfo(name="status", type="VARCHAR", enum_values=["placed", "shipped"])
+        col = ColumnInfo(
+            name="status", type="VARCHAR", enum_values=["placed", "shipped"]
+        )
         model = ModelInfo(name="orders", database="db", schema="main", columns=[col])
         project = ProjectInfo(
             project_name="test", adapter_type="duckdb", models=[model]
@@ -76,7 +78,10 @@ class TestDescribeTable:
         detail = asyncio.run(d.describe_table("orders"))
         assert detail is not None
         status_col = next(c for c in detail.columns if c.name == "status")
-        assert status_col.value_summary == {"kind": "enum", "values": ["placed", "shipped"]}
+        assert status_col.value_summary == {
+            "kind": "enum",
+            "values": ["placed", "shipped"],
+        }
 
     def test_result_is_cached(self):
         d = _make_discovery()

@@ -189,7 +189,10 @@ class SchemaDiscovery:
                     detail.name, col.name, limit=max_cardinality + 1
                 )
                 if len(values) <= max_cardinality:
-                    col.value_summary = {"kind": "distinct", "values": values[:distinct_limit]}
+                    col.value_summary = {
+                        "kind": "distinct",
+                        "values": values[:distinct_limit],
+                    }
 
         await asyncio.gather(*(_enrich_col(c) for c in detail.columns))
 
