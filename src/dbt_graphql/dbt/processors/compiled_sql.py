@@ -202,7 +202,7 @@ def extract_table_lineage(manifest: DbtManifest) -> list[TableLineageItem]:
         for d in dep_nodes:
             if d.startswith(("model.", "seed.", "source.")):
                 result.append(
-                    TableLineageItem(  # type:ignore[ty:unknown-argument]
+                    TableLineageItem(
                         source=_model_name_from_unique_id(d),
                         target=model_name,
                     )
@@ -260,15 +260,15 @@ def _edges_for_model(
                 continue
             seen.add(key)
             by_source.setdefault(source_model, []).append(
-                Column(  # type:ignore[ty:unknown-argument]
-                    source_column=col_name,
-                    target_column=target_col,
-                    lineage_type=lineage_type,
+                Column(
+                    source_column=col_name,  # type:ignore[ty:unknown-argument]
+                    target_column=target_col,  # type:ignore[ty:unknown-argument]
+                    lineage_type=lineage_type,  # type:ignore[ty:unknown-argument]
                 )
             )
 
     return [
-        ColumnLineageItem(  # type:ignore[ty:unknown-argument]
+        ColumnLineageItem(
             source=src,
             target=model_name,
             columns=cols,
