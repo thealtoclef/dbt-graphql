@@ -16,6 +16,7 @@ def _get_graphql_instruments():
     global _graphql_meter, _op_counter, _err_counter, _duration_histogram
     if _graphql_meter is None:
         from opentelemetry import metrics
+
         _graphql_meter = metrics.get_meter("dbt_graphql.graphql")
         _op_counter = _graphql_meter.create_counter(
             name="graphql.operation.count",
@@ -42,7 +43,9 @@ class GraphQLMetricsExtension(Extension):
         self._start_time: float | None = None
         self._operation_name: str = "unknown"
         self._operation_type: str = "query"
-        self._op_counter, self._err_counter, self._duration_histogram = _get_graphql_instruments()
+        self._op_counter, self._err_counter, self._duration_histogram = (
+            _get_graphql_instruments()
+        )
 
     def request_started(self, context: ContextValue) -> None:
         self._start_time = time.perf_counter()
@@ -72,7 +75,9 @@ class GraphQLMetricsExtension(Extension):
         try:
             errors = context["errors"]  # type: ignore[index]
             if errors:
-                self._err_counter.add(len(errors), {"operation.name": self._operation_name})
+                self._err_counter.add(
+                    len(errors), {"operation.name": self._operation_name}
+                )
         except (KeyError, TypeError):
             pass
 
@@ -99,4 +104,6 @@ def build_graphql_http_handler():
     from ariadne.asgi.handlers import GraphQLHTTPHandler
     from ariadne.contrib.tracing.opentelemetry import OpenTelemetryExtension
 
-    return GraphQLHTTPHandler(extensions=[OpenTelemetryExtension, GraphQLMetricsExtension])
+    return GraphQLHTTPHandler(
+        extensions=[OpenTelemetryExtension, GraphQLMetricsExtension]
+    )

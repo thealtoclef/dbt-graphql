@@ -28,7 +28,9 @@ class TracesConfig(BaseModel):
     @model_validator(mode="after")
     def _require_protocol_with_endpoint(self) -> "TracesConfig":
         if self.endpoint and not self.protocol:
-            raise ValueError("monitoring.traces.protocol is required when endpoint is set")
+            raise ValueError(
+                "monitoring.traces.protocol is required when endpoint is set"
+            )
         return self
 
 
@@ -39,7 +41,9 @@ class MetricsConfig(BaseModel):
     @model_validator(mode="after")
     def _require_protocol_with_endpoint(self) -> "MetricsConfig":
         if self.endpoint and not self.protocol:
-            raise ValueError("monitoring.metrics.protocol is required when endpoint is set")
+            raise ValueError(
+                "monitoring.metrics.protocol is required when endpoint is set"
+            )
         return self
 
 
@@ -51,7 +55,9 @@ class LogsConfig(BaseModel):
     @model_validator(mode="after")
     def _require_protocol_with_endpoint(self) -> "LogsConfig":
         if self.endpoint and not self.protocol:
-            raise ValueError("monitoring.logs.protocol is required when endpoint is set")
+            raise ValueError(
+                "monitoring.logs.protocol is required when endpoint is set"
+            )
         return self
 
 

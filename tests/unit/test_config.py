@@ -76,7 +76,9 @@ class TestEnvVarOverrides:
         assert cfg.enrichment.budget == 42
 
     def test_monitoring_traces_endpoint_from_env(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("DBT_GRAPHQL__MONITORING__TRACES__ENDPOINT", "http://col:4317")
+        monkeypatch.setenv(
+            "DBT_GRAPHQL__MONITORING__TRACES__ENDPOINT", "http://col:4317"
+        )
         monkeypatch.setenv("DBT_GRAPHQL__MONITORING__TRACES__PROTOCOL", "grpc")
         cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
         assert cfg.monitoring.traces.endpoint == "http://col:4317"

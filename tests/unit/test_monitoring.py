@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from dbt_graphql.config import LogsConfig, MetricsConfig, MonitoringConfig, TracesConfig
 
@@ -25,28 +24,32 @@ def _make_otel_mocks():
 def _make_otlp_grpc_trace_mocks(mocks=None):
     m = mocks or _make_otel_mocks()
     otlp_mod = MagicMock()
-    m.update({
-        "opentelemetry.exporter": MagicMock(),
-        "opentelemetry.exporter.otlp": MagicMock(),
-        "opentelemetry.exporter.otlp.proto": MagicMock(),
-        "opentelemetry.exporter.otlp.proto.grpc": MagicMock(),
-        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter": otlp_mod,
-    })
+    m.update(
+        {
+            "opentelemetry.exporter": MagicMock(),
+            "opentelemetry.exporter.otlp": MagicMock(),
+            "opentelemetry.exporter.otlp.proto": MagicMock(),
+            "opentelemetry.exporter.otlp.proto.grpc": MagicMock(),
+            "opentelemetry.exporter.otlp.proto.grpc.trace_exporter": otlp_mod,
+        }
+    )
     return m, otlp_mod
 
 
 def _make_otlp_grpc_metric_mocks(mocks=None):
     m = mocks or _make_otel_mocks()
     otlp_mod = MagicMock()
-    m.update({
-        "opentelemetry.sdk.metrics": MagicMock(),
-        "opentelemetry.sdk.metrics.export": MagicMock(),
-        "opentelemetry.exporter": MagicMock(),
-        "opentelemetry.exporter.otlp": MagicMock(),
-        "opentelemetry.exporter.otlp.proto": MagicMock(),
-        "opentelemetry.exporter.otlp.proto.grpc": MagicMock(),
-        "opentelemetry.exporter.otlp.proto.grpc.metric_exporter": otlp_mod,
-    })
+    m.update(
+        {
+            "opentelemetry.sdk.metrics": MagicMock(),
+            "opentelemetry.sdk.metrics.export": MagicMock(),
+            "opentelemetry.exporter": MagicMock(),
+            "opentelemetry.exporter.otlp": MagicMock(),
+            "opentelemetry.exporter.otlp.proto": MagicMock(),
+            "opentelemetry.exporter.otlp.proto.grpc": MagicMock(),
+            "opentelemetry.exporter.otlp.proto.grpc.metric_exporter": otlp_mod,
+        }
+    )
     return m, otlp_mod
 
 
@@ -64,6 +67,7 @@ class TestConfigureMonitoring:
         with patch.dict("sys.modules", mocks):
             from importlib import reload
             import dbt_graphql.monitoring as tel
+
             reload(tel)
 
             fn_patches = [patch.object(tel, "_setup_loguru")]
@@ -94,23 +98,29 @@ class TestConfigureMonitoring:
             traces=TracesConfig(endpoint="http://collector:4317", protocol="grpc")
         )
         self._run(config, extra_mocks=extra)
-        otlp_mod.OTLPSpanExporter.assert_called_once_with(endpoint="http://collector:4317")
+        otlp_mod.OTLPSpanExporter.assert_called_once_with(
+            endpoint="http://collector:4317"
+        )
 
     def test_otlp_http_span_exporter_when_protocol_http(self):
         mocks = _make_otel_mocks()
         otlp_mod = MagicMock()
-        mocks.update({
-            "opentelemetry.exporter": MagicMock(),
-            "opentelemetry.exporter.otlp": MagicMock(),
-            "opentelemetry.exporter.otlp.proto": MagicMock(),
-            "opentelemetry.exporter.otlp.proto.http": MagicMock(),
-            "opentelemetry.exporter.otlp.proto.http.trace_exporter": otlp_mod,
-        })
+        mocks.update(
+            {
+                "opentelemetry.exporter": MagicMock(),
+                "opentelemetry.exporter.otlp": MagicMock(),
+                "opentelemetry.exporter.otlp.proto": MagicMock(),
+                "opentelemetry.exporter.otlp.proto.http": MagicMock(),
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter": otlp_mod,
+            }
+        )
         config = MonitoringConfig(
             traces=TracesConfig(endpoint="http://collector:4318", protocol="http")
         )
         self._run(config, extra_mocks=mocks)
-        otlp_mod.OTLPSpanExporter.assert_called_once_with(endpoint="http://collector:4318")
+        otlp_mod.OTLPSpanExporter.assert_called_once_with(
+            endpoint="http://collector:4318"
+        )
 
     def test_no_otlp_span_exporter_when_no_traces_endpoint(self):
         mocks = self._run(MonitoringConfig())
@@ -128,7 +138,9 @@ class TestConfigureMonitoring:
             metrics=MetricsConfig(endpoint="http://collector:4317", protocol="grpc")
         )
         self._run(config, extra_mocks=extra)
-        otlp_mod.OTLPMetricExporter.assert_called_once_with(endpoint="http://collector:4317")
+        otlp_mod.OTLPMetricExporter.assert_called_once_with(
+            endpoint="http://collector:4317"
+        )
 
     def test_no_metrics_exporter_without_endpoint(self):
         mocks = self._run(MonitoringConfig())
@@ -136,11 +148,14 @@ class TestConfigureMonitoring:
 
     def test_loguru_patcher_configured(self):
         mocks = _make_otel_mocks()
-        with patch.dict("sys.modules", mocks), \
-             patch("dbt_graphql.monitoring._setup_loguru"), \
-             patch("loguru.logger.configure") as mock_configure:
+        with (
+            patch.dict("sys.modules", mocks),
+            patch("dbt_graphql.monitoring._setup_loguru"),
+            patch("loguru.logger.configure") as mock_configure,
+        ):
             from importlib import reload
             import dbt_graphql.monitoring as tel
+
             reload(tel)
             tel.configure_monitoring(MonitoringConfig())
 
@@ -152,10 +167,13 @@ class TestConfigureMonitoring:
         with patch.dict("sys.modules", mocks):
             from importlib import reload
             import dbt_graphql.monitoring as tel
+
             reload(tel)
-            with patch.object(tel, "_setup_loguru"), \
-                 patch.object(tel, "_instrument_loguru"), \
-                 patch.object(tel, "_add_otlp_log_sink") as mock_sink:
+            with (
+                patch.object(tel, "_setup_loguru"),
+                patch.object(tel, "_instrument_loguru"),
+                patch.object(tel, "_add_otlp_log_sink") as mock_sink,
+            ):
                 config = MonitoringConfig(
                     logs=LogsConfig(endpoint="http://collector:4317", protocol="grpc")
                 )
@@ -168,10 +186,13 @@ class TestConfigureMonitoring:
         with patch.dict("sys.modules", mocks):
             from importlib import reload
             import dbt_graphql.monitoring as tel
+
             reload(tel)
-            with patch.object(tel, "_setup_loguru"), \
-                 patch.object(tel, "_instrument_loguru"), \
-                 patch.object(tel, "_add_otlp_log_sink") as mock_sink:
+            with (
+                patch.object(tel, "_setup_loguru"),
+                patch.object(tel, "_instrument_loguru"),
+                patch.object(tel, "_add_otlp_log_sink") as mock_sink,
+            ):
                 tel.configure_monitoring(MonitoringConfig())
 
         mock_sink.assert_not_called()

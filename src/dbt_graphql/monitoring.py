@@ -25,7 +25,9 @@ class _InterceptHandler(logging.Handler):
         while frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back  # type: ignore[assignment]
             depth += 1
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def _setup_loguru(level: str) -> None:
@@ -52,7 +54,9 @@ def _instrument_loguru() -> None:
 
         if service_name is None:
             resource = getattr(provider, "resource", None)
-            service_name = (resource.attributes.get("service.name") or "") if resource else ""
+            service_name = (
+                (resource.attributes.get("service.name") or "") if resource else ""
+            )
         record["extra"]["otelServiceName"] = service_name
 
         span = get_current_span()
@@ -97,21 +101,23 @@ def _add_otlp_log_sink(config: MonitoringConfig, resource) -> None:
         r = message.record
         trace_id_str = r["extra"].get("otelTraceID", "0") or "0"
         span_id_str = r["extra"].get("otelSpanID", "0") or "0"
-        otel_logger.emit(LogRecord(
-            timestamp=int(r["time"].timestamp() * 1e9),
-            observed_timestamp=int(r["time"].timestamp() * 1e9),
-            severity_number=severity_map.get(r["level"].name, SeverityNumber.INFO),
-            severity_text=r["level"].name,
-            body=r["message"],
-            attributes={
-                "code.filepath": str(r["file"].path),
-                "code.lineno": r["line"],
-                "code.function": r["function"],
-                "logger.name": r["name"],
-            },
-            trace_id=int(trace_id_str, 16),
-            span_id=int(span_id_str, 16),
-        ))
+        otel_logger.emit(
+            LogRecord(
+                timestamp=int(r["time"].timestamp() * 1e9),
+                observed_timestamp=int(r["time"].timestamp() * 1e9),
+                severity_number=severity_map.get(r["level"].name, SeverityNumber.INFO),
+                severity_text=r["level"].name,
+                body=r["message"],
+                attributes={
+                    "code.filepath": str(r["file"].path),
+                    "code.lineno": r["line"],
+                    "code.function": r["function"],
+                    "logger.name": r["name"],
+                },
+                trace_id=int(trace_id_str, 16),
+                span_id=int(span_id_str, 16),
+            )
+        )
 
     logger.add(_otlp_sink, level=config.logs.level.upper())
 
@@ -128,6 +134,7 @@ def configure_monitoring(config: MonitoringConfig | None = None) -> None:
 
     # 2. OTel shared resource
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+
     resource = Resource({SERVICE_NAME: config.service_name})
 
     # 3. Traces
@@ -139,13 +146,18 @@ def configure_monitoring(config: MonitoringConfig | None = None) -> None:
 
     if level == "DEBUG":
         from opentelemetry.sdk.trace.export import ConsoleSpanExporter
+
         tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 
     if config.traces.endpoint:
         if config.traces.protocol == "http":
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
         else:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter,
+            )
         tracer_provider.add_span_processor(
             BatchSpanProcessor(OTLPSpanExporter(endpoint=config.traces.endpoint))
         )
@@ -159,14 +171,20 @@ def configure_monitoring(config: MonitoringConfig | None = None) -> None:
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
         if config.metrics.protocol == "http":
-            from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+                OTLPMetricExporter,
+            )
         else:
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+                OTLPMetricExporter,
+            )
 
         reader = PeriodicExportingMetricReader(
             OTLPMetricExporter(endpoint=config.metrics.endpoint)
         )
-        metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
+        metrics.set_meter_provider(
+            MeterProvider(resource=resource, metric_readers=[reader])
+        )
 
     # 5. Loguru patcher: inject trace context into every log record
     _instrument_loguru()
