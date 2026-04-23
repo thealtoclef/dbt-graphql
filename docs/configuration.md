@@ -46,17 +46,39 @@ Any field can be overridden at runtime via env var without editing the config fi
 
 ## `monitoring` (optional)
 
-OpenTelemetry tracing and log level. Omit if you don't use OTel.
+OpenTelemetry configuration and log level. Omit the block (or any sub-block) to use defaults. Signals are configured independently — you can ship only traces, only logs, or any combination.
+
+### `monitoring.logs`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `level` | string | `"INFO"` | Log level: `trace`, `debug`, `info`, `warning`, `error`, `critical` |
+| `endpoint` | string | `null` | OTLP collector URL. When set, log records are shipped via OTLP in addition to the console. |
+| `protocol` | string | `null` | OTLP transport: `grpc` or `http`. **Required when `endpoint` is set.** |
+
+Console (stderr) output is always active regardless of whether an OTLP endpoint is configured. Console span export is enabled automatically when `level` is `trace` or `debug`.
+
+### `monitoring.traces`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | `null` | OTLP collector URL for spans. |
+| `protocol` | string | `null` | OTLP transport: `grpc` or `http`. **Required when `endpoint` is set.** |
+
+### `monitoring.metrics`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | `null` | OTLP collector URL for metrics. |
+| `protocol` | string | `null` | OTLP transport: `grpc` or `http`. **Required when `endpoint` is set.** |
+
+### Top-level monitoring fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `service_name` | string | `"dbt-graphql"` | OTel `service.name` resource attribute |
-| `exporter` | string | `"otlp"` | Span exporter: `otlp` or `console` |
-| `protocol` | string | `"grpc"` | OTLP transport: `grpc` or `http` |
-| `endpoint` | string | `null` | OTLP collector URL. Uses SDK default if omitted. |
-| `log_level` | string | `"INFO"` | Python log level for the `dbt_graphql` logger |
 
-The entire monitoring block is a no-op if `opentelemetry-sdk` is not installed.
+Setting `endpoint` without `protocol` raises a config error at startup.
 
 ---
 
@@ -68,7 +90,9 @@ All config fields can be overridden via `DBT_GRAPHQL__` prefixed env vars. Neste
 DBT_GRAPHQL__DB__HOST=myhost
 DBT_GRAPHQL__DB__PASSWORD=secret
 DBT_GRAPHQL__ENRICHMENT__BUDGET=5
-DBT_GRAPHQL__MONITORING__LOG_LEVEL=DEBUG
+DBT_GRAPHQL__MONITORING__LOGS__LEVEL=DEBUG
+DBT_GRAPHQL__MONITORING__TRACES__ENDPOINT=http://collector:4317
+DBT_GRAPHQL__MONITORING__TRACES__PROTOCOL=grpc
 ```
 
 Env vars take precedence over values in `config.yml`.

@@ -124,10 +124,10 @@ No N+1 issues — nested relations are resolved inside the same query via the co
 
 ### Observability
 
-OTel is bundled with `dbt-graphql[api]`. Three layers activate automatically when an OTel SDK is configured:
+OTel is bundled with `dbt-graphql[api]`. Three layers activate automatically:
 
 - **Starlette** (`opentelemetry-instrumentation-starlette`) — HTTP request spans.
 - **Ariadne** (`ariadne.contrib.tracing.opentelemetry.OpenTelemetryExtension`) — GraphQL operation and per-resolver spans.
 - **SQLAlchemy** (`opentelemetry-instrumentation-sqlalchemy`) — per-query spans attached to the engine after connect.
 
-Configure via standard OTel env vars: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_EXPORTER`. Bootstrapped in `api/telemetry.py` before the app starts. All calls are no-ops when no exporter is configured.
+Configure via the `monitoring` block in `config.yml` (see [configuration.md](configuration.md)). Each signal (traces, metrics, logs) has its own `endpoint` and `protocol` field. Instrumentation is bootstrapped in `api/monitoring.py` before the app starts.

@@ -18,8 +18,17 @@ enrichment:
 
 # Optional — remove this block if you don't use OpenTelemetry
 monitoring:
-  log_level: info
-  service_name: dbt-graphql
-  exporter: otlp          # otlp | console
-  endpoint: http://localhost:4317
-  protocol: grpc          # grpc | http
+  service_name: dbt-graphql   # OTel service.name resource attribute
+
+  logs:
+    level: info               # trace | debug | info | warning | error | critical
+    # endpoint: http://localhost:4317   # uncomment to ship logs over OTLP
+    # protocol: grpc                    # grpc | http  (required when endpoint is set)
+
+  traces:
+    # endpoint: http://localhost:4317   # uncomment to export spans over OTLP
+    # protocol: grpc                    # grpc | http  (required when endpoint is set)
+
+  metrics:
+    # endpoint: http://localhost:4317   # uncomment to export metrics over OTLP
+    # protocol: grpc                    # grpc | http  (required when endpoint is set)

@@ -35,7 +35,7 @@ Each response includes `_meta.next_steps` — a short list guiding the agent's n
 
 ## Observability
 
-fastmcp ships native OTel support built on `opentelemetry-api` (a hard dep of fastmcp, no extras required). Every tool call automatically emits a `SERVER` span with RPC semantic conventions (`rpc.system: "mcp"`, `rpc.method`, `rpc.service`) and FastMCP-specific attributes. Spans are no-ops unless an OTel SDK is configured — installing `dbt-graphql[mcp]` and setting `OTEL_EXPORTER_OTLP_ENDPOINT` is sufficient. Distributed trace propagation via `traceparent`/`tracestate` in MCP request meta is also supported.
+fastmcp ships native OTel support built on `opentelemetry-api` (a hard dep of fastmcp, no extras required). Every tool call automatically emits a `SERVER` span with RPC semantic conventions (`rpc.system: "mcp"`, `rpc.method`, `rpc.service`) and FastMCP-specific attributes. Spans are no-ops unless a traces endpoint is configured — set `monitoring.traces.endpoint` and `monitoring.traces.protocol` in `config.yml` (see [configuration.md](configuration.md)). Distributed trace propagation via `traceparent`/`tracestate` in MCP request meta is also supported.
 
 ---
 
