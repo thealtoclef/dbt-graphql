@@ -1,6 +1,6 @@
 """Integration tests: access policy + compile_query + SQLAlchemy.
 
-These tests compile real SQL (against the sqlite dialect) to prove that a
+These tests compile real SQL (against the postgresql dialect) to prove that a
 ResolvedPolicy actually restricts columns, applies masks, and injects a row
 filter — and, critically, that JWT claim values are bound as parameters and
 cannot inject SQL.
@@ -8,7 +8,7 @@ cannot inject SQL.
 
 from __future__ import annotations
 
-from sqlalchemy.dialects import sqlite
+from sqlalchemy.dialects import postgresql
 
 from dbt_graphql.api.policy import (
     AccessPolicy,
@@ -54,7 +54,9 @@ def _field_node(name, selections=None):
 
 def _sql(stmt) -> str:
     return str(
-        stmt.compile(dialect=sqlite.dialect(), compile_kwargs={"literal_binds": True})
+        stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
     )
 
 
@@ -192,7 +194,7 @@ def test_row_filter_uses_bind_param():
     stmt = compile_query(customers, [fn], registry, resolved_policy=policy)
 
     # Compile WITHOUT literal_binds to observe the parameter structure.
-    compiled = stmt.compile(dialect=sqlite.dialect())
+    compiled = stmt.compile(dialect=postgresql.dialect())
     # The compiled SQL must reference the row filter.
     assert "org_id =" in str(compiled)
     # And the bound value must survive as a real parameter (not interpolated).
@@ -222,7 +224,7 @@ def test_row_filter_injection_attempt_does_not_inject():
     stmt = compile_query(customers, [fn], registry, resolved_policy=policy)
 
     # Without literal_binds: the dangerous string is a parameter value, not SQL.
-    compiled = stmt.compile(dialect=sqlite.dialect())
+    compiled = stmt.compile(dialect=postgresql.dialect())
     assert "DROP TABLE" not in str(compiled)
     # The value is carried as a parameter (safe).
     assert "1'; DROP TABLE customers; --" in compiled.params.values()

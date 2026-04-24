@@ -40,9 +40,9 @@ _SCHEMA = {
 
 
 def _edges(sql: str) -> list[ColumnLineageItem]:
-    scope = qualify_model_sql(sql, "duckdb", _SCHEMA)
+    scope = qualify_model_sql(sql, "postgres", _SCHEMA)
     assert scope is not None, f"qualify failed for SQL: {sql}"
-    return _edges_for_model("t", scope, _TABLE_LOOKUP, "duckdb")
+    return _edges_for_model("t", scope, _TABLE_LOOKUP, "postgres")
 
 
 def _cols(items: list[ColumnLineageItem], target_col: str) -> list[tuple[str, Column]]:

@@ -1,13 +1,11 @@
-"""Shared fixtures for integration tests across DuckDB, PostgreSQL, and MySQL."""
+"""Shared fixtures for integration tests across PostgreSQL and MySQL."""
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import socket
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -17,13 +15,11 @@ JAFFLE = FIXTURES / "jaffle-shop"
 PROFILES_DIR = FIXTURES / "dbt-profiles"
 
 _ADAPTER_PKG = {
-    "duckdb": "dbt-duckdb",
     "postgres": "dbt-postgres",
     "mysql": "dbt-mysql",
 }
 
 _DRIVER_MODULE = {
-    "duckdb": "duckdb_engine",
     "postgres": "asyncpg",
     "mysql": "aiomysql",
 }
@@ -39,39 +35,6 @@ _ASYNC_URL = {
 # ---------------------------------------------------------------------------
 
 
-class SyncDBConnection:
-    """Sync SQLAlchemy engine wrapped for async use (DuckDB)."""
-
-    def __init__(self, url: str) -> None:
-        from sqlalchemy import create_engine
-
-        self._engine = create_engine(url)
-
-    @property
-    def dialect_name(self) -> str:
-        return self._engine.dialect.name
-
-    async def execute(self, query) -> list[dict[str, Any]]:
-        from sqlalchemy import text
-
-        loop = asyncio.get_running_loop()
-        # Accept both text strings and SQLAlchemy selectables
-        if isinstance(query, str):
-            query = text(query)
-
-        def _run():
-            with self._engine.connect() as conn:
-                return [dict(row._mapping) for row in conn.execute(query)]
-
-        return await loop.run_in_executor(None, _run)
-
-    async def execute_text(self, sql: str) -> list[dict[str, Any]]:
-        return await self.execute(sql)
-
-    async def close(self) -> None:
-        self._engine.dispose()
-
-
 class AsyncDBConnection:
     """Async DatabaseManager wrapper (PostgreSQL, MySQL)."""
 
@@ -83,17 +46,16 @@ class AsyncDBConnection:
 
     @property
     def dialect_name(self) -> str:
-        # Extract from URL: "mysql+aiomysql://..." → "mysql"
         scheme = self._url.split("://")[0]
         return scheme.split("+")[0]
 
     async def connect(self) -> None:
         await self._mgr.connect()
 
-    async def execute(self, query) -> list[dict[str, Any]]:
+    async def execute(self, query) -> list[dict[str, object]]:
         return await self._mgr.execute(query)
 
-    async def execute_text(self, sql: str) -> list[dict[str, Any]]:
+    async def execute_text(self, sql: str) -> list[dict[str, object]]:
         return await self._mgr.execute_text(sql)
 
     async def close(self) -> None:
@@ -130,7 +92,6 @@ class AdapterEnv:
 # ---------------------------------------------------------------------------
 # Cached derived data (project + registry + graphql per adapter)
 # ---------------------------------------------------------------------------
-
 
 _adapter_cache: dict[str, dict] = {}
 
@@ -273,15 +234,6 @@ def _build_dbt_project(
 
 
 @pytest.fixture(scope="session")
-def duckdb_artifacts(tmp_path_factory):
-    return _build_dbt_project(
-        "duckdb",
-        tmp_path_factory.mktemp("dbt-envs"),
-        tmp_path_factory.mktemp("e2e"),
-    )
-
-
-@pytest.fixture(scope="session")
 def postgres_artifacts(tmp_path_factory, postgres_service):
     return _build_dbt_project(
         "postgres",
@@ -304,7 +256,7 @@ def mysql_artifacts(tmp_path_factory, mysql_service):
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture(params=["duckdb", "postgres", "mysql"])
+@pytest_asyncio.fixture(params=["postgres", "mysql"])
 async def adapter_env(request, tmp_path):
     """Parametrized fixture providing AdapterEnv for each adapter."""
     name = request.param
@@ -313,14 +265,8 @@ async def adapter_env(request, tmp_path):
     artifacts = request.getfixturevalue(f"{name}_artifacts")
     data = _get_adapter_data(name, artifacts)
 
-    if name == "duckdb":
-        db_path = artifacts["project_dir"] / "jaffle_shop.duckdb"
-        db: SyncDBConnection | AsyncDBConnection = SyncDBConnection(
-            f"duckdb:///{db_path}"
-        )
-    else:
-        db = AsyncDBConnection(_ASYNC_URL[name])
-        await db.connect()
+    db = AsyncDBConnection(_ASYNC_URL[name])
+    await db.connect()
 
     yield AdapterEnv(
         name=name,
@@ -334,7 +280,7 @@ async def adapter_env(request, tmp_path):
 
 @pytest.fixture(params=["postgres", "mysql"])
 def serve_adapter_env(request, tmp_path):
-    """Parametrized fixture for HTTP serve tests (async DB drivers only)."""
+    """Parametrized fixture for HTTP serve tests."""
     name = request.param
     pytest.importorskip(_DRIVER_MODULE[name])
 

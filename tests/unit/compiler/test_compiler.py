@@ -5,7 +5,7 @@ when compiled against different SQLAlchemy dialects.
 """
 
 import pytest
-from sqlalchemy.dialects import mysql, postgresql, sqlite
+from sqlalchemy.dialects import mysql, postgresql
 
 from dbt_graphql.compiler.query import compile_query
 from dbt_graphql.formatter.schema import (
@@ -101,7 +101,7 @@ class TestFlatQuery:
             "customers", [_field_node("customer_id"), _field_node("first_name")]
         )
         stmt = compile_query(customers, [fn], registry)
-        sql = _sql(stmt, sqlite)
+        sql = _sql(stmt, postgresql)
         assert "customer_id" in sql
         assert "first_name" in sql
 
@@ -109,14 +109,14 @@ class TestFlatQuery:
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
         stmt = compile_query(customers, [fn], registry, limit=10)
-        sql = _sql(stmt, sqlite)
+        sql = _sql(stmt, postgresql)
         assert "LIMIT 10" in sql
 
     def test_offset(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
         stmt = compile_query(customers, [fn], registry, limit=10, offset=20)
-        sql = _sql(stmt, sqlite)
+        sql = _sql(stmt, postgresql)
         assert "OFFSET 20" in sql
 
 
@@ -125,7 +125,7 @@ class TestWhereFilter:
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
         stmt = compile_query(customers, [fn], registry, where={"customer_id": 1})
-        sql = _sql(stmt, sqlite)
+        sql = _sql(stmt, postgresql)
         assert "WHERE" in sql
         assert "1" in sql
 
@@ -139,7 +139,7 @@ class TestWhereFilter:
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
         stmt = compile_query(customers, [fn], registry, where={})
-        sql = _sql(stmt, sqlite)
+        sql = _sql(stmt, postgresql)
         assert "WHERE" not in sql
 
 
@@ -209,7 +209,7 @@ class TestMultiHopNesting:
             ],
         )
         stmt = compile_query(orders, [fn], registry)
-        sql = _sql(stmt, sqlite)
+        sql = _sql(stmt, postgresql)
         assert "child_1" in sql
         assert "child_2" in sql
         assert "LATERAL" not in sql
@@ -231,10 +231,10 @@ class TestMultiHopNesting:
             ],
         )
         stmt = compile_query(orders, [fn], registry)
-        sql = _sql(stmt, sqlite)
+        sql = _sql(stmt, postgresql)
         # Both levels must aggregate JSON
-        assert sql.count("JSON_GROUP_ARRAY") == 2
-        assert sql.count("JSON_OBJECT") == 2
+        assert sql.count("JSONB_AGG") == 2
+        assert sql.count("JSONB_BUILD_OBJECT") == 2
 
     def test_cycle_detection_raises(self):
         """A → B → A → B must raise ValueError when the query follows the cycle.
@@ -349,61 +349,6 @@ class TestMultiHopNesting:
         stmt = compile_query(orders, [fn], registry)
         assert stmt is not None
 
-    def test_two_hop_executes_correctly(self):
-        """2-hop query must return the right nested data from a real SQLite DB."""
-        import json
-        from sqlalchemy import create_engine, text
-
-        # Some Python/SQLite/SQLAlchemy combinations auto-parse JSON aggregates
-        # into Python objects; others return raw strings. _load handles both.
-        def _load(val):
-            return json.loads(val) if isinstance(val, str) else val
-
-        engine = create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE TABLE addresses (address_id INTEGER, city TEXT)"))
-            conn.execute(
-                text("CREATE TABLE customers (customer_id INTEGER, address_id INTEGER)")
-            )
-            conn.execute(
-                text("CREATE TABLE orders (order_id INTEGER, customer_id INTEGER)")
-            )
-            conn.execute(text("INSERT INTO addresses VALUES (10, 'NYC'), (20, 'LA')"))
-            conn.execute(text("INSERT INTO customers VALUES (1, 10), (2, 20)"))
-            conn.execute(text("INSERT INTO orders VALUES (100, 1), (200, 2)"))
-            conn.commit()
-
-        orders, registry = _three_table_registry()
-        fn = _field_node(
-            "orders",
-            [
-                _field_node("order_id"),
-                _field_node(
-                    "customer_id",
-                    [
-                        _field_node("customer_id"),
-                        _field_node("address_id", [_field_node("city")]),
-                    ],
-                ),
-            ],
-        )
-        stmt = compile_query(orders, [fn], registry)
-
-        with engine.connect() as conn:
-            rows = [dict(r._mapping) for r in conn.execute(stmt)]
-
-        assert len(rows) == 2
-        for row in rows:
-            customer_data = _load(row["customer_id"])
-            assert isinstance(customer_data, list)
-            assert len(customer_data) == 1
-            customer = customer_data[0]
-            assert "customer_id" in customer
-            addr_data = _load(customer["address_id"])
-            assert isinstance(addr_data, list)
-            assert len(addr_data) == 1
-            assert "city" in addr_data[0]
-
 
 # ---------------------------------------------------------------------------
 # Dialect-specific JSON function compilation
@@ -429,19 +374,12 @@ class TestDialectCompilation:
         sql = _relation_sql(mysql)
         assert "JSON_ARRAYAGG(JSON_OBJECT(" in sql
 
-    def test_sqlite_uses_json_group_array(self):
-        sql = _relation_sql(sqlite)
-        assert "JSON_GROUP_ARRAY(JSON_OBJECT(" in sql
-
     def test_postgres_uses_jsonb_agg(self):
         sql = _relation_sql(postgresql)
         assert "JSONB_AGG(JSONB_BUILD_OBJECT(" in sql
 
-    def test_duckdb_uses_list(self):
-        # DuckDB doesn't have a built-in SQLAlchemy dialect,
-        # so we compile against the default and check the function name.
-        # The compiles registration for "duckdb" only applies when
-        # using a DuckDB-aware dialect. For now, verify the default path.
+    def test_default_dialect_uses_json_arrayagg(self):
+        """Fallback compilation (no specific dialect) uses JSON_ARRAYAGG."""
         _, registry = _make_registry()
         orders = registry["orders"]
         fn = _field_node(
@@ -459,7 +397,7 @@ class TestDialectCompilation:
 
     def test_no_lateral_anywhere(self):
         """All dialects must avoid LATERAL."""
-        for mod in [mysql, sqlite, postgresql]:
+        for mod in [mysql, postgresql]:
             sql = _relation_sql(mod)
             assert "LATERAL" not in sql, f"LATERAL found in {mod.__name__}: {sql}"
 
@@ -511,7 +449,7 @@ class TestCompositeFKCorrelation:
                 _relation_field_node("order_id", ["tenant_id", "id"]),
             ],
         )
-        return _sql(compile_query(order_items, [fn], registry), sqlite)
+        return _sql(compile_query(order_items, [fn], registry), postgresql)
 
     def test_composite_predicate_contains_both_column_pairs(self):
         sql = self._composite_sql()
@@ -521,34 +459,3 @@ class TestCompositeFKCorrelation:
     def test_composite_predicate_uses_and(self):
         sql = self._composite_sql()
         assert " AND " in sql.upper()
-
-    def test_composite_fk_executes_against_sqlite(self):
-        from sqlalchemy import create_engine, text
-        import json
-
-        def _load(val):
-            return json.loads(val) if isinstance(val, str) else val
-
-        order_items, registry = self._make_composite_registry()
-        engine = create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE TABLE orders (tenant_id INTEGER, id INTEGER)"))
-            conn.execute(
-                text(
-                    "CREATE TABLE order_items (item_id INTEGER, tenant_id INTEGER, order_id INTEGER)"
-                )
-            )
-            conn.execute(text("INSERT INTO orders VALUES (1, 10), (1, 20)"))
-            conn.execute(text("INSERT INTO order_items VALUES (1, 1, 10), (2, 1, 20)"))
-            conn.commit()
-
-            fn = _field_node(
-                "order_items",
-                [
-                    _field_node("item_id"),
-                    _relation_field_node("order_id", ["tenant_id", "id"]),
-                ],
-            )
-            stmt = compile_query(order_items, [fn], registry)
-            rows = conn.execute(stmt).fetchall()
-            assert len(rows) == 2

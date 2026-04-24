@@ -26,7 +26,6 @@ _DRIVER_MAP: dict[str, str] = {
     "doris": "mysql+aiomysql",
     "postgres": "postgresql+asyncpg",
     "postgresql": "postgresql+asyncpg",
-    "sqlite": "sqlite+aiosqlite",
 }
 
 
@@ -42,10 +41,6 @@ def build_db_url(config: DbConfig | dict[str, Any]) -> str:
         raise ValueError(
             f"Unsupported database type '{db_type}'. Supported: {', '.join(supported)}"
         )
-
-    if db_type == "sqlite":
-        path = config.host or ":memory:"
-        return f"{scheme}:///{path}"
 
     auth = f"{config.user}:{config.password}" if config.password else config.user
     if config.port:

@@ -20,13 +20,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-duckdb = ["duckdb-engine>=0.17"]
-sqlite = ["aiosqlite>=0.22.1"]
 postgres = ["asyncpg>=0.31"]
 mysql = ["aiomysql>=0.3.2"]
 api = [
     "ariadne>=1.0.1",
     "granian>=2.7.3",
+    "pyjwt>=2.12.1",
     "opentelemetry-instrumentation-sqlalchemy>=0.62b0",
     "opentelemetry-instrumentation-starlette>=0.62b0",
 ]

@@ -6,13 +6,13 @@ from pathlib import Path
 from dbt_graphql import extract_project, format_graphql
 
 
-DUCKDB_DIR = (
+ARTIFACTS_DIR = (
     next(p for p in Path(__file__).parents if p.name == "tests")
     / "fixtures"
     / "dbt-artifacts"
 )
-CATALOG = DUCKDB_DIR / "catalog.json"
-MANIFEST = DUCKDB_DIR / "manifest.json"
+CATALOG = ARTIFACTS_DIR / "catalog.json"
+MANIFEST = ARTIFACTS_DIR / "manifest.json"
 
 
 def _make_project(**kwargs):

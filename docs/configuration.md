@@ -10,7 +10,7 @@ Database connection. The `type` field selects the adapter; remaining fields vary
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `type` | string | — | Adapter: `postgres`, `mysql`, `mariadb`, `sqlite`, `duckdb`, `doris` |
+| `type` | string | — | Adapter: `postgres`, `mysql`, `mariadb`, `doris` |
 | `host` | string | `""` | Database host |
 | `port` | int | `null` | Database port (adapter default if omitted) |
 | `dbname` | string | `""` | Database / catalog name |

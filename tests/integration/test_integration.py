@@ -1,4 +1,4 @@
-"""End-to-end compiler tests across DuckDB, PostgreSQL, and MySQL.
+"""End-to-end compiler tests across PostgreSQL and MySQL.
 
 For each adapter the test:
 1. Builds the jaffle-shop dbt project (session-scoped fixture)

@@ -10,8 +10,6 @@ pip install dbt-graphql[api]        # + GraphQL API server
 pip install dbt-graphql[mcp]        # + MCP server
 pip install dbt-graphql[postgres]   # warehouse drivers
 pip install dbt-graphql[mysql]
-pip install dbt-graphql[sqlite]
-pip install dbt-graphql[duckdb]
 ```
 
 ## Quick start

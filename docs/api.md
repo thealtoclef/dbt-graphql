@@ -60,8 +60,6 @@ Different engines have different JSON aggregation functions. Rather than branchi
 |---------------|--------------------|----------------------|
 | PostgreSQL    | `JSONB_AGG`        | `JSONB_BUILD_OBJECT` |
 | MySQL/MariaDB | `JSON_ARRAYAGG`    | `JSON_OBJECT`        |
-| SQLite        | `JSON_GROUP_ARRAY` | `JSON_OBJECT`        |
-| DuckDB        | `LIST`             | `JSON_OBJECT`        |
 | default       | `JSON_ARRAYAGG`    | `JSON_OBJECT`        |
 
 SQL generation stays dialect-agnostic until the moment of rendering.
@@ -83,9 +81,9 @@ Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus opt
 
 ### Connection management (`compiler/connection.py`)
 
-`DatabaseManager` owns an async SQLAlchemy 2.0 engine, exposes `execute()` for a `Select` and `execute_text()` for raw SQL, and tracks the dialect name. Two construction paths: pass a raw `db_url` string (DuckDB and any URL not in the config map), or pass a `DbConfig` which runs through `build_db_url()`.
+`DatabaseManager` owns an async SQLAlchemy 2.0 engine, exposes `execute()` for a `Select` and `execute_text()` for raw SQL, and tracks the dialect name. Two construction paths: pass a raw `db_url` string, or pass a `DbConfig` which runs through `build_db_url()`.
 
-`build_db_url()` maps `config.type` keys to async driver schemes (`aiomysql`, `asyncpg`, `aiosqlite`). SQLite is special-cased (file path in host, no auth). DuckDB connects via a raw `duckdb+duckdb:///path` URL.
+`build_db_url()` maps `config.type` keys to async driver schemes (`aiomysql`, `asyncpg`).
 
 No dbt profiles parser — the database configuration is deliberately decoupled from `profiles.yml`. A production serve layer connects differently from a dbt transformation run (different credentials, pooling, network).
 

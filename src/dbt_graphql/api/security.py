@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
-import json
-
+import jwt
 from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
 from starlette.requests import HTTPConnection
 
@@ -16,20 +14,6 @@ class JWTPayload:
 
     def __getattr__(self, _key: str) -> object:
         return None
-
-
-def _decode_jwt_payload(token: str) -> dict:
-    try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return {}
-        payload_b64 = parts[1]
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        return json.loads(base64.urlsafe_b64decode(payload_b64))
-    except Exception:
-        return {}
 
 
 class JWTUser(BaseUser):
@@ -50,6 +34,12 @@ class JWTAuthBackend(AuthenticationBackend):
         auth = conn.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             return AuthCredentials([]), JWTUser(JWTPayload({}))
-        return AuthCredentials(["authenticated"]), JWTUser(
-            JWTPayload(_decode_jwt_payload(auth[len("Bearer ") :]))
-        )
+        try:
+            payload = jwt.decode(
+                auth[len("Bearer ") :], options={"verify_signature": False}
+            )
+        except jwt.exceptions.DecodeError:
+            payload = {}
+        user = JWTUser(JWTPayload(payload))
+        scopes = ["authenticated"] if user.is_authenticated else []
+        return AuthCredentials(scopes), user

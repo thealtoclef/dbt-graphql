@@ -74,9 +74,9 @@ class TestBuildSchemaForModel:
 
 
 class TestDetectDialect:
-    def test_duckdb_passthrough(self):
+    def test_detect_dialect_from_manifest(self):
         manifest = load_manifest(MANIFEST)
-        assert detect_dialect(manifest) == "duckdb"
+        assert detect_dialect(manifest) == manifest.metadata.adapter_type
 
     def test_sqlserver_maps_to_tsql(self):
         class _Meta:
@@ -102,12 +102,12 @@ class TestQualifyModelSql:
     def test_returns_scope_for_valid_sql(self):
         sql = 'SELECT a FROM "db"."sch"."t"'
         schema = {"db": {"sch": {"t": {"a": "INTEGER"}}}}
-        scope = qualify_model_sql(sql, "duckdb", schema)
+        scope = qualify_model_sql(sql, "postgres", schema)
         assert scope is not None
         assert hasattr(scope, "sources")
 
     def test_returns_none_for_empty_sql(self):
-        assert qualify_model_sql("", "duckdb", {}) is None
+        assert qualify_model_sql("", "postgres", {}) is None
 
     def test_returns_none_for_unparseable_sql(self):
-        assert qualify_model_sql("NOT VALID SQL !!!", "duckdb", {}) is None
+        assert qualify_model_sql("NOT VALID SQL !!!", "postgres", {}) is None

@@ -61,16 +61,6 @@ def _mysql_json_agg(element, compiler, **kw):
     return "JSON_ARRAYAGG(%s)" % compiler.process(element.clauses, **kw)
 
 
-@compiles(json_agg, "sqlite")
-def _sqlite_json_agg(element, compiler, **kw):
-    return "JSON_GROUP_ARRAY(%s)" % compiler.process(element.clauses, **kw)
-
-
-@compiles(json_agg, "duckdb")
-def _duckdb_json_agg(element, compiler, **kw):
-    return "LIST(%s)" % compiler.process(element.clauses, **kw)
-
-
 @compiles(json_agg, "postgresql")
 def _pg_json_agg(element, compiler, **kw):
     return "JSONB_AGG(%s)" % compiler.process(element.clauses, **kw)
@@ -86,8 +76,6 @@ def _default_json_agg(element, compiler, **kw):
 
 @compiles(json_build_obj, "mysql")
 @compiles(json_build_obj, "mariadb")
-@compiles(json_build_obj, "sqlite")
-@compiles(json_build_obj, "duckdb")
 def _standard_json_object(element, compiler, **kw):
     return "JSON_OBJECT(%s)" % compiler.process(element.clauses, **kw)
 

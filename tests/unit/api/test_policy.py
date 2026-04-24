@@ -127,6 +127,21 @@ def test_no_matching_policy_returns_unrestricted():
     assert result.row_filter_params == {}
 
 
+def test_when_matches_but_table_absent_is_unrestricted():
+    """when-clause fires but the queried table is not in the policy's tables dict.
+    The entry must be silently skipped — not applied as a blanket deny."""
+    engine = _engine(
+        _policy(
+            "orders_only",
+            "True",
+            {"orders": TablePolicy(column_level=ColumnLevelPolicy(include_all=True))},
+        )
+    )
+    result = engine.evaluate("customers", _ctx(groups=["analysts"]))
+    assert result.allowed_columns is None
+    assert result.row_filter_sql is None
+
+
 def test_include_all_sets_allowed_none():
     engine = _engine(
         _policy(

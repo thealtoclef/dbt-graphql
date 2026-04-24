@@ -205,7 +205,7 @@ class LineageSchema(BaseModel):
     adapter_type: str = Field(
         ...,
         alias="adapterType",
-        description="dbt adapter type (e.g., duckdb, postgres, mysql).",
+        description="dbt adapter type (e.g., postgres, mysql).",
     )
     table_lineage: list[TableLineageItem] = Field(
         ...,

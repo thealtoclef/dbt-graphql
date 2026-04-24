@@ -31,13 +31,18 @@ class TestBuildDbUrl:
         )
         assert url == "mysql+aiomysql://root@localhost/mydb"
 
-    def test_sqlite(self):
-        url = build_db_url({"type": "sqlite", "host": "/tmp/test.db"})
-        assert url == "sqlite+aiosqlite:////tmp/test.db"
-
-    def test_sqlite_memory(self):
-        url = build_db_url({"type": "sqlite"})
-        assert url == "sqlite+aiosqlite:///:memory:"
+    def test_postgres(self):
+        url = build_db_url(
+            {
+                "type": "postgres",
+                "host": "localhost",
+                "port": 5432,
+                "dbname": "mydb",
+                "user": "admin",
+                "password": "pw",
+            }
+        )
+        assert url == "postgresql+asyncpg://admin:pw@localhost:5432/mydb"
 
     def test_doris_maps_to_mysql(self):
         url = build_db_url(
@@ -59,32 +64,26 @@ class TestBuildDbUrl:
 
 class TestDatabaseManager:
     def test_init_with_url(self):
-        db = DatabaseManager(db_url="sqlite+aiosqlite:///:memory:")
-        assert db._url == "sqlite+aiosqlite:///:memory:"
+        db = DatabaseManager(db_url="mysql+aiomysql://root@localhost/mydb")
+        assert db._url == "mysql+aiomysql://root@localhost/mydb"
 
     def test_init_with_config(self):
-        db = DatabaseManager(config=DbConfig(type="sqlite", host=":memory:"))
-        assert "sqlite+aiosqlite" in db._url
+        db = DatabaseManager(
+            config=DbConfig(type="mysql", host="localhost", user="root", dbname="mydb")
+        )
+        assert "mysql+aiomysql" in db._url
 
     def test_init_without_url_or_config_raises(self):
         with pytest.raises(ValueError, match="Provide either"):
             DatabaseManager()
 
     @pytest.mark.asyncio
-    async def test_connect_and_close(self):
-        pytest.importorskip("aiosqlite")
-        db = DatabaseManager(db_url="sqlite+aiosqlite:///:memory:")
-        await db.connect()
-        assert db.dialect_name == "sqlite"
-        await db.close()
-
-    @pytest.mark.asyncio
     async def test_execute_without_connect_raises(self):
-        db = DatabaseManager(db_url="sqlite+aiosqlite:///:memory:")
+        db = DatabaseManager(db_url="mysql+aiomysql://root@localhost/mydb")
         with pytest.raises(RuntimeError, match="not connected"):
             await db.execute_text("SELECT 1")
 
     def test_dialect_name_without_connect_raises(self):
-        db = DatabaseManager(db_url="sqlite+aiosqlite:///:memory:")
+        db = DatabaseManager(db_url="mysql+aiomysql://root@localhost/mydb")
         with pytest.raises(RuntimeError, match="not connected"):
             _ = db.dialect_name

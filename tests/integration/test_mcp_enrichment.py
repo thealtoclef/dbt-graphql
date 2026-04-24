@@ -1,4 +1,4 @@
-"""Integration tests for MCP live enrichment across DuckDB, PostgreSQL, and MySQL.
+"""Integration tests for MCP live enrichment across PostgreSQL and MySQL.
 
 Verifies that SchemaDiscovery produces correct row_count, sample_rows, and
 per-column value_summary against real databases populated by jaffle-shop dbt.

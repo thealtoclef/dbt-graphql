@@ -230,7 +230,7 @@ Authorization: Bearer <jwt with groups=["analysts"], claims.org_id=7>
 ```
 
 selecting `customers { customer_id email ssn raw_source_id }` compiles to
-roughly (sqlite dialect shown):
+roughly (postgresql dialect shown):
 
 ```sql
 SELECT

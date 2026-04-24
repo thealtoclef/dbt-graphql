@@ -42,7 +42,7 @@ _SCHEMA = {
 
 
 def _rels(current_model: str, sql: str):
-    scope = qualify_model_sql(sql, "duckdb", _SCHEMA)
+    scope = qualify_model_sql(sql, "postgres", _SCHEMA)
     assert scope is not None
     return _relationships_for_model(current_model, scope, _LOOKUP)
 

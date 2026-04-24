@@ -72,7 +72,7 @@ class TestDescribeTable:
         )
         model = ModelInfo(name="orders", database="db", schema="main", columns=[col])
         project = ProjectInfo(
-            project_name="test", adapter_type="duckdb", models=[model]
+            project_name="test", adapter_type="postgres", models=[model]
         )
         d = SchemaDiscovery(project)
         detail = asyncio.run(d.describe_table("orders"))
@@ -168,7 +168,7 @@ class TestFindPathDiamond:
         ]
         project = ProjectInfo(
             project_name="test",
-            adapter_type="duckdb",
+            adapter_type="postgres",
             models=models,
             relationships=rels,
         )
@@ -192,7 +192,7 @@ class TestFindPathDiamond:
         rels = [_make_rel("A", "b_id", "B", "id"), _make_rel("C", "d_id", "D", "id")]
         project = ProjectInfo(
             project_name="test",
-            adapter_type="duckdb",
+            adapter_type="postgres",
             models=models,
             relationships=rels,
         )
@@ -227,7 +227,7 @@ class TestEnrichmentBudget:
 
         cols = [ColumnInfo(name=f"col{i}", type="VARCHAR") for i in range(5)]
         model = ModelInfo(name="t", database="db", schema="main", columns=cols)
-        project = ProjectInfo(project_name="p", adapter_type="duckdb", models=[model])
+        project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
         enrichment = EnrichmentConfig(budget=0)
         d = SchemaDiscovery(project, db=db, enrichment=enrichment)
         detail = asyncio.run(d.describe_table("t"))
@@ -248,7 +248,7 @@ class TestEnrichmentBudget:
 
         cols = [ColumnInfo(name=f"col{i}", type="VARCHAR") for i in range(10)]
         model = ModelInfo(name="t", database="db", schema="main", columns=cols)
-        project = ProjectInfo(project_name="p", adapter_type="duckdb", models=[model])
+        project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
         enrichment = EnrichmentConfig(budget=3)
         d = SchemaDiscovery(project, db=db, enrichment=enrichment)
         asyncio.run(d.describe_table("t"))
@@ -260,7 +260,7 @@ class TestEnrichmentBudget:
         db = self._make_mock_db(calls)
         cols = [ColumnInfo(name="x", type="VARCHAR")]
         model = ModelInfo(name="t", database="db", schema="main", columns=cols)
-        project = ProjectInfo(project_name="p", adapter_type="duckdb", models=[model])
+        project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
         d = SchemaDiscovery(project, db=db)
         asyncio.run(d.describe_table("t"))
         calls.clear()
