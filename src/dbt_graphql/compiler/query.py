@@ -10,9 +10,25 @@ extension so the query builder stays database-agnostic.
 
 from __future__ import annotations
 
-from sqlalchemy import Column, Select, and_, literal, select, table
+from typing import TYPE_CHECKING
+
+from sqlalchemy import (
+    Column,
+    Select,
+    and_,
+    literal,
+    literal_column,
+    null,
+    select,
+    table,
+    text,
+)
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.elements import ClauseElement
 from sqlalchemy.sql.expression import FunctionElement
+
+if TYPE_CHECKING:
+    from ..api.policy import ResolvedPolicy
 
 from ..formatter.schema import ColumnDef, RelationDef, TableDef, TableRegistry
 
@@ -94,6 +110,13 @@ def _default_json_build_obj(element, compiler, **kw):
 def _table_from_def(tdef: TableDef):
     cols = [Column(c.name) for c in tdef.columns]
     return table(tdef.table, *cols, schema=tdef.schema or None)
+
+
+def _mask_column(mask_sql: str | None, col_name: str) -> ClauseElement:
+    """Trusted SQL fragment from access.yml; None produces SQL NULL."""
+    if mask_sql is None:
+        return null().label(col_name)
+    return literal_column(mask_sql).label(col_name)
 
 
 def _extract_scalar_fields(
@@ -211,6 +234,7 @@ def compile_query(
     offset: int | None = None,
     where: dict[str, object] | None = None,
     max_depth: int | None = None,
+    resolved_policy: ResolvedPolicy | None = None,
 ) -> Select:
     """Build a SQLAlchemy Core ``Select`` for a root GraphQL field.
 
@@ -227,14 +251,23 @@ def compile_query(
     sub_fields = selection.selection_set.selections if selection.selection_set else []
     scalars, relations = _extract_scalar_fields(tdef, sub_fields, registry)
 
+    if resolved_policy is not None:
+        if resolved_policy.allowed_columns is not None:
+            scalars = [s for s in scalars if s in resolved_policy.allowed_columns]
+        scalars = [s for s in scalars if s not in resolved_policy.blocked_columns]
+
     sa_table = _table_from_def(tdef)
     parent_alias = "_parent"
     aliased = sa_table.alias(parent_alias)
 
-    # Scalar columns
-    cols = [aliased.c[name].label(name) for name in scalars]
+    masks = resolved_policy.masks if resolved_policy is not None else {}
+    cols: list = []
+    for name in scalars:
+        if name in masks:
+            cols.append(_mask_column(masks[name], name))
+        else:
+            cols.append(aliased.c[name].label(name))
 
-    # Correlated subqueries for relations
     for col, rel, target in relations:
         child_field_node = next(
             (f for f in sub_fields if f.name.value == col.name), None
@@ -257,7 +290,13 @@ def compile_query(
 
     stmt = select(*cols).select_from(aliased)
 
-    # WHERE
+    if resolved_policy is not None and resolved_policy.row_filter_sql:
+        stmt = stmt.where(
+            text(resolved_policy.row_filter_sql).bindparams(
+                **resolved_policy.row_filter_params
+            )
+        )
+
     if where:
         unknown = [k for k in where if k not in aliased.c]
         if unknown:
@@ -265,7 +304,6 @@ def compile_query(
         for col_name, value in where.items():
             stmt = stmt.where(aliased.c[col_name] == value)
 
-    # Pagination
     if limit is not None:
         stmt = stmt.limit(limit)
     if offset is not None:

@@ -82,6 +82,18 @@ Setting `endpoint` without `protocol` raises a config error at startup.
 
 ---
 
+## `security` (optional)
+
+Path to the access-policy file that governs column/row visibility at request
+time. See [access-policy.md](access-policy.md) for the policy language,
+request-time evaluation model, and design notes.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `policy_path` | Path | `null` | Path to `access.yml`. Omit to serve the API with no access policy (all columns/rows visible). |
+
+---
+
 ## Environment variables
 
 All config fields can be overridden via `DBT_GRAPHQL__` prefixed env vars. Nested fields use `__` as delimiter.

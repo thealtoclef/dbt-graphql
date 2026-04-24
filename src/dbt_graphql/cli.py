@@ -260,6 +260,7 @@ def _run_serve(args) -> None:
 
     if "api" in targets:
         from .api import serve
+        from .api.policy import load_access_policy
 
         assert config is not None  # guaranteed by validation above
 
@@ -267,10 +268,16 @@ def _run_serve(args) -> None:
             print("Error: config.yml must have a 'serve:' section.", file=sys.stderr)
             sys.exit(1)
 
+        access_policy = None
+        if config.security.policy_path:
+            try:
+                access_policy = load_access_policy(config.security.policy_path)
+            except Exception as exc:
+                print(f"Error loading policy: {exc}", file=sys.stderr)
+                sys.exit(1)
+
         serve(
             db_graphql_path=args.db_graphql,
-            config=config.db,
-            host=config.serve.host,
-            port=config.serve.port,
-            log_level=config.monitoring.logs.level.lower(),
+            config=config,
+            access_policy=access_policy,
         )

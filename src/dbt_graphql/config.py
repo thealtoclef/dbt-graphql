@@ -85,6 +85,10 @@ class EnrichmentConfig(BaseModel):
     ]
 
 
+class SecurityConfig(BaseModel):
+    policy_path: Path | None = None
+
+
 class AppConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="DBT_GRAPHQL__",
@@ -95,6 +99,7 @@ class AppConfig(BaseSettings):
     serve: ServeConfig | None = None
     monitoring: MonitoringConfig = MonitoringConfig()
     enrichment: EnrichmentConfig = EnrichmentConfig()
+    security: SecurityConfig = SecurityConfig()
 
     @classmethod
     def settings_customise_sources(

@@ -17,11 +17,17 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | — | dbt Selector Support (`--select`) | 🔲 Pending |
 | — | Source Node Inclusion (`catalog.sources`) | 🔲 Pending |
 | Sec-A | Identity & JWT Auth | 🔲 Planned |
-| Sec-B | RBAC + Column-Level Security | 🔲 Planned |
-| Sec-C | Row-Level Security | 🔲 Planned |
-| Sec-D | Data Masking | 🔲 Planned |
+| Sec-B | RBAC + Column-Level Security | 🟨 Core shipped |
+| Sec-C | Row-Level Security | 🟨 Core shipped |
+| Sec-D | Data Masking | 🟨 Core shipped |
 | Sec-E | Query Allow-List | 🔲 Planned |
 | Sec-F | Audit Logging | 🔲 Planned |
+| Sec-G | ABAC match-clauses + deny rules | 🔲 Planned |
+| Sec-H | Structured row-filter DSL | 🔲 Planned |
+| Sec-I | Column classifications | 🔲 Planned |
+| Sec-J | External PDP (OPA / Cedar / custom) | 🔲 Planned |
+| Sec-K | Hot reload of access.yml | 🔲 Planned |
+| Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
 
 ---
 
@@ -130,6 +136,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | `docs/mcp.md` | ✅ |
 | `docs/configuration.md` | ✅ |
 | `docs/architecture.md` updates | ✅ |
+| `docs/access-policy.md` | ✅ |
 | `config.example.yml` at repo root (commented Helm-style defaults) | 🔲 outstanding |
 
 ---
@@ -220,142 +227,70 @@ security:
 
 ---
 
-### Sec-B — RBAC + Column-Level Security
+### Sec-B — RBAC + Column-Level Security 🟨 Core shipped
 
-**Motivation:** Most teams need table-level and column-level access control before row-level logic. This is the highest-value security primitive.
+**Status:** The shipped engine uses `policies[*].when` (simpleeval expressions
+against the JWT) rather than the originally-drafted `match_groups` lists —
+`when` subsumes group matching and adds arbitrary claim predicates. Column
+access is union-OR across matching policies (most-permissive wins).
 
-**Policy file (`access.yml`):**
-```yaml
-roles:
-  - name: admin
-    match_groups: ["data-admins"]   # matched against JWT groups claim
-    tables:
-      "*":
-        allow: [read]
-
-  - name: analyst
-    match_groups: ["analysts"]
-    tables:
-      orders:
-        allow: [read]
-        columns:
-          includes: ["order_id", "customer_id", "status", "created_at"]
-      customers:
-        allow: [read]
-        columns:
-          excludes: ["email", "phone", "ssn"]
-
-  - name: anon                       # unauthenticated
-    tables:
-      products:
-        allow: [read]
-        columns:
-          includes: ["product_id", "name", "price"]
-```
-
-**Behavior:**
-- User's JWT `groups` claim is matched against `match_groups` → produces a set of active roles.
-- Column `includes` / `excludes` is evaluated per column in the GraphQL selection; unlisted columns are stripped silently (or error in strict mode).
-- Wildcard `"*"` in table name grants policy to all tables.
-- `allow: [read]` is the only supported scope initially; `write` reserved for future mutations.
-
-**Files to create/modify:**
-- `src/dbt_graphql/api/policy.py` — `PolicyLoader` (Pydantic parse of `access.yml`), `RoleResolver` (JWT groups → active roles), `ColumnPermission.evaluate(table, column, roles) → allowed: bool`
-- `src/dbt_graphql/api/resolvers.py` — wrap each resolver to strip disallowed columns before returning
-- `src/dbt_graphql/cli.py` — `--policy PATH` flag for `serve`
-- `access.example.yml`
+**Reference:** [`docs/access-policy.md`](docs/access-policy.md),
+[`access.example.yml`](access.example.yml).
 
 | Item | Status |
 |---|---|
-| `access.yml` Pydantic schema | 🔲 |
-| Role resolver (JWT groups → role set) | 🔲 |
-| Column allowlist/denylist evaluation | 🔲 |
-| Resolver column stripping | 🔲 |
+| `access.yml` Pydantic schema (`AccessPolicy`, `PolicyEntry`, `TablePolicy`, `ColumnLevelPolicy`) | ✅ |
+| `when` evaluation via `simpleeval` (dunder + builtin sandbox) | ✅ |
+| `include_all` / `includes` / `excludes` merge (OR semantics) | ✅ |
+| Column stripping in `compile_query` via `ResolvedPolicy` | ✅ |
+| `security.policy_path` config + `load_access_policy` | ✅ |
+| `access.example.yml` | ✅ |
+| Wildcard `"*"` table policy | ❌ dropped — use `include_all` per-table instead |
 | Table-level block (role has no policy for table → 403) | 🔲 |
-| Wildcard table policy | 🔲 |
-| `access.example.yml` | 🔲 |
+| Strict mode (unlisted columns → error, not silent strip) | 🔲 |
+| `--policy PATH` CLI override of `config.security.policy_path` | 🔲 |
 
 ---
 
-### Sec-C — Row-Level Security
+### Sec-C — Row-Level Security 🟨 Core shipped
 
-**Motivation:** The most impactful data isolation primitive. Users in multi-tenant systems should only see their own rows, without the GraphQL client needing to include the filter.
+**Status:** Row filters are Jinja templates rendered through a
+`SandboxedEnvironment(finalize=...)` hook so every `{{ expression }}` becomes
+a SQL bind parameter. Values are bound via
+`text(sql).bindparams(**params)` — SQL injection via JWT claims is
+structurally impossible. OR semantics across matching policies.
 
-**Policy additions (`access.yml`):**
-```yaml
-roles:
-  - name: regional_analyst
-    match_groups: ["regional-analysts"]
-    tables:
-      sales:
-        allow: [read]
-        row_filter:
-          region: { eq: "$jwt.claims.region" }
-      orders:
-        allow: [read]
-        row_filter:
-          sales_rep_id: { eq: "$jwt.sub" }
-```
-
-**Template variables:**
-- `$jwt.sub` — JWT subject (user ID)
-- `$jwt.email` — JWT email claim
-- `$jwt.claims.<key>` — arbitrary claim from token
-- `$jwt.groups[0]` — first group
-
-**Behavior:**
-- Row filters are resolved at request time by substituting JWT claim values.
-- Injected into `compile_query()` as additional WHERE predicates, merged with `AND` against any user-supplied `where:` argument.
-- Applied at SQL generation time — the filter appears in the SQL sent to the database; the application layer never sees unfiltered rows.
-
-**Files to modify:**
-- `src/dbt_graphql/api/policy.py` — `RowFilterEvaluator`: resolves template vars against `SecurityContext`, produces SQLAlchemy filter expression
-- `src/dbt_graphql/compiler/query.py` — `compile_query(...)` accepts optional `row_filters: list[BinaryExpression]`; merges with existing WHERE
+**Reference:** [`docs/access-policy.md`](docs/access-policy.md) §
+*`row_level` template reference*.
 
 | Item | Status |
 |---|---|
-| Template variable resolver (`$jwt.*` → concrete value) | 🔲 |
-| Row filter → SQLAlchemy expression compilation | 🔲 |
-| Merge with user `where:` in `compile_query` | 🔲 |
-| Multi-role filter merge (OR across roles, AND with user filters) | 🔲 |
+| Jinja template → `:bind_param` rendering with `finalize` | ✅ |
+| OR merge across matching policies (per-policy name prefix) | ✅ |
+| Merge with user `where:` in `compile_query` | ✅ |
+| SQL injection regression test | ✅ |
+| Static-predicate passthrough (`published = TRUE`) | ✅ |
+| Structured DSL alternative to raw-SQL templates | 🔲 → Sec-H |
 
 ---
 
-### Sec-D — Data Masking
+### Sec-D — Data Masking 🟨 Core shipped
 
-**Motivation:** Some columns should be visible in shape but not in value for non-privileged roles (e.g. show last 4 of SSN, domain-only of email). Denial is too blunt; masking enables richer analytics while protecting PII.
-
-**Policy additions (`access.yml`):**
-```yaml
-roles:
-  - name: analyst
-    tables:
-      customers:
-        allow: [read]
-        mask:
-          email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"  # SQL expression
-          ssn: "CONCAT('***-**-', RIGHT(ssn, 4))"
-          salary: null                                          # static NULL
-          phone: "CONCAT('***-***-', RIGHT(phone, 4))"
-```
-
-**Behavior:**
-- For roles without a mask rule: column selected normally.
-- For roles with a mask rule: `SELECT email` replaced with `SELECT <mask_expr> AS email` in `compile_query()`.
-- Static `null` mask emits `SELECT NULL AS email`.
-- When a user matches multiple roles, the least-masked (most permissive) expression wins — if admin role has no mask and analyst role has a mask, admin sees raw values.
-
-**Files to modify:**
-- `src/dbt_graphql/api/policy.py` — `MaskingEvaluator`: resolves effective mask expression per column per role set
-- `src/dbt_graphql/compiler/query.py` — accept `column_masks: dict[str, str]`; emit `sqlalchemy.text(mask_expr).label(column_name)` for masked columns
+**Status:** Mask expressions are raw SQL fragments from `access.yml`
+(operator-controlled, trusted). `"NULL"` emits a bound SQL NULL; anything
+else goes through `literal_column(...).label(col)`. Multi-policy mask merge
+applies only when every matching policy masks the column and agrees on the
+expression; conflicting expressions raise at evaluate time.
 
 | Item | Status |
 |---|---|
-| Mask expression resolution (role set → per-column mask) | 🔲 |
-| SQL mask injection in `compile_query` | 🔲 |
-| `null` static mask | 🔲 |
-| Multi-role mask precedence (least-masked wins) | 🔲 |
-| Dialect safety: validate mask expressions don't contain `;` or `--` | 🔲 |
+| Mask expression resolution (union of matching policies) | ✅ |
+| SQL mask injection in `compile_query` (`_mask_column`) | ✅ |
+| `NULL` static mask | ✅ |
+| "Least-masked wins" — any unmasked matching policy drops the mask | ✅ |
+| Conflict detection (raise when policies disagree on mask SQL) | ✅ |
+| Mask-by-classification (declare once, apply by tag) | 🔲 → Sec-I |
+| Dialect safety: reject `;` / `--` in mask strings at load time | 🔲 |
 
 ---
 
@@ -435,9 +370,239 @@ dbt-graphql allowlist add --query "{ ... }" # manually add a query
 
 ---
 
+### Sec-G — ABAC `match:` clauses + deny rules
+
+**Motivation:** Today's `when:` is an opaque Python-style string. SOTA
+authz engines (OPA, Cedar, Hasura metadata) express conditions as a
+**structured attribute-based** tree so policies are statically inspectable
+(*"which policies could apply to this JWT?"*) and machine-testable. Also:
+permissive-OR semantics cannot express "contractors never see salary, even
+if they are also analysts" — deny rules with highest precedence fix that.
+
+**Policy additions:**
+```yaml
+- name: analyst
+  match:
+    all:
+      - { jwt.groups: { contains: analysts } }
+      - { jwt.claims.level: { gte: 3 } }
+  tables: { ... }
+
+- name: contractor_deny
+  match:
+    all: [ { jwt.groups: { contains: contractors } } ]
+  deny:
+    customers: [salary, ssn]   # hard deny, overrides all allow rules
+```
+
+**Behavior:** `match:` coexists with the existing `when:` string for two
+releases, then `when:` is deprecated. Both compile to the same
+`MatchTree` AST used by the engine and by the test harness (Sec-L).
+
+| Item | Status |
+|---|---|
+| `MatchTree` AST + compiler for both `when:` and `match:` | 🔲 |
+| Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `contains`, `exists`, `and`, `or`, `not` | 🔲 |
+| `deny:` rules (highest precedence, short-circuits OR merge) | 🔲 |
+| Deprecation warning for string `when:` on load | 🔲 |
+
+---
+
+### Sec-H — Structured row-filter DSL
+
+**Motivation:** Raw-SQL `row_level` templates are dialect-specific and
+impossible to validate statically (typos in column names surface as
+runtime errors). A Hasura-style boolean expression tree compiles to
+SQLAlchemy expressions and is validated against the `TableRegistry` at
+load time.
+
+**Policy additions:**
+```yaml
+tables:
+  customers:
+    row_filter:
+      all:
+        - { col: org_id, eq: { jwt: claims.org_id } }
+        - any:
+            - { col: is_public, eq: true }
+            - { col: owner_id, eq: { jwt: sub } }
+```
+
+**Behavior:** The DSL is a direct replacement for `row_level:` (both
+supported during migration). Column names are resolved against the table
+registry at load time — unknown columns fail policy load, not the first
+request.
+
+| Item | Status |
+|---|---|
+| DSL Pydantic schema (`RowFilterExpr` discriminated union) | 🔲 |
+| Compiler → SQLAlchemy `BinaryExpression` / `BooleanClauseList` | 🔲 |
+| Load-time column validation against `TableRegistry` | 🔲 |
+| Coexistence with `row_level:` raw-SQL template | 🔲 |
+
+---
+
+### Sec-I — Column classifications
+
+**Motivation:** Today a mask rule lives on every `policy × table × column`
+cell. For a 50-table schema with 5 PII columns each, that's 250 duplicated
+mask strings. Classifications collapse this to one mask per class.
+
+**Policy additions:**
+```yaml
+classifications:
+  pii:
+    mask: "CONCAT('***@', SPLIT_PART({col}, '@', 2))"   # {col} = column ref
+  pii_strict:
+    mask: "NULL"
+
+columns:
+  customers.email: [pii]
+  customers.ssn:   [pii_strict]
+
+policies:
+  - name: analyst
+    when: "'analysts' in jwt.groups"
+    tables: { customers: { column_level: { include_all: true } } }
+    respects: [pii, pii_strict]   # both masks apply
+  - name: admin
+    when: "'data-admins' in jwt.groups"
+    tables: { customers: { column_level: { include_all: true } } }
+    respects: []                  # bypass all classifications
+```
+
+**Complementary source:** classifications may also be read from dbt `meta`
+(e.g. `meta.dbt_graphql.classification: pii`) so model owners mark the
+sensitivity at the dbt layer. This is the same split Immuta and Collibra
+use — classification lives with the data, role-to-classification binding
+lives with the application.
+
+| Item | Status |
+|---|---|
+| `classifications:` loader | 🔲 |
+| `columns:` tag map + `respects:` on policies | 🔲 |
+| Mask template placeholder `{col}` rendered per column | 🔲 |
+| Read classifications from dbt `meta.dbt_graphql.classification` | 🔲 |
+
+---
+
+### Sec-J — External Policy Decision Point (OPA / Cedar / custom)
+
+**Motivation:** At enterprise scale, authz decisions live in a shared PDP
+(Policy Decision Point) — Open Policy Agent, AWS Cedar, or a home-grown
+service — so every microservice enforces the same rules with the same
+audit trail. Making `dbt-graphql` a **PEP** (Policy Enforcement Point)
+that delegates to a PDP slots cleanly into that architecture. Kubernetes,
+Envoy, Istio, and most large authz platforms use this exact shape.
+
+**Config additions:**
+```yaml
+security:
+  pdp:
+    url: "http://opa:8181/v1/data/dbt_graphql/allow"
+    timeout_ms: 50                      # fail closed on timeout
+    cache:
+      ttl_s: 5                          # per-decision local cache
+      max_entries: 1000
+    input_builder: default              # "default" | "custom-module:func"
+```
+
+**Decision request body (`default` builder):**
+```json
+{
+  "input": {
+    "subject":   { "sub": "u1", "groups": ["analysts"], "claims": {"org_id": 7} },
+    "action":    "read",
+    "resource":  { "table": "customers", "columns": ["email", "ssn"] },
+    "environment": { "ip": "...", "ts": "..." }
+  }
+}
+```
+
+**Decision response:**
+```json
+{
+  "result": {
+    "allowed": true,
+    "allowed_columns": ["customer_id", "email"],
+    "masks": { "email": "CONCAT('***@', SPLIT_PART(email, '@', 2))" },
+    "row_filter_sql": "org_id = :org",
+    "row_filter_params": { "org": 7 }
+  }
+}
+```
+
+**Behavior:** When `pdp.url` is set, the built-in engine is skipped and
+every request produces a PDP call (with a per-request cache keyed on
+subject + resource). Load policies locally as fallback when the PDP is
+unreachable *only if* explicitly enabled — otherwise fail closed.
+
+| Item | Status |
+|---|---|
+| `PdpClient` (httpx) + timeout / fail-closed semantics | 🔲 |
+| Input-builder contract + default implementation | 🔲 |
+| Response schema + mapping to `ResolvedPolicy` | 🔲 |
+| Per-request local decision cache | 🔲 |
+| OPA integration test (docker compose with a minimal Rego bundle) | 🔲 |
+
+---
+
+### Sec-K — Hot reload of `access.yml`
+
+**Motivation:** Role/claim changes shouldn't require a full API restart.
+Watch the file, rebuild the engine, swap it atomically.
+
+| Item | Status |
+|---|---|
+| `watchfiles`-based observer in the API lifespan | 🔲 |
+| Atomic swap of `PolicyEngine` reference on reload | 🔲 |
+| Reload-failed fallback: keep previous engine, log loud error | 🔲 |
+| OTel counter `policy.reload.{success,failure}` | 🔲 |
+
+---
+
+### Sec-L — Policy test harness + `policy explain` CLI
+
+**Motivation:** Policy is code — it should have tests. Give operators a
+CLI to explain what a given JWT would see against a given table, and
+inline test blocks to run in CI.
+
+**Inline tests in `access.yml`:**
+```yaml
+tests:
+  - name: analyst sees their org only
+    given:
+      jwt: { groups: [analysts], claims: { org_id: 7 } }
+      table: customers
+    expect:
+      allowed_columns: any
+      blocked_columns: []
+      masks: { email: "CONCAT(...)" }
+      row_filter_contains: "org_id"
+```
+
+**CLI:**
+```bash
+dbt-graphql policy explain --jwt '{"sub":"u1","groups":["analysts"]}' --table customers
+dbt-graphql policy test         # runs inline tests, CI-friendly exit code
+```
+
+| Item | Status |
+|---|---|
+| `policy explain` CLI subcommand | 🔲 |
+| `tests:` schema + runner | 🔲 |
+| `policy test` exit code + structured failure output | 🔲 |
+| Playbook of recipes in docs/access-policy.md | 🔲 |
+
+---
+
 ## Open Deviations
 
 | Item | Decision |
 |---|---|
 | Short names vs `unique_id` in lineage (Phase 0) | Deferred — relevant only when multi-package projects are encountered |
 | Reverse relations (`@reverseRelation`) | Permanently dropped — directed edges already encode bidirectional traversal |
+| Wildcard `"*"` table policy | Permanently dropped — operators must enumerate tables, or use `include_all` per-table. Wildcards make it too easy to over-grant when new tables are added. |
+| Row-filter template engine | Jinja2 `SandboxedEnvironment` with `finalize=` hook. Every `{{ expression }}` becomes a SQL bind param; values never hit the rendered SQL. Chosen over (a) raw regex extraction (no conditionals/filters), (b) `jinjasql` (less active), (c) moving directly to a structured DSL (larger scope — now tracked as Sec-H). |
+| `when:` evaluator | `simpleeval` — AST-based, rejects dunders + builtins, keeps the Python-flavored syntax operators already use. Chosen over (a) raw `eval()` with empty builtins (weaker), (b) CEL (different syntax, bigger dep), (c) `asteval` (comparable but less widely adopted). |
+| JWT verification (Sec-A) | Shipped unverified in dev only — base64 decode. Signature verification is mandatory before `access.yml` is relied on for production data; gated on Sec-A. |

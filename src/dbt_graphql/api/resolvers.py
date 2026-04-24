@@ -1,12 +1,3 @@
-"""Ariadne resolvers that translate GraphQL queries to SQL.
-
-Each ``Query`` field is a table name. The resolver extracts the selection set,
-builds a SQL query via the compiler, executes it, and returns rows as dicts.
-
-All shared state (registry, db) is passed through ``info.context``
-so resolvers don't need to close over mutable objects.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -19,13 +10,6 @@ from loguru import logger
 
 
 def create_query_type(registry) -> QueryType:
-    """Return an Ariadne ``QueryType`` with a resolver for each table.
-
-    Registers one resolver per table name. The resolver reads shared state
-    from ``info.context`` (set by ``server.py``):
-    - ``registry``: ``TableRegistry``
-    - ``db``: ``DatabaseManager``
-    """
     query_type = QueryType()
 
     for table_def in registry:
@@ -36,13 +20,19 @@ def create_query_type(registry) -> QueryType:
 
 
 def _make_resolver(table_name: str):
-    """Create a closure so each resolver knows its table name."""
 
     async def resolve_table(_, info, **kwargs) -> list[dict[str, Any]]:
         ctx = info.context
         tdef = ctx["registry"].get(table_name)
         if tdef is None:
             raise ValueError(f"Unknown table: {table_name}")
+
+        policy_engine = ctx.get("policy_engine")
+        resolved_policy = (
+            policy_engine.evaluate(table_name, ctx["jwt_payload"])
+            if policy_engine is not None
+            else None
+        )
 
         stmt = compile_query(
             tdef=tdef,
@@ -52,6 +42,7 @@ def _make_resolver(table_name: str):
             limit=kwargs.get("limit"),
             offset=kwargs.get("offset"),
             where=kwargs.get("where"),
+            resolved_policy=resolved_policy,
         )
         logger.debug("query {}: {}", table_name, stmt)
         rows = await ctx["db"].execute(stmt)
