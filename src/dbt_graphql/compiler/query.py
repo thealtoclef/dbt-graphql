@@ -10,7 +10,7 @@ extension so the query builder stays database-agnostic.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from sqlalchemy import (
     Column,
@@ -30,7 +30,10 @@ from sqlalchemy.sql.expression import FunctionElement
 if TYPE_CHECKING:
     from ..api.policy import ResolvedPolicy
 
+from ..api.policy import ColumnAccessDenied
 from ..formatter.schema import ColumnDef, RelationDef, TableDef, TableRegistry
+
+ResolvePolicy = Callable[[str], "ResolvedPolicy"]
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +134,22 @@ def _extract_scalar_fields(
     return scalars, relations
 
 
+def _enforce_strict_columns(
+    table_name: str,
+    requested: list[str],
+    policy: ResolvedPolicy,
+) -> None:
+    """Raise ``ColumnAccessDenied`` if any requested column is unauthorized."""
+    denied = []
+    for col in requested:
+        if policy.allowed_columns is not None and col not in policy.allowed_columns:
+            denied.append(col)
+        elif col in policy.blocked_columns:
+            denied.append(col)
+    if denied:
+        raise ColumnAccessDenied(table_name, denied)
+
+
 def _build_correlated_subquery(
     parent_aliased,
     parent_fk: str,
@@ -142,12 +161,19 @@ def _build_correlated_subquery(
     depth: int = 1,
     visited: frozenset[str] = frozenset(),
     max_depth: int | None = None,
+    resolve_policy: ResolvePolicy | None = None,
 ) -> Select:
     """Build a correlated subquery for a nested relation, recursively.
 
     Uses SQLAlchemy expressions so dialect-specific compilation
     (JSON functions, quoting, etc.) is handled automatically.
     Aliases each level as child_1, child_2, … to avoid name collisions.
+
+    When ``resolve_policy`` is provided, the policy for ``target`` is
+    evaluated here — denying the table, rejecting unauthorized columns,
+    applying masks to the JSON payload, and appending the row filter to
+    the subquery's WHERE clause. Without this, nested GraphQL selections
+    would bypass the policy engine entirely.
     """
     if max_depth is not None and depth > max_depth:
         raise ValueError(f"Relation nesting exceeds maximum depth of {max_depth}")
@@ -159,14 +185,26 @@ def _build_correlated_subquery(
     child_scalars, child_relations = _extract_scalar_fields(
         target, child_fields, registry
     )
+
+    policy: ResolvedPolicy | None = None
+    if resolve_policy is not None:
+        policy = resolve_policy(target.name)
+        _enforce_strict_columns(target.name, child_scalars, policy)
+
     child_table = _table_from_def(target).alias(f"child_{depth}")
     new_visited = visited | {target.name}
 
-    # JSON_OBJECT('col', child_N.col, ...)
-    json_args = []
+    masks = policy.masks if policy is not None else {}
+
+    # JSON_OBJECT('col', child_N.col, ...) — masks replace the column ref.
+    json_args: list = []
     for col_name in child_scalars:
         json_args.append(literal(col_name))
-        json_args.append(child_table.c[col_name])
+        if col_name in masks:
+            mask_sql = masks[col_name]
+            json_args.append(null() if mask_sql is None else literal_column(mask_sql))
+        else:
+            json_args.append(child_table.c[col_name])
 
     # Recurse for nested relations
     for child_col, child_rel, child_target in child_relations:
@@ -186,6 +224,7 @@ def _build_correlated_subquery(
             depth=depth + 1,
             visited=new_visited,
             max_depth=max_depth,
+            resolve_policy=resolve_policy,
         )
         json_args.append(literal(child_col.name))
         json_args.append(nested_sub.scalar_subquery())
@@ -205,7 +244,14 @@ def _build_correlated_subquery(
     else:
         predicate = child_table.c[rel.target_column] == parent_aliased.c[parent_fk]
 
-    return select(agg).where(predicate).correlate(parent_aliased)
+    stmt = select(agg).where(predicate).correlate(parent_aliased)
+
+    if policy is not None and policy.row_filter_sql:
+        stmt = stmt.where(
+            text(policy.row_filter_sql).bindparams(**policy.row_filter_params)
+        )
+
+    return stmt
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +268,7 @@ def compile_query(
     offset: int | None = None,
     where: dict[str, object] | None = None,
     max_depth: int | None = None,
-    resolved_policy: ResolvedPolicy | None = None,
+    resolve_policy: ResolvePolicy | None = None,
 ) -> Select:
     """Build a SQLAlchemy Core ``Select`` for a root GraphQL field.
 
@@ -231,6 +277,12 @@ def compile_query(
 
     ``max_depth`` caps relation nesting (None = unlimited). Cycles in the
     query selection are always rejected regardless of this setting.
+
+    ``resolve_policy`` is a callable that maps a table name to its
+    ``ResolvedPolicy`` (or raises ``TableAccessDenied``). When provided,
+    policy is enforced at every table visited by the query — including
+    nested relations. When ``None``, no policy is applied (used in
+    development / tests when ``access.yml`` is not configured).
     """
     selection = field_nodes[0] if field_nodes else None
     if selection is None:
@@ -239,10 +291,10 @@ def compile_query(
     sub_fields = selection.selection_set.selections if selection.selection_set else []
     scalars, relations = _extract_scalar_fields(tdef, sub_fields, registry)
 
-    if resolved_policy is not None:
-        if resolved_policy.allowed_columns is not None:
-            scalars = [s for s in scalars if s in resolved_policy.allowed_columns]
-        scalars = [s for s in scalars if s not in resolved_policy.blocked_columns]
+    resolved_policy: ResolvedPolicy | None = None
+    if resolve_policy is not None:
+        resolved_policy = resolve_policy(tdef.name)
+        _enforce_strict_columns(tdef.name, scalars, resolved_policy)
 
     sa_table = _table_from_def(tdef)
     parent_alias = "_parent"
@@ -273,6 +325,7 @@ def compile_query(
             registry=registry,
             dialect=dialect,
             max_depth=max_depth,
+            resolve_policy=resolve_policy,
         )
         cols.append(subquery.label(col.name))
 

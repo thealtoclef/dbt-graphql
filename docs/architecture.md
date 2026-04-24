@@ -2,7 +2,7 @@
 
 The design doc for dbt-graphql: the problem it solves, how the pipeline fits together, and the design principles that govern every component.
 
-**Component deep-dives:** [Schema Synthesis](schema-synthesis.md) | [API & Compiler](api.md) | [MCP Server](mcp.md)
+**Component deep-dives:** [Schema Synthesis](schema-synthesis.md) | [API & Compiler](api.md) | [MCP Server](mcp.md) | [Security](security.md) | [Access Policy](access-policy.md)
 
 ---
 
@@ -230,7 +230,7 @@ Where we differ: Wren's interface to agents is "write SQL against MDL" (text-to-
 |---|---|
 | **No metrics / semantic layer** | No measures, no predefined aggregations. For governed metrics, pair with MetricFlow or Cube. |
 | **Read-only** (also a strength) | No mutations, writes, or upserts. Wrong tool for app backends. |
-| **No row-level security / auth layer** | Multi-tenant serving needs an auth + policy layer in front of the serve path. |
+| **JWT signatures not yet verified** | Sec-A ships a trust-only JWT decoder today; signature + `exp`/`iss`/`aud` verification is the blocker for production-facing deployments. See [security.md](security.md). |
 | **Single-process Python serving** | The serve layer is async but still Python. Hasura/PostGraphile handle high-throughput concurrent agent workloads more easily. |
 | **Compiler feature coverage** | No filter/order on nested fields; `where` supports only equality; no operators, no aggregates. |
 | **Maturity** | Needs an integration-test corpus covering real dbt projects across dialects. |

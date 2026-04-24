@@ -27,6 +27,11 @@
 #
 # Multi-policy match: OR semantics (most permissive wins for columns/rows;
 # masks apply only when every matching policy agrees on the expression).
+#
+# Default-deny: any table not listed under a matching policy raises
+# FORBIDDEN_TABLE. Strict columns: any requested column not authorized by
+# the merged policy raises FORBIDDEN_COLUMN. Nested relations are checked
+# the same way — policy applies to every table the query reaches.
 
 policies:
   # Full access — data admins see everything with no row restrictions.

@@ -16,6 +16,48 @@ from .security import JWTPayload
 
 
 # ---------------------------------------------------------------------------
+# Policy violation exceptions
+# ---------------------------------------------------------------------------
+
+
+class PolicyError(Exception):
+    """Base class for access-policy denials. Raised at compile time.
+
+    Carries a machine-readable ``code`` so resolvers can project it into a
+    GraphQL error's ``extensions`` block.
+    """
+
+    code: str = "FORBIDDEN"
+
+
+class TableAccessDenied(PolicyError):
+    """Raised when no policy grants access to a requested table."""
+
+    code = "FORBIDDEN_TABLE"
+
+    def __init__(self, table: str) -> None:
+        super().__init__(
+            f"access denied: no policy authorizes table '{table}' for this subject"
+        )
+        self.table = table
+
+
+class ColumnAccessDenied(PolicyError):
+    """Raised when the query selects columns not authorized by policy."""
+
+    code = "FORBIDDEN_COLUMN"
+
+    def __init__(self, table: str, columns: list[str]) -> None:
+        cols = ", ".join(sorted(columns))
+        super().__init__(
+            f"access denied: columns [{cols}] on table '{table}' "
+            "are not authorized by policy"
+        )
+        self.table = table
+        self.columns = sorted(columns)
+
+
+# ---------------------------------------------------------------------------
 # Pydantic config models (parsed from access.yml)
 # ---------------------------------------------------------------------------
 
@@ -100,8 +142,9 @@ class PolicyEngine:
     def evaluate(self, table_name: str, ctx: JWTPayload) -> ResolvedPolicy:
         """Return the merged ResolvedPolicy for ``table_name`` given ``ctx``.
 
-        No matching policy => unrestricted ResolvedPolicy (all columns, no
-        row filter, no masks).
+        Default-deny: if no loaded policy matches both the ``when`` clause
+        and the requested table, raise ``TableAccessDenied``. Operators
+        must explicitly list every table a role may read.
         """
         matching: list[TablePolicy] = []
         for entry in self._policy.policies:
@@ -109,7 +152,7 @@ class PolicyEngine:
                 matching.append(entry.tables[table_name])
 
         if not matching:
-            return ResolvedPolicy()
+            raise TableAccessDenied(table_name)
         return self._merge(matching, ctx)
 
     def _eval_when(self, expr: str, ctx: JWTPayload) -> bool:

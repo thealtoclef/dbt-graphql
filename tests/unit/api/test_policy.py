@@ -9,6 +9,7 @@ from dbt_graphql.api.policy import (
     ColumnLevelPolicy,
     PolicyEngine,
     PolicyEntry,
+    TableAccessDenied,
     TablePolicy,
     load_access_policy,
     render_row_filter,
@@ -117,19 +118,18 @@ def test_column_level_includes_list_ok():
 # ---------------------------------------------------------------------------
 
 
-def test_no_matching_policy_returns_unrestricted():
+def test_no_matching_policy_is_denied():
+    """Default-deny: no policy entry whose when-clause fires → TableAccessDenied."""
     engine = _engine(_policy("analyst", "'analysts' in jwt.groups", {}))
-    result = engine.evaluate("orders", _ctx(groups=["finance"]))
-    assert result.allowed_columns is None
-    assert result.blocked_columns == frozenset()
-    assert result.masks == {}
-    assert result.row_filter_sql is None
-    assert result.row_filter_params == {}
+    with pytest.raises(TableAccessDenied) as exc_info:
+        engine.evaluate("orders", _ctx(groups=["finance"]))
+    assert exc_info.value.table == "orders"
+    assert exc_info.value.code == "FORBIDDEN_TABLE"
 
 
-def test_when_matches_but_table_absent_is_unrestricted():
-    """when-clause fires but the queried table is not in the policy's tables dict.
-    The entry must be silently skipped — not applied as a blanket deny."""
+def test_when_matches_but_table_absent_is_denied():
+    """when-clause fires but the queried table isn't in the policy's tables dict.
+    Default-deny applies — the policy doesn't cover the table → denied."""
     engine = _engine(
         _policy(
             "orders_only",
@@ -137,9 +137,8 @@ def test_when_matches_but_table_absent_is_unrestricted():
             {"orders": TablePolicy(column_level=ColumnLevelPolicy(include_all=True))},
         )
     )
-    result = engine.evaluate("customers", _ctx(groups=["analysts"]))
-    assert result.allowed_columns is None
-    assert result.row_filter_sql is None
+    with pytest.raises(TableAccessDenied):
+        engine.evaluate("customers", _ctx(groups=["analysts"]))
 
 
 def test_include_all_sets_allowed_none():
@@ -463,3 +462,43 @@ def test_load_access_policy_invalid_yaml(tmp_path):
     yml.write_text("- just a list")
     with pytest.raises(ValueError, match="YAML mapping"):
         load_access_policy(yml)
+
+
+# ---------------------------------------------------------------------------
+# Default-deny behavior
+# ---------------------------------------------------------------------------
+
+
+def test_empty_policy_file_denies_every_table():
+    """An empty policies list → every table is denied by default."""
+    engine = PolicyEngine(AccessPolicy(policies=[]))
+    with pytest.raises(TableAccessDenied, match="orders"):
+        engine.evaluate("orders", _ctx())
+
+
+def test_table_denial_carries_table_name_in_exception():
+    engine = _engine(
+        _policy(
+            "orders_only",
+            "True",
+            {"orders": TablePolicy(column_level=ColumnLevelPolicy(include_all=True))},
+        )
+    )
+    with pytest.raises(TableAccessDenied) as exc_info:
+        engine.evaluate("customers", _ctx())
+    assert exc_info.value.table == "customers"
+    assert "customers" in str(exc_info.value)
+
+
+def test_denied_when_condition_never_fires_even_if_table_listed():
+    """If no policy's when-clause evaluates True, deny — even if the table is
+    listed under some other policy that didn't match."""
+    engine = _engine(
+        _policy(
+            "analyst",
+            "'analysts' in jwt.groups",
+            {"orders": TablePolicy(column_level=ColumnLevelPolicy(include_all=True))},
+        )
+    )
+    with pytest.raises(TableAccessDenied):
+        engine.evaluate("orders", _ctx(groups=["guest"]))

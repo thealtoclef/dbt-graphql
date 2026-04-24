@@ -85,8 +85,8 @@ Setting `endpoint` without `protocol` raises a config error at startup.
 ## `security` (optional)
 
 Path to the access-policy file that governs column/row visibility at request
-time. See [access-policy.md](access-policy.md) for the policy language,
-request-time evaluation model, and design notes.
+time. See [access-policy.md](access-policy.md) for the policy language and
+[security.md](security.md) for the JWT auth model.
 
 | Field | Type | Default | Description |
 |---|---|---|---|

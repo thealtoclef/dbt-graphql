@@ -16,8 +16,8 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | 5 | Docs + env-var config | ✅ Done (one item outstanding) |
 | — | dbt Selector Support (`--select`) | 🔲 Pending |
 | — | Source Node Inclusion (`catalog.sources`) | 🔲 Pending |
-| Sec-A | Identity & JWT Auth | 🔲 Planned |
-| Sec-B | RBAC + Column-Level Security | 🟨 Core shipped |
+| Sec-A | Identity & JWT Auth | 🟨 Trust-only shipped (signature verification pending) |
+| Sec-B | RBAC + Column-Level Security | ✅ Done |
 | Sec-C | Row-Level Security | 🟨 Core shipped |
 | Sec-D | Data Masking | 🟨 Core shipped |
 | Sec-E | Query Allow-List | 🔲 Planned |
@@ -193,46 +193,87 @@ The two primary references for this design:
 
 ---
 
-### Sec-A — Identity & JWT Auth
+### Sec-A — Identity & JWT Auth 🟨 Trust-only shipped
 
-**Motivation:** Foundation for all subsequent security phases. Without a verified identity, RBAC/RLS/masking have no subject to evaluate against.
+**Design — OAuth 2.0 Resource Server.** dbt-graphql is a **Resource
+Server**, not an Authorization Server. An external identity provider
+(Auth0 / Keycloak / Cognito / Clerk / Cube / a custom service) issues
+signed JWTs; we verify the signature, read the payload, and evaluate
+policy against it. We never handle credentials, never issue tokens,
+never call a login endpoint. Translation/exchange (opaque token → JWT,
+session cookie → JWT, mTLS → JWT) belongs in a reverse proxy or a
+sidecar service that sits in front of us — from our POV the wire
+format is always `Authorization: Bearer <jwt>`.
 
-**Config additions (`config.yml`):**
+This is the Cube.dev model (see
+[Cube JWT auth docs](https://cube.dev/docs/product/auth/methods/jwt))
+and the same split used by Hasura, Envoy's JWT filter, the Kubernetes
+API server, and every OAuth 2.0 resource server.
+
+**Status of shipped pieces (`77f86c2`, `ef417d6`):**
+- `JWTAuthBackend` wired into Starlette's `AuthenticationMiddleware`
+- PyJWT dependency
+- `JWTPayload` dot-access wrapper available to `when:` and `row_level:`
+- HTTP integration tests in `tests/integration/test_policy_http.py`
+
+**Important caveat:** the current backend passes
+`options={"verify_signature": False}` — it trusts whatever JWT the
+client sends. Signature verification is the one item blocking a real
+production story. Do not expose the API to untrusted networks until
+the verification work below is done.
+
+**Remaining work — config additions (`config.yml`):**
 ```yaml
 security:
   jwt:
-    secret: "env:JWT_SECRET"           # HMAC-SHA256
-    # OR:
-    jwks_url: "https://..."            # RS256 via JWKS endpoint
-    algorithm: HS256                   # HS256 | RS256
-    claims_namespace: ""               # optional prefix stripped from claim keys
-  api_keys:
-    - key: "env:SERVICE_KEY_1"
-      role: service                    # maps directly to a role name
-  anonymous_role: anon                 # role assigned when no token present
+    # Option A: shared-secret HMAC (HS256/384/512)
+    secret: "env:JWT_SECRET"
+    # Option B: asymmetric via JWKS (RS256/ES256)
+    jwks_url: "https://example.auth0.com/.well-known/jwks.json"
+    algorithms: [RS256]               # allow-list of acceptable algs
+    audience: "dbt-graphql"           # optional aud check
+    issuer: "https://example.auth0.com/"  # optional iss check
+    leeway_s: 30                      # clock-skew tolerance for exp/nbf
 ```
 
-**Files to create/modify:**
-- `src/dbt_graphql/api/auth.py` — JWT decoder, API key validator, `SecurityContext` dataclass (`user_id`, `email`, `groups`, `raw_claims`)
-- `src/dbt_graphql/api/app.py` — Starlette middleware injecting `request.state.security_context`
-- `src/dbt_graphql/config.py` — `SecurityConfig`, `JwtConfig`, `ApiKeyConfig`
+**Explicitly out of scope for Sec-A:**
+- API keys — resource servers don't mint credentials. If a caller
+  needs a long-lived token, they get one from the Authorization Server
+  and send it as a JWT. A middleware in front of us can translate API
+  keys to JWTs on the fly.
+- `anonymous_role` config — "no/invalid token" is already expressible
+  in policy via `when: "jwt.sub == None"`. No config wiring needed.
+- Login / password / session handling — this is an Authorization
+  Server concern, not a Resource Server concern.
 
 | Item | Status |
 |---|---|
-| `SecurityConfig` Pydantic model | 🔲 |
-| JWT decode middleware (HS256 + RS256/JWKS) | 🔲 |
-| API key validation | 🔲 |
-| Anonymous role fallback | 🔲 |
-| `SecurityContext` propagated to all resolvers | 🔲 |
+| `JWTAuthBackend` + Starlette middleware (trust-only) | ✅ |
+| `JWTPayload` dot-access available in `when:` / `row_level:` | ✅ |
+| PyJWT dependency | ✅ |
+| HTTP integration tests for policy + JWT | ✅ |
+| `security.jwt` pydantic config | 🔲 |
+| HMAC signature verification (HS256) | 🔲 |
+| JWKS / asymmetric verification (RS256) with key caching | 🔲 |
+| `exp` / `nbf` / `aud` / `iss` validation with configurable leeway | 🔲 |
+| Fail-closed: reject unsigned / unknown-alg / malformed tokens with 401 | 🔲 |
 
 ---
 
-### Sec-B — RBAC + Column-Level Security 🟨 Core shipped
+### Sec-B — RBAC + Column-Level Security ✅ Done
 
 **Status:** The shipped engine uses `policies[*].when` (simpleeval expressions
 against the JWT) rather than the originally-drafted `match_groups` lists —
 `when` subsumes group matching and adds arbitrary claim predicates. Column
-access is union-OR across matching policies (most-permissive wins).
+access is union-OR across matching policies (most-permissive wins). Default
+is **deny** at the table level and **strict** at the column level — any
+table not covered by an active policy, or any column not authorized by the
+merged policy, produces a structured GraphQL `FORBIDDEN_TABLE` /
+`FORBIDDEN_COLUMN` error (see `docs/access-policy.md#error-responses`).
+
+Policy enforcement is applied at **every table reached by the query**,
+including tables pulled in through nested GraphQL relations — so a nested
+selection cannot bypass deny / strict / mask / row-filter.
 
 **Reference:** [`docs/access-policy.md`](docs/access-policy.md),
 [`access.example.yml`](access.example.yml).
@@ -246,8 +287,10 @@ access is union-OR across matching policies (most-permissive wins).
 | `security.policy_path` config + `load_access_policy` | ✅ |
 | `access.example.yml` | ✅ |
 | Wildcard `"*"` table policy | ❌ dropped — use `include_all` per-table instead |
-| Table-level block (role has no policy for table → 403) | 🔲 |
-| Strict mode (unlisted columns → error, not silent strip) | 🔲 |
+| Table-level default-deny (unlisted table → `FORBIDDEN_TABLE`) | ✅ |
+| Strict columns (unauthorized column → `FORBIDDEN_COLUMN`, not silent strip) | ✅ |
+| Nested-relation policy enforcement (columns / masks / row filters) | ✅ |
+| Structured GraphQL error extensions (`code`, `table`, `columns`) | ✅ |
 | `--policy PATH` CLI override of `config.security.policy_path` | 🔲 |
 
 ---

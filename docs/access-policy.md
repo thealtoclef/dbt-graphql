@@ -25,10 +25,15 @@ multiple applications, each with a different `access.yml`.
 3. Start the API. Each GraphQL request is evaluated against the policy using
    the `Authorization: Bearer <jwt>` header.
 
-> **Development note** — the JWT is currently base64-decoded without
-> signature verification. Sec-A (JWT verification via HS256 / RS256 + JWKS)
-> is tracked in the [roadmap](../ROADMAP.md) and is a prerequisite before
-> relying on `access.yml` to protect real data in production.
+> **Production prerequisite — JWT signature verification.** The JWT
+> auth backend uses PyJWT with `verify_signature=False`: it reads the
+> payload and exposes it to `when:` / `row_level:` templates, but does
+> not verify signatures, algorithms, or standard claims (`exp`, `aud`,
+> `iss`). Sec-A tracks the remaining verification work; see
+> [security.md](security.md) for the resource-server design the auth
+> layer follows, and the [roadmap](../ROADMAP.md) for the verification
+> checklist. **Do not expose the API to untrusted networks until Sec-A
+> verification lands.**
 
 ---
 
@@ -107,12 +112,14 @@ row_level: |
 
 ## Evaluation model
 
-For each GraphQL field resolved on a table:
+For each table the query touches — root *and* any table reached by a nested
+relation — the engine runs these steps:
 
 1. Every `policies[*].when` expression is evaluated against the request's
    JWT payload.
 2. Policies whose `when` is true **and** whose `tables` contains the current
-   table are collected.
+   table are collected. If none match, the request is **denied**
+   (`FORBIDDEN_TABLE`) — see [default-deny](#default-deny) below.
 3. The collected table-policies are merged into a single `ResolvedPolicy`:
    - **Column access** — OR / union: the most permissive matching policy
      wins. If any matching policy has `include_all: true`, all columns are
@@ -126,14 +133,73 @@ For each GraphQL field resolved on a table:
      fix the conflict in `access.yml`.
    - **Row filters** — OR: `(filter_a) OR (filter_b)`. Bind params from
      each filter are merged under per-policy prefixes to avoid collisions.
-4. The compiler uses `ResolvedPolicy` to:
-   - Drop blocked columns from the `SELECT` list and replace masked columns
-     with the mask expression.
+4. Every column the client requested is checked against the merged policy.
+   Any column that is not in `allowed_columns` (when set) or is in
+   `blocked_columns` triggers `FORBIDDEN_COLUMN` — see
+   [strict columns](#strict-columns) below.
+5. The compiler uses `ResolvedPolicy` to:
+   - Emit the selected columns, replacing masked columns with the mask
+     expression.
    - Append `WHERE <row_filter_sql>` using `text(sql).bindparams(**params)`.
 
-If no policy matches, the request is served unrestricted. This is the
-**permissive-by-default** stance; combine it with an authenticated-everywhere
-gateway, or add an explicit "deny all" policy for unknown subjects.
+### Default-deny
+
+When `access.yml` is loaded, **every table must be explicitly listed under
+some policy that matches the subject** — otherwise the request is rejected
+with a GraphQL error. This closes the hole where a role with a narrow
+policy (say, on `orders`) could silently read any other table the policy
+forgot to mention.
+
+When no `access.yml` is configured at all (`security.policy_path` unset),
+enforcement is skipped entirely — this is dev/test mode. Pick one:
+configure a policy file, or don't; there is no "partial enforcement".
+
+### Strict columns
+
+If the client selects a column that the merged policy does not allow —
+either it's outside `includes`, or it's listed in `excludes` — the request
+is rejected with `FORBIDDEN_COLUMN` naming the table and the unauthorized
+columns. Columns are never silently stripped from the response. Silent
+strip creates ambiguous nulls (was this row NULL, or was the column
+blocked?) and makes it hard to debug why a query "didn't return the field I
+asked for" — strict is always louder, and always clearer.
+
+### Nested relations
+
+Default-deny, strict columns, masks, and row filters all apply the same way
+to every table the query reaches — not just the root. Selecting
+`customers { orders { internal_notes } }` evaluates the policy for `orders`
+just as if `orders` were queried directly. Without this, nested selections
+would be a blanket bypass of the whole policy engine.
+
+---
+
+## Error responses
+
+Policy denials surface as standard GraphQL errors (HTTP 200 with a populated
+`errors` array — the idiomatic GraphQL convention). The `extensions` block
+carries a stable `code` plus structured context:
+
+```json
+{
+  "errors": [
+    {
+      "message": "access denied: columns [first_name, last_name] on table 'customers' are not authorized by policy",
+      "extensions": {
+        "code": "FORBIDDEN_COLUMN",
+        "table": "customers",
+        "columns": ["first_name", "last_name"]
+      }
+    }
+  ],
+  "data": null
+}
+```
+
+| `code` | When | Extensions |
+|---|---|---|
+| `FORBIDDEN_TABLE` | No matching policy covers the requested table. | `table` |
+| `FORBIDDEN_COLUMN` | Query selects columns not authorized by the merged policy. | `table`, `columns` |
 
 ---
 
@@ -261,7 +327,13 @@ predicate.
    with multiple applicable roles get the union.
 5. **Fail safe on conflict.** Mask conflicts raise rather than pick an
    arbitrary expression.
-6. **Application layer, not warehouse layer.** A single dbt model can be
+6. **Default-deny, strict-column, loud.** Tables the policy doesn't cover
+   raise `FORBIDDEN_TABLE`. Unauthorized columns raise `FORBIDDEN_COLUMN`.
+   The API never returns a partial result that silently hides denials.
+7. **Policy applies to every table the query reaches.** Root tables and
+   nested-relation tables are evaluated the same way — no bypass via
+   nesting.
+8. **Application layer, not warehouse layer.** A single dbt model can be
    served by many applications with different policies; warehouse-side
    controls (BigQuery policy tags, Postgres RLS) remain independent.
 
