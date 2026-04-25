@@ -13,7 +13,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | 2 | MCP live enrichment | ✅ Done |
 | 3 | MCP SOTA surface (tools + resources + prompts) | 🔲 Pending |
 | 4 | Few-shot Q→GraphQL example store | 🔲 Pending |
-| 5 | Docs + env-var config | ✅ Done (one item outstanding) |
+| 5 | Docs + env-var config | ✅ Done |
 | — | dbt Selector Support (`--select`) | 🔲 Pending |
 | — | Source Node Inclusion (`catalog.sources`) | 🔲 Pending |
 | Sec-A | Identity & JWT Auth | 🟨 Trust-only shipped (signature verification pending) |
@@ -25,7 +25,6 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Sec-G | ABAC match-clauses + deny rules | 🔲 Planned |
 | Sec-H | Structured row-filter DSL | 🔲 Planned |
 | Sec-I | Column classifications | 🔲 Planned |
-| Sec-J | External PDP (OPA / Cedar / custom) | 🔲 Planned |
 | Sec-K | Hot reload of access.yml | 🔲 Planned |
 | Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
 
@@ -75,10 +74,10 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Per-column `value_summary`: enum / date-range / distinct-values | ✅ |
 | Budget semaphore limiting live DB queries | ✅ |
 | `catalog.json` stats preferred over live `COUNT(*)` | ✅ |
-| `--enrich-budget` CLI flag | 🔲 check |
-| Unit tests (no-DB path returns nulls) | 🔲 check |
-| Integration test (DuckDB fixture): distinct values + row_count + sample_rows | 🔲 check |
-| Cache: second call issues 0 DB queries | 🔲 check |
+| `enrichment.budget` config field (env-overridable) | ✅ — `EnrichmentConfig.budget`; CLI flag dropped in favor of config/env |
+| Unit tests (no-DB path returns nulls) | ✅ |
+| Integration test (Postgres + MySQL): distinct values + row_count + sample_rows | ✅ — `tests/integration/test_mcp_enrichment.py` |
+| Cache: second call returns same object | ✅ — `test_cache_returns_same_object` |
 
 ---
 
@@ -137,7 +136,8 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | `docs/configuration.md` | ✅ |
 | `docs/architecture.md` updates | ✅ |
 | `docs/access-policy.md` | ✅ |
-| `config.example.yml` at repo root (commented Helm-style defaults) | 🔲 outstanding |
+| `config.example.yml` at repo root (commented Helm-style defaults) | ✅ |
+| Defaults centralized in `defaults.py` (replaced `config.default.yml`) | ✅ |
 
 ---
 
@@ -526,67 +526,6 @@ lives with the application.
 | `columns:` tag map + `respects:` on policies | 🔲 |
 | Mask template placeholder `{col}` rendered per column | 🔲 |
 | Read classifications from dbt `meta.dbt_graphql.classification` | 🔲 |
-
----
-
-### Sec-J — External Policy Decision Point (OPA / Cedar / custom)
-
-**Motivation:** At enterprise scale, authz decisions live in a shared PDP
-(Policy Decision Point) — Open Policy Agent, AWS Cedar, or a home-grown
-service — so every microservice enforces the same rules with the same
-audit trail. Making `dbt-graphql` a **PEP** (Policy Enforcement Point)
-that delegates to a PDP slots cleanly into that architecture. Kubernetes,
-Envoy, Istio, and most large authz platforms use this exact shape.
-
-**Config additions:**
-```yaml
-security:
-  pdp:
-    url: "http://opa:8181/v1/data/dbt_graphql/allow"
-    timeout_ms: 50                      # fail closed on timeout
-    cache:
-      ttl_s: 5                          # per-decision local cache
-      max_entries: 1000
-    input_builder: default              # "default" | "custom-module:func"
-```
-
-**Decision request body (`default` builder):**
-```json
-{
-  "input": {
-    "subject":   { "sub": "u1", "groups": ["analysts"], "claims": {"org_id": 7} },
-    "action":    "read",
-    "resource":  { "table": "customers", "columns": ["email", "ssn"] },
-    "environment": { "ip": "...", "ts": "..." }
-  }
-}
-```
-
-**Decision response:**
-```json
-{
-  "result": {
-    "allowed": true,
-    "allowed_columns": ["customer_id", "email"],
-    "masks": { "email": "CONCAT('***@', SPLIT_PART(email, '@', 2))" },
-    "row_filter_sql": "org_id = :org",
-    "row_filter_params": { "org": 7 }
-  }
-}
-```
-
-**Behavior:** When `pdp.url` is set, the built-in engine is skipped and
-every request produces a PDP call (with a per-request cache keyed on
-subject + resource). Load policies locally as fallback when the PDP is
-unreachable *only if* explicitly enabled — otherwise fail closed.
-
-| Item | Status |
-|---|---|
-| `PdpClient` (httpx) + timeout / fail-closed semantics | 🔲 |
-| Input-builder contract + default implementation | 🔲 |
-| Response schema + mapping to `ResolvedPolicy` | 🔲 |
-| Per-request local decision cache | 🔲 |
-| OPA integration test (docker compose with a minimal Rego bundle) | 🔲 |
 
 ---
 

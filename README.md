@@ -34,7 +34,7 @@ dbt-graphql serve \
   --config config.yml
 ```
 
-Playground at `http://localhost:8080/graphql`. See [`config.default.yml`](src/dbt_graphql/config.default.yml) for the config format.
+Playground at `http://localhost:8080/graphql`. See [`config.example.yml`](config.example.yml) for the config format.
 
 **3. Start the MCP server**
 

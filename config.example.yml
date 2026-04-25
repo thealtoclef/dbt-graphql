@@ -1,0 +1,61 @@
+# dbt-graphql configuration — copy to `config.yml` and edit.
+#
+# Loaded with `dbt-graphql serve --config config.yml`. Any field can be
+# overridden by a `DBT_GRAPHQL__*` env var (nested fields use `__` as
+# delimiter, e.g. `DBT_GRAPHQL__DB__PASSWORD=secret`). Env vars take
+# precedence over values in this file.
+#
+# Default values for optional fields are defined as constants in
+# `src/dbt_graphql/defaults.py` — they are repeated here as comments for
+# documentation only.
+
+# -----------------------------------------------------------------------------
+# db (required) — database connection
+# -----------------------------------------------------------------------------
+db:
+  type: postgres            # postgres | mysql | mariadb | doris
+  host: localhost
+  port: 5432
+  dbname: analytics
+  user: dbt
+  password: ""              # prefer DBT_GRAPHQL__DB__PASSWORD env var
+
+# -----------------------------------------------------------------------------
+# serve (required for `--target api`) — HTTP server bind config
+# -----------------------------------------------------------------------------
+serve:
+  host: 0.0.0.0
+  port: 9876
+
+# -----------------------------------------------------------------------------
+# enrichment (optional) — controls live DB queries fired by MCP describe_table.
+# Defaults below match `defaults.ENRICHMENT_*`.
+# -----------------------------------------------------------------------------
+# enrichment:
+#   budget: 20                              # max live per-column queries / call
+#   distinct_values_limit: 50               # max values returned in `distinct` summary
+#   distinct_values_max_cardinality: 500    # skip distinct summary above this cardinality
+
+# -----------------------------------------------------------------------------
+# monitoring (optional) — OpenTelemetry + log level. Each signal block is
+# independent: omit `endpoint` to keep that signal local-only.
+# -----------------------------------------------------------------------------
+# monitoring:
+#   service_name: dbt-graphql               # OTel resource attribute
+#   logs:
+#     level: INFO                           # trace | debug | info | warning | error | critical
+#     # endpoint: http://otel-collector:4318/v1/logs
+#     # protocol: http                      # http | grpc — required when endpoint is set
+#   traces:
+#     # endpoint: http://otel-collector:4318/v1/traces
+#     # protocol: http
+#   metrics:
+#     # endpoint: http://otel-collector:4318/v1/metrics
+#     # protocol: http
+
+# -----------------------------------------------------------------------------
+# security (optional) — path to access policy. Without this, the API serves
+# every column and row to every caller. See docs/access-policy.md.
+# -----------------------------------------------------------------------------
+# security:
+#   policy_path: access.yml
