@@ -27,6 +27,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Sec-I | Column classifications | 🔲 Planned |
 | Sec-K | Hot reload of access.yml | 🔲 Planned |
 | Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
+| Sec-J | Caching & burst protection (parsed-doc + compiled-plan + result cache + singleflight) | 🔲 Planned — see [docs/plans/sec-j-caching.md](docs/plans/sec-j-caching.md) |
 
 ---
 
@@ -570,6 +571,15 @@ dbt-graphql policy test         # runs inline tests, CI-friendly exit code
 | `tests:` schema + runner | 🔲 |
 | `policy test` exit code + structured failure output | 🔲 |
 | Playbook of recipes in docs/access-policy.md | 🔲 |
+
+---
+
+### Sec-J — Caching & Burst Protection
+
+Multi-layer cache (parsed-doc LRU, compiled-plan LRU, result cache with TTL +
+singleflight) to protect the warehouse from bursts and cut response latency.
+Pluggable backend (in-mem default, Redis for multi-replica). Detailed plan:
+[`docs/plans/sec-j-caching.md`](docs/plans/sec-j-caching.md).
 
 ---
 
