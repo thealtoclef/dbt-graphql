@@ -40,10 +40,9 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | `ColumnLineageEdge` deleted; typed graph edges | ✅ |
 | Lineage type normalization (`pass-through` → `pass_through`) | ✅ |
 | `remove_quotes`/`remove_upper` for Postgres/BigQuery dialects | ✅ |
-| `source_model` → `unique_id` for cross-package disambiguation | ⚠️ skipped — still short names; deferred until multi-package use |
-| `LineageSchema.format_version = "2"` | ⚠️ skipped — tied to above |
-| Snapshot test against baseline `lineage.json` | ❌ not added |
-| New adapter fixtures (Postgres CamelCase, BigQuery backtick, UNNEST, two-package) | ❌ not added |
+| `source_model` → `unique_id` for cross-package disambiguation | 🔲 Deferred until multi-package projects are encountered |
+| Snapshot test against baseline `lineage.json` | 🔲 |
+| New adapter fixtures (Postgres CamelCase, BigQuery backtick, UNNEST, two-package) | 🔲 |
 
 ---
 
@@ -61,7 +60,6 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | `join_hint` downgrade in `pipeline._rel_to_domain` | ✅ |
 | `@relation` directive: `origin`, `confidence`, `name`, `description`, composite `fields`/`toFields` | ✅ |
 | `compiler/query.py`: composite FK predicate with `and_(...)` | ✅ |
-| Reverse-relation fields (`@reverseRelation`) | ❌ permanently dropped — directed edges already encode this |
 
 ---
 
@@ -74,10 +72,10 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Per-column `value_summary`: enum / date-range / distinct-values | ✅ |
 | Budget semaphore limiting live DB queries | ✅ |
 | `catalog.json` stats preferred over live `COUNT(*)` | ✅ |
-| `enrichment.budget` config field (env-overridable) | ✅ — `EnrichmentConfig.budget`; CLI flag dropped in favor of config/env |
+| `enrichment.budget` config field (env-overridable) | ✅ |
 | Unit tests (no-DB path returns nulls) | ✅ |
-| Integration test (Postgres + MySQL): distinct values + row_count + sample_rows | ✅ — `tests/integration/test_mcp_enrichment.py` |
-| Cache: second call returns same object | ✅ — `test_cache_returns_same_object` |
+| Integration test (Postgres + MySQL): distinct values + row_count + sample_rows | ✅ |
+| Cache: second call returns same object | ✅ |
 
 ---
 
@@ -137,7 +135,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | `docs/architecture.md` updates | ✅ |
 | `docs/access-policy.md` | ✅ |
 | `config.example.yml` at repo root (commented Helm-style defaults) | ✅ |
-| Defaults centralized in `defaults.py` (replaced `config.default.yml`) | ✅ |
+| Defaults centralized in `defaults.py` | ✅ |
 
 ---
 
@@ -286,7 +284,6 @@ selection cannot bypass deny / strict / mask / row-filter.
 | Column stripping in `compile_query` via `ResolvedPolicy` | ✅ |
 | `security.policy_path` config + `load_access_policy` | ✅ |
 | `access.example.yml` | ✅ |
-| Wildcard `"*"` table policy | ❌ dropped — use `include_all` per-table instead |
 | Table-level default-deny (unlisted table → `FORBIDDEN_TABLE`) | ✅ |
 | Strict columns (unauthorized column → `FORBIDDEN_COLUMN`, not silent strip) | ✅ |
 | Nested-relation policy enforcement (columns / masks / row filters) | ✅ |
@@ -313,7 +310,6 @@ structurally impossible. OR semantics across matching policies.
 | Merge with user `where:` in `compile_query` | ✅ |
 | SQL injection regression test | ✅ |
 | Static-predicate passthrough (`published = TRUE`) | ✅ |
-| Structured DSL alternative to raw-SQL templates | 🔲 → Sec-H |
 
 ---
 
@@ -332,7 +328,6 @@ expression; conflicting expressions raise at evaluate time.
 | `NULL` static mask | ✅ |
 | "Least-masked wins" — any unmasked matching policy drops the mask | ✅ |
 | Conflict detection (raise when policies disagree on mask SQL) | ✅ |
-| Mask-by-classification (declare once, apply by tag) | 🔲 → Sec-I |
 | Dialect safety: reject `;` / `--` in mask strings at load time | 🔲 |
 
 ---
@@ -583,8 +578,6 @@ dbt-graphql policy test         # runs inline tests, CI-friendly exit code
 | Item | Decision |
 |---|---|
 | Short names vs `unique_id` in lineage (Phase 0) | Deferred — relevant only when multi-package projects are encountered |
-| Reverse relations (`@reverseRelation`) | Permanently dropped — directed edges already encode bidirectional traversal |
-| Wildcard `"*"` table policy | Permanently dropped — operators must enumerate tables, or use `include_all` per-table. Wildcards make it too easy to over-grant when new tables are added. |
-| Row-filter template engine | Jinja2 `SandboxedEnvironment` with `finalize=` hook. Every `{{ expression }}` becomes a SQL bind param; values never hit the rendered SQL. Chosen over (a) raw regex extraction (no conditionals/filters), (b) `jinjasql` (less active), (c) moving directly to a structured DSL (larger scope — now tracked as Sec-H). |
-| `when:` evaluator | `simpleeval` — AST-based, rejects dunders + builtins, keeps the Python-flavored syntax operators already use. Chosen over (a) raw `eval()` with empty builtins (weaker), (b) CEL (different syntax, bigger dep), (c) `asteval` (comparable but less widely adopted). |
+| Row-filter template engine | Jinja2 `SandboxedEnvironment` with `finalize=` hook. Every `{{ expression }}` becomes a SQL bind param; values never hit the rendered SQL. |
+| `when:` evaluator | `simpleeval` — AST-based, rejects dunders + builtins, keeps the Python-flavored syntax operators already use. |
 | JWT verification (Sec-A) | Shipped unverified in dev only — base64 decode. Signature verification is mandatory before `access.yml` is relied on for production data; gated on Sec-A. |
