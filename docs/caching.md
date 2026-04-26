@@ -80,7 +80,7 @@ async def execute_with_cache(stmt, *, dialect_name, table_names, runner, cfg):
         return cached
 
     # Slow path — coalesce concurrent misses through a lock.
-    async with cache.lock(f"lock:{key}", expire=cfg.lock_safety_timeout_s):
+    async with cache.lock(f"{key}:lock", expire=cfg.lock_safety_timeout_s):
         cached = await cache.get(key)         # re-check inside the lock
         if cached is not None:
             return cached

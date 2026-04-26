@@ -37,10 +37,7 @@ async def close_cache() -> None:
     global _CONFIGURED
     if not _CONFIGURED:
         return
-    try:
-        await cache.close()
-    except Exception as exc:
-        logger.warning("cache.close failed (ignored): {}", exc)
+    await cache.close()
     _CONFIGURED = False
 
 

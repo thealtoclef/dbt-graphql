@@ -72,16 +72,10 @@ async def _cleanup_cache():
     state from one parametrization (postgres) leaks into the next (mysql)
     and turns real misses into phantom hits.
     """
-    try:
-        await cache.clear()
-    except Exception:
-        pass
+    await cache.clear()
     stats.reset()
     yield
-    try:
-        await cache.clear()
-    except Exception:
-        pass
+    await cache.clear()
     await close_cache()
     stats.reset()
 
