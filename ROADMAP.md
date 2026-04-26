@@ -27,7 +27,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Sec-I | Column classifications | 🔲 Planned |
 | Sec-K | Hot reload of access.yml | 🔲 Planned |
 | Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
-| Sec-J | Caching & burst protection (parsed-doc + compiled-plan + result cache + singleflight) | 🔲 Planned — see [docs/plans/sec-j-caching.md](docs/plans/sec-j-caching.md) |
+| Sec-J | Caching & burst protection | 🟨 Result cache + singleflight shipped; OTel metrics + Redis multi-replica test pending — see [docs/plans/sec-j-caching.md](docs/plans/sec-j-caching.md) |
 | Sec-M | Python extension hooks (Superset-style overrides file) | 🔲 Placeholder |
 
 ---
@@ -558,11 +558,15 @@ dbt-graphql policy test         # runs inline tests, CI-friendly exit code
 
 ---
 
-### Sec-J — Caching & Burst Protection
+### Sec-J — Caching & Burst Protection 🟨 Core shipped
 
-Multi-layer cache (parsed-doc LRU, compiled-plan LRU, result cache with TTL +
-singleflight) to protect the warehouse from bursts and cut response latency.
-Pluggable backend (in-mem default, Redis for multi-replica). Detailed plan:
+Result cache + singleflight via cashews protects the warehouse from
+bursts of identical concurrent queries. Single backend URI (in-mem
+default, Redis for multi-replica). Reference:
+[`docs/caching.md`](docs/caching.md).
+
+Remaining work — OTel metric emission and a Redis multi-replica
+integration test — is tracked in
 [`docs/plans/sec-j-caching.md`](docs/plans/sec-j-caching.md).
 
 ---
