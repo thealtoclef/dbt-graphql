@@ -1,6 +1,6 @@
-"""L3 — result cache + singleflight (one mechanism, one key namespace).
+"""Result cache + singleflight (one mechanism, one key namespace).
 
-The burst-protection layer. Combines:
+Combines:
 - TTL-based result cache keyed by rendered SQL + bound params
 - ``cache.lock`` for singleflight: concurrent misses on the same key
   serialize through one warehouse roundtrip
@@ -24,12 +24,12 @@ from cashews import cache
 from loguru import logger
 from sqlalchemy.sql import ClauseElement
 
-from .config import L3Config
+from .config import ResultConfig
 from .keys import hash_sql
 from .stats import stats
 
 
-def resolve_ttl(table_names: Iterable[str], cfg: L3Config) -> int:
+def resolve_ttl(table_names: Iterable[str], cfg: ResultConfig) -> int:
     """Compute the effective TTL for a set of tables. See module docstring."""
     per_table = [
         cfg.per_table_ttl_s[t] for t in table_names if t in cfg.per_table_ttl_s
@@ -45,7 +45,7 @@ async def execute_with_cache(
     dialect_name: str,
     table_names: Iterable[str],
     runner: Callable[[ClauseElement], Awaitable[list[dict]]],
-    cfg: L3Config,
+    cfg: ResultConfig,
 ) -> list[dict]:
     """Cached wrapper over ``runner(stmt)``.
 

@@ -1,10 +1,10 @@
 # Caching & Burst Protection
 
-A single result cache with singleflight, sitting between the GraphQL HTTP handler and the warehouse. Serves repeat queries without re-executing them, and coalesces concurrent identical queries into a single warehouse roundtrip.
+A result cache with singleflight, sitting between the GraphQL HTTP handler and the warehouse. Serves repeat queries without re-executing them, and coalesces concurrent identical queries into a single warehouse roundtrip.
 
 **Entry points:** [`src/dbt_graphql/cache/`](../src/dbt_graphql/cache/) — wired into the API by [`api/app.py`](../src/dbt_graphql/api/app.py) and [`api/resolvers.py`](../src/dbt_graphql/api/resolvers.py).
 
-See [architecture.md](architecture.md) for where this layer sits in the overall pipeline and [configuration.md § cache](configuration.md#cache-optional) for the operator-facing config surface.
+See [architecture.md](architecture.md) for where the cache sits in the overall pipeline and [configuration.md § cache](configuration.md#cache-optional) for the operator-facing config surface.
 
 ---
 
@@ -18,15 +18,23 @@ See [architecture.md](architecture.md) for where this layer sits in the overall 
 - [6. Self-protection — what the cache does and does not defend against](#6-self-protection--what-the-cache-does-and-does-not-defend-against)
 - [7. Observability](#7-observability)
 - [8. Backends](#8-backends)
-- [9. Things this layer deliberately doesn't do](#9-things-this-layer-deliberately-doesnt-do)
+- [9. Things the cache deliberately doesn't do](#9-things-the-cache-deliberately-doesnt-do)
 
 ---
 
 ## 1. Why only the result cache
 
-An earlier design proposed three layers — a parsed-document cache (skip GraphQL `parse`), a compiled-plan cache (skip policy eval + SQLAlchemy build), and the result cache (skip the warehouse). We measured: parse is ~µs and compile is ~ms per request, while the warehouse roundtrip is 10–1000 ms. Only the result cache earns its keep.
+An earlier design proposed two more caches in front of this one — a parsed-document cache (skip GraphQL `parse`) and a compiled-plan cache (skip policy eval + SQLAlchemy build). We sized them at the design target of **1000 RPS** and dropped both:
 
-The compiled-plan cache also had a fragile correctness story — its key had to encode "which JWT claims could the policy possibly read?" to avoid cross-tenant leaks, and `compile_query` recursing into nested-table policies made that hard to bound. Removing it removed the only place the cache could plausibly leak across tenants.
+| What | Cost saved per hit | At 1000 RPS, ~100% hit rate | Verdict |
+|---|---|---|---|
+| Parse cache | ~30–100 µs | ~0.05 cores of CPU | Noise — lost in measurement error. |
+| Compiled-plan cache | ~0.5–3 ms | ~1.5 cores of CPU | Real — but not on the bottleneck path. |
+| **Result cache** | **10–1000 ms (warehouse roundtrip)** | dominates | The only one that matters. |
+
+At 1000 RPS to an OLAP warehouse, you exhaust connection-pool / warehouse concurrency long before the app is CPU-bound. The result cache saves the warehouse roundtrip — that's where 1000 RPS becomes sustainable. The compiled-plan cache would save CPU you weren't out of, and adding a replica costs less than maintaining the cache code.
+
+The compiled-plan cache also had a fragile correctness story — its key had to encode "which JWT claims could the policy possibly read?" to avoid cross-tenant leaks, and `compile_query` recursing into nested-table policies made that hard to bound. Dropping it removed the only place the cache could plausibly leak across tenants.
 
 ```
 HTTP request (POST /graphql)
@@ -163,7 +171,7 @@ Special value: **`0` = realtime + minimal coalescing window.** The cache still a
 
 **Tuning the lock safety timeout.** Set it slightly above the slowest plausible warehouse query you expect. Too low → a legitimately slow query times out the lock and a second caller fires a duplicate execution. Too high → recovery from a crashed lock-holder is delayed. The default `60` works for typical analytics queries; bump it for heavy aggregations on TB tables.
 
-What this layer is **not**:
+What the cache is **not**:
 
 - Not a query-cost limiter — it does not reject expensive queries up-front.
 - Not a per-IP rate limiter — that belongs at the load balancer.
@@ -206,7 +214,7 @@ The backend abstraction is provided by [cashews](https://github.com/Krukov/cashe
 
 ---
 
-## 9. Things this layer deliberately doesn't do
+## 9. Things the cache deliberately doesn't do
 
 - **No parse cache, no compiled-plan cache.** Both savings are dwarfed by the warehouse roundtrip; see § 1.
 - **No refresh-key invalidation (Cube-style).** Probes hit the warehouse on their own schedule and create coordination problems at scale. Wall-clock TTL is sufficient for a dbt-backed analytics API where data updates on dbt's schedule.

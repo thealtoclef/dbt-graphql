@@ -24,7 +24,7 @@ import pytest
 from sqlalchemy import Column, Integer, MetaData, String, Table, select
 
 from dbt_graphql.cache import stats
-from dbt_graphql.cache.config import L3Config
+from dbt_graphql.cache.config import ResultConfig
 from dbt_graphql.cache.result import execute_with_cache, resolve_ttl
 
 
@@ -63,7 +63,7 @@ class TestSteadyState:
             dialect_name="postgresql",
             table_names=("u",),
             runner=runner,
-            cfg=L3Config(default_ttl_s=60),
+            cfg=ResultConfig(default_ttl_s=60),
         )
         assert runner.calls == 1
         assert rows == [{"id": 1}]
@@ -73,7 +73,7 @@ class TestSteadyState:
     async def test_repeat_within_ttl_hits(self, fresh_cache):
         runner = CountingRunner()
         s = _stmt()
-        cfg = L3Config(default_ttl_s=60)
+        cfg = ResultConfig(default_ttl_s=60)
         for _ in range(5):
             await execute_with_cache(
                 s,
@@ -89,7 +89,7 @@ class TestSteadyState:
     @pytest.mark.asyncio
     async def test_distinct_bound_params_independent_entries(self, fresh_cache):
         runner = CountingRunner()
-        cfg = L3Config(default_ttl_s=60)
+        cfg = ResultConfig(default_ttl_s=60)
         # Two distinct parameter values → two SQL hashes → two warehouse calls.
         await execute_with_cache(
             _stmt("alice"),
@@ -122,7 +122,7 @@ class TestSingleflight:
         # arrive and we'd see TTL hits instead of coalesced wakes.
         runner = CountingRunner(result=[{"id": 42}], delay=0.05)
         s = _stmt()
-        cfg = L3Config(default_ttl_s=60)
+        cfg = ResultConfig(default_ttl_s=60)
 
         async def one():
             return await execute_with_cache(
@@ -146,7 +146,7 @@ class TestSingleflight:
     async def test_distinct_queries_do_not_serialize(self, fresh_cache):
         """Different keys → independent locks → all run in parallel."""
         runner = CountingRunner(delay=0.05)
-        cfg = L3Config(default_ttl_s=60)
+        cfg = ResultConfig(default_ttl_s=60)
 
         async def one(name):
             return await execute_with_cache(
@@ -178,7 +178,7 @@ class TestTtl:
     async def test_ttl_expiry_refetches(self, fresh_cache):
         runner = CountingRunner()
         s = _stmt()
-        cfg = L3Config(default_ttl_s=1)
+        cfg = ResultConfig(default_ttl_s=1)
         await execute_with_cache(
             s,
             dialect_name="postgresql",
@@ -198,7 +198,7 @@ class TestTtl:
 
     @pytest.mark.asyncio
     async def test_per_table_ttl_overrides_default(self, fresh_cache):
-        cfg = L3Config(default_ttl_s=60, per_table_ttl_s={"u": 1})
+        cfg = ResultConfig(default_ttl_s=60, per_table_ttl_s={"u": 1})
         runner = CountingRunner()
         s = _stmt()
         await execute_with_cache(
@@ -221,7 +221,7 @@ class TestTtl:
     @pytest.mark.asyncio
     async def test_ttl_zero_still_coalesces(self, fresh_cache):
         """``per_table_ttl_s=0`` → coalesce, but only briefly persist."""
-        cfg = L3Config(default_ttl_s=60, per_table_ttl_s={"u": 0})
+        cfg = ResultConfig(default_ttl_s=60, per_table_ttl_s={"u": 0})
         runner = CountingRunner(delay=0.05)
         s = _stmt()
 
@@ -239,7 +239,7 @@ class TestTtl:
         assert runner.calls == 1
 
     def test_resolve_ttl_takes_strictest(self):
-        cfg = L3Config(
+        cfg = ResultConfig(
             default_ttl_s=60,
             per_table_ttl_s={"a": 30, "b": 5, "c": 600},
         )
@@ -259,7 +259,7 @@ class TestTtl:
 class TestFailures:
     @pytest.mark.asyncio
     async def test_runner_exception_propagates_and_lock_releases(self, fresh_cache):
-        cfg = L3Config(default_ttl_s=60)
+        cfg = ResultConfig(default_ttl_s=60)
         s = _stmt()
 
         class BoomFirst:

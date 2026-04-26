@@ -29,7 +29,7 @@ from dbt_graphql.api.policy import (
     TablePolicy,
 )
 from dbt_graphql.cache import CacheConfig, stats
-from dbt_graphql.cache.config import CacheBackendConfig, L3Config
+from dbt_graphql.cache.config import CacheBackendConfig, ResultConfig
 from dbt_graphql.cache.setup import close_cache
 
 pytest.importorskip("ariadne", reason="ariadne required for serve tests")
@@ -60,7 +60,7 @@ def _gql(client, query, headers=None):
 def _cache_config(per_table=None, ttl=60) -> CacheConfig:
     return CacheConfig(
         backends=[CacheBackendConfig(url="mem://?size=1000")],
-        result=L3Config(default_ttl_s=ttl, per_table_ttl_s=per_table or {}),
+        result=ResultConfig(default_ttl_s=ttl, per_table_ttl_s=per_table or {}),
     )
 
 

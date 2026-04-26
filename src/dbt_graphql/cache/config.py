@@ -1,7 +1,7 @@
 """Pydantic models for the cache config block.
 
-Single layer: the result cache + singleflight. ``lock_safety_timeout_s``
-is the auto-release on the singleflight lock — not the entry TTL.
+``lock_safety_timeout_s`` is the auto-release on the singleflight lock —
+not the entry TTL.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ class CacheBackendConfig(BaseModel):
     enabled: bool = True
 
 
-class L3Config(BaseModel):
+class ResultConfig(BaseModel):
     enabled: bool = True
     default_ttl_s: int = defaults.CACHE_RESULT_DEFAULT_TTL_S
     # Per-table TTL override. ``0`` = realtime + minimal coalescing window
@@ -39,4 +39,4 @@ def _default_backends() -> list[CacheBackendConfig]:
 
 class CacheConfig(BaseModel):
     backends: list[CacheBackendConfig] = Field(default_factory=_default_backends)
-    result: L3Config = Field(default_factory=L3Config)
+    result: ResultConfig = Field(default_factory=ResultConfig)
