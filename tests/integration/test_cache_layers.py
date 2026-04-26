@@ -1,10 +1,10 @@
-"""End-to-end cache integration against PostgreSQL and MySQL.
+"""End-to-end result-cache integration against PostgreSQL and MySQL.
 
 These tests boot the real Starlette + Ariadne app via ``TestClient``,
 parametrized across both warehouse adapters via ``serve_adapter_env``.
-They prove the three cache layers compose correctly — same query twice
-hits L1+L2+L3 from the cache and skips the warehouse — without mocking
-the database.
+They prove the cache key actually delivers the two properties operators
+care about: (a) tenant isolation, and (b) practical cache hits for the
+same query from the same tenant — including across token refresh.
 
 The trick used to count "did the warehouse actually run?" is a
 ``DatabaseManager.execute`` wrapper that increments a per-app counter.
@@ -138,7 +138,7 @@ def cached_client(serve_adapter_env, _cleanup_cache):
 
 
 class TestCacheEndToEnd:
-    """Full request path: HTTP → parse (L1) → compile (L2) → execute (L3) → DB."""
+    """Full request path: HTTP → resolver → execute_with_cache → DB."""
 
     def test_repeat_query_hits_result_cache(self, cached_client):
         """Second identical query → no warehouse call."""
@@ -153,8 +153,6 @@ class TestCacheEndToEnd:
                     "customers"
                 ]
                 second = counter["n"]
-            # First request: compile + execute → counter went up.
-            # Second request: full L3 hit → counter unchanged.
             assert first >= 1
             assert second == first
             assert rows1 == rows2
@@ -176,7 +174,7 @@ class TestCacheEndToEnd:
             client._restore_execute()  # type: ignore[attr-defined]
 
     def test_different_where_does_not_collide(self, cached_client):
-        """Two queries with different bound where-values → different L3 keys."""
+        """Two queries with different bound where-values → different keys."""
         client, counter = cached_client()
         try:
             with client as c:
@@ -188,14 +186,21 @@ class TestCacheEndToEnd:
         finally:
             client._restore_execute()  # type: ignore[attr-defined]
 
-    def test_parse_cache_hit_metric(self, cached_client):
-        """Repeated query string → L1 hit recorded in stats."""
-        client, _ = cached_client()
+    def test_different_field_order_does_not_collide(self, cached_client):
+        """``{ id name }`` vs ``{ name id }`` → different SELECT column order
+        → different SQL → independent cache entries.
+
+        Documents the operator-relevant edge: clients sending the same
+        logical query with different field orders will see lower hit
+        rates. Worth pinning so we don't accidentally collapse them."""
+        client, counter = cached_client()
         try:
             with client as c:
-                _gql(c, "{ customers { customer_id } }")
-                _gql(c, "{ customers { customer_id } }")
-            assert stats.parsed_doc.hit >= 1
+                _gql(c, "{ customers { customer_id first_name } }")
+                first = counter["n"]
+                _gql(c, "{ customers { first_name customer_id } }")
+                second = counter["n"]
+            assert second > first
         finally:
             client._restore_execute()  # type: ignore[attr-defined]
 
@@ -270,6 +275,38 @@ class TestTenantIsolation:
                 )
                 second = counter["n"]
             assert second == first
+        finally:
+            client._restore_execute()  # type: ignore[attr-defined]
+
+    def test_token_refresh_same_claims_still_hits_cache(self, cached_client):
+        """Fresh JWT (different ``iat`` / ``exp``) with the same policy-
+        relevant claims must still hit the cache.
+
+        This is the practical-hit case the operator cares about: clients
+        rotate tokens constantly, but the cache key derives from rendered
+        SQL — and the rendered SQL only embeds ``cust_id`` (the claim the
+        policy reads). Other claim drift must not invalidate the cache."""
+        client, counter = cached_client(access_policy=self._row_filtered_policy())
+        try:
+            with client as c:
+                _gql(
+                    c,
+                    "{ customers { customer_id } }",
+                    headers=_bearer(
+                        {"sub": "a", "claims": {"cust_id": 1}, "iat": 1, "exp": 100}
+                    ),
+                )
+                first = counter["n"]
+                _gql(
+                    c,
+                    "{ customers { customer_id } }",
+                    headers=_bearer(
+                        {"sub": "a", "claims": {"cust_id": 1}, "iat": 999, "exp": 1099}
+                    ),
+                )
+                second = counter["n"]
+            assert second == first  # warehouse not called the second time
+            assert stats.result.hit >= 1
         finally:
             client._restore_execute()  # type: ignore[attr-defined]
 

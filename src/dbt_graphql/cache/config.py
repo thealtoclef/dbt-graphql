@@ -1,9 +1,7 @@
 """Pydantic models for the cache config block.
 
-Surface area mirrors the three architectural layers (parsed-doc, compiled-plan,
-result + singleflight) plus a list of cashews backends. The result-cache
-``lock_safety_timeout_s`` is the auto-release on the singleflight lock —
-not the entry TTL. See `docs/plans/sec-j-caching.md` §5 for full rationale.
+Single layer: the result cache + singleflight. ``lock_safety_timeout_s``
+is the auto-release on the singleflight lock — not the entry TTL.
 """
 
 from __future__ import annotations
@@ -25,16 +23,6 @@ class CacheBackendConfig(BaseModel):
     enabled: bool = True
 
 
-class L1Config(BaseModel):
-    enabled: bool = True
-    max_size: int = defaults.CACHE_PARSED_DOC_MAX_SIZE
-
-
-class L2Config(BaseModel):
-    enabled: bool = True
-    max_size: int = defaults.CACHE_COMPILED_PLAN_MAX_SIZE
-
-
 class L3Config(BaseModel):
     enabled: bool = True
     default_ttl_s: int = defaults.CACHE_RESULT_DEFAULT_TTL_S
@@ -51,6 +39,4 @@ def _default_backends() -> list[CacheBackendConfig]:
 
 class CacheConfig(BaseModel):
     backends: list[CacheBackendConfig] = Field(default_factory=_default_backends)
-    parsed_doc: L1Config = Field(default_factory=L1Config)
-    compiled_plan: L2Config = Field(default_factory=L2Config)
     result: L3Config = Field(default_factory=L3Config)

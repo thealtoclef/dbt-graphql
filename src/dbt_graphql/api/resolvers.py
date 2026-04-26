@@ -5,7 +5,6 @@ from typing import Any
 from ariadne import QueryType
 from graphql import GraphQLError
 
-from ..cache.compiled_plan import compile_with_cache
 from ..cache.result import execute_with_cache
 from ..compiler.query import compile_query
 from ..config import CacheConfig
@@ -42,17 +41,12 @@ def _make_resolver(table_name: str):
         jwt_payload = ctx.get("jwt_payload")
         policy_engine = ctx.get("policy_engine")
 
-        # Build a resolve_policy callback (used both directly and inside
-        # compile_query for nested-table policy resolution).
         resolve_policy = None
         if policy_engine is not None:
             resolve_policy = lambda t: policy_engine.evaluate(t, jwt_payload)  # noqa: E731
 
-        # Per-call zero-arg compiler thunk. Kept here (not in the cache
-        # module) so the cache layer never has to know compile_query's
-        # signature.
-        def _compile():
-            return compile_query(
+        try:
+            stmt = compile_query(
                 tdef=tdef,
                 field_nodes=info.field_nodes,
                 registry=registry,
@@ -62,21 +56,6 @@ def _make_resolver(table_name: str):
                 where=kwargs.get("where"),
                 resolve_policy=resolve_policy,
             )
-
-        try:
-            if cache_cfg is not None and cache_cfg.compiled_plan.enabled:
-                stmt = await compile_with_cache(
-                    field_node=info.field_nodes[0],
-                    table_name=table_name,
-                    where=kwargs.get("where"),
-                    limit=kwargs.get("limit"),
-                    offset=kwargs.get("offset"),
-                    dialect=dialect,
-                    jwt_payload=jwt_payload,
-                    compiler=_compile,
-                )
-            else:
-                stmt = _compile()
         except PolicyError as exc:
             raise _to_graphql_error(exc) from exc
 

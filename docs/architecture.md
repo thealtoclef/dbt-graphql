@@ -144,7 +144,7 @@ Two subcommands:
 9. **Relationship origin tiers.** Every `RelationshipInfo` records its source (`constraint` > `data_test` > `lineage`). Constraints and tests are user-authored; lineage-inferred relationships are best-effort.
 10. **Processor modules are source-based, not output-based.** `constraints.py` / `data_tests.py` / `compiled_sql.py` each correspond to one input surface. When chasing a bug, "where did this fact come from?" is the question that matters.
 11. **Column lineage via dbt-colibri's traversal approach.** The core recursive `to_node()` logic (qualify → build_scope → CTE/subquery/UNION/PIVOT resolution, max-rank classification) is absorbed into `compiled_sql.py` — no runtime dependency on dbt-colibri. See [schema-synthesis.md § 4](schema-synthesis.md#4-lineage-extraction).
-12. **Three-layer cache between HTTP and the warehouse.** L1 (parsed-doc), L2 (compiled-plan), L3 (result + singleflight). Wall-clock TTLs only — no refresh-key probing of the warehouse. The L3 lock coalesces concurrent identical requests into a single warehouse roundtrip. See [caching.md](caching.md).
+12. **Result cache + singleflight between HTTP and the warehouse.** Keyed by rendered SQL + bound parameters, so cross-tenant isolation is structural. Wall-clock TTLs only — no refresh-key probing. The lock coalesces concurrent identical requests into a single warehouse roundtrip. See [caching.md](caching.md).
 
 ---
 
