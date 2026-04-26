@@ -59,3 +59,27 @@ serve:
 # -----------------------------------------------------------------------------
 # security:
 #   policy_path: access.yml
+
+# -----------------------------------------------------------------------------
+# cache (optional) — three-layer cache between HTTP and the warehouse.
+# L1 parsed-doc, L2 compiled-plan, L3 result + singleflight. Defaults below
+# match `defaults.CACHE_*`. See docs/caching.md for the architecture and
+# self-protection analysis.
+# -----------------------------------------------------------------------------
+# cache:
+#   backends:
+#     - url: "mem://?size=10000"        # default catch-all (in-memory LRU)
+#     # - url: "redis://localhost:6379/0"
+#     #   prefix: "sql:"                # only L3 results to Redis (multi-replica)
+#     #   enabled: true
+#
+#   parsed_doc:    { enabled: true, max_size: 1000 }
+#   compiled_plan: { enabled: true, max_size: 1000 }
+#   result:
+#     enabled: true
+#     default_ttl_s: 60                 # default freshness window
+#     per_table_ttl_s:                  # per-table overrides; 0 = realtime
+#       # orders: 30
+#       # daily_revenue: 3600
+#       # user_sessions: 0
+#     lock_safety_timeout_s: 60         # singleflight lock auto-release

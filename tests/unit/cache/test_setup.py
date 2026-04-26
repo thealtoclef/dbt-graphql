@@ -1,0 +1,62 @@
+"""Cache setup wiring.
+
+Tests the lifespan-style hooks that bind cashews backends. We assert
+behavior the operator depends on:
+- default config produces a working in-memory cache
+- disabled backends are skipped
+- setup is idempotent (matters for tests + reload scenarios)
+"""
+
+from __future__ import annotations
+
+import pytest
+from cashews import cache
+
+from dbt_graphql.cache.config import CacheBackendConfig, CacheConfig
+from dbt_graphql.cache.setup import close_cache, is_configured, setup_cache
+
+
+@pytest.mark.asyncio
+async def test_default_config_boots_and_serves():
+    setup_cache(CacheConfig())
+    try:
+        assert is_configured()
+        await cache.set("k", 42, expire=60)
+        assert await cache.get("k") == 42
+    finally:
+        await close_cache()
+        assert not is_configured()
+
+
+@pytest.mark.asyncio
+async def test_disabled_backend_skipped():
+    cfg = CacheConfig(
+        backends=[
+            CacheBackendConfig(url="mem://?size=10", enabled=False),
+        ]
+    )
+    setup_cache(cfg)
+    # When all backends are disabled, the singleton is left untouched and
+    # is_configured stays False — operators can detect "I forgot to enable
+    # anything" without an opaque crash later.
+    assert not is_configured()
+    await close_cache()
+
+
+@pytest.mark.asyncio
+async def test_setup_idempotent_repeated_calls():
+    """Calling setup_cache twice must not raise or double-register backends."""
+    cfg = CacheConfig()
+    setup_cache(cfg)
+    setup_cache(cfg)  # no exception
+    try:
+        await cache.set("k", "v", expire=10)
+        assert await cache.get("k") == "v"
+    finally:
+        await close_cache()
+
+
+@pytest.mark.asyncio
+async def test_close_without_setup_is_safe():
+    """Lifespan teardown may run even if setup never did (e.g., setup raised)."""
+    await close_cache()  # must not raise

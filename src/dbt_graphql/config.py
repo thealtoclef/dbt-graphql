@@ -7,6 +7,7 @@ from pydantic import BaseModel, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from . import defaults
+from .cache.config import CacheConfig
 
 
 class DbConfig(BaseModel):
@@ -93,6 +94,7 @@ class AppConfig(BaseSettings):
     monitoring: MonitoringConfig = MonitoringConfig()
     enrichment: EnrichmentConfig = EnrichmentConfig()
     security: SecurityConfig = SecurityConfig()
+    cache: CacheConfig = CacheConfig()
 
     @classmethod
     def settings_customise_sources(

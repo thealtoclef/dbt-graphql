@@ -10,6 +10,8 @@ from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.routing import Mount
 
+from ..cache import CacheConfig, close_cache, setup_cache
+from ..cache.parsed_doc import configure_sync_lru, parse_sync_cached
 from ..compiler.connection import DatabaseManager
 from ..config import AppConfig, DbConfig
 from ..formatter.schema import TableRegistry, load_db_graphql
@@ -74,13 +76,34 @@ def create_app(
     db_url: str | None = None,
     config: DbConfig | None = None,
     access_policy: AccessPolicy | None = None,
+    cache_config: CacheConfig | None = None,
 ) -> Starlette:
-    """Build a Starlette app with Ariadne GraphQL mounted at ``/graphql``."""
+    """Build a Starlette app with Ariadne GraphQL mounted at ``/graphql``.
+
+    ``cache_config=None`` means no caching at all — every request flows
+    straight through parse/compile/execute. Useful for tests that want to
+    measure the uncached baseline. Pass an explicit ``CacheConfig()`` to
+    opt into the default 3-layer cache.
+    """
     _, registry = load_db_graphql(db_graphql_path)
     db = DatabaseManager(db_url=db_url, config=config)
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
 
     query_type = create_query_type(registry)
+
+    # L1 hook: only override Ariadne's parser when L1 is enabled. Ariadne's
+    # ``query_parser`` is sync — ``(context, data: dict) -> DocumentNode`` —
+    # so we use the in-process LRU (cashews would require ``await``). The
+    # plan §3.2 calls out that L1 is intentionally always in-memory.
+    schema_kwargs: dict = {}
+    if cache_config is not None and cache_config.parsed_doc.enabled:
+        configure_sync_lru(cache_config.parsed_doc.max_size)
+
+        def _parser(_ctx, data):
+            return parse_sync_cached(data["query"])
+
+        schema_kwargs["query_parser"] = _parser
+
     gql_schema = make_executable_schema(_build_ariadne_sdl(registry), query_type)
 
     graphql_app = GraphQL(
@@ -91,8 +114,10 @@ def create_app(
             "db": db,
             "jwt_payload": req.user.payload,
             "policy_engine": policy_engine,
+            "cache_config": cache_config,
         },
         http_handler=build_graphql_http_handler(),
+        **schema_kwargs,
     )
 
     @asynccontextmanager
@@ -100,8 +125,12 @@ def create_app(
         logger.info("connecting to database")
         await db.connect()
         instrument_sqlalchemy(db._engine)
+        if cache_config is not None:
+            setup_cache(cache_config)
         logger.info("app ready — serving GraphQL at /graphql")
         yield
+        if cache_config is not None:
+            await close_cache()
         await db.close()
         logger.info("database connection closed")
 
@@ -136,6 +165,7 @@ def serve(
         db_graphql_path=db_graphql_path,
         config=config.db,
         access_policy=access_policy,
+        cache_config=config.cache,
     )
     host = config.serve.host
     port = config.serve.port

@@ -82,6 +82,51 @@ Setting `endpoint` without `protocol` raises a config error at startup.
 
 ---
 
+## `cache` (optional)
+
+Three-layer cache (parsed-doc, compiled-plan, result + singleflight). See
+[caching.md](caching.md) for the architecture, key-derivation rules, and
+self-protection analysis.
+
+Omit the block to use the default 3-layer in-memory cache. Pass `cache_config=None` programmatically to `create_app()` to disable caching entirely (every request flows straight through parse/compile/execute) — useful for tests measuring an uncached baseline.
+
+### `cache.backends`
+
+List of [cashews](https://github.com/Krukov/cashews) backends. Each entry is one `cache.setup(url, prefix=...)` call. Empty `prefix` is the catch-all backend; non-empty prefixes route any key starting with that string to this backend.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | `"mem://?size=10000"` | cashews URI. Examples: `mem://?size=N`, `redis://host:6379/0`, `redis://...?cluster=true`. |
+| `prefix` | string | `""` | Route keys with this prefix to this backend. Empty = catch-all. |
+| `enabled` | bool | `true` | Skip this backend without removing it from the file. |
+
+L1 and L2 are intentionally always in-memory regardless of how `backends` is configured (Ariadne's parser hook is sync, and SQLAlchemy `Select` objects don't pickle reliably). Only L3 keys (prefix `sql:`) benefit from a Redis backend in multi-replica deployments.
+
+### `cache.parsed_doc` (L1)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Disable to skip parse-cache lookups. |
+| `max_size` | int | `1000` | LRU capacity in entries. |
+
+### `cache.compiled_plan` (L2)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Disable to recompile every request. |
+| `max_size` | int | `1000` | LRU capacity. Bump for massive multi-tenant deployments where (docs × tables × JWT-tuples) exceeds 1000. |
+
+### `cache.result` (L3 + singleflight)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Disable to bypass L3 entirely (no caching, no coalescing). |
+| `default_ttl_s` | int | `60` | TTL applied to any table not in `per_table_ttl_s`. |
+| `per_table_ttl_s` | dict[str, int] | `{}` | Per-table TTL overrides. `0` = realtime + 1 s coalescing window; see caching.md § 5. The strictest TTL across all tables touched by a query wins. |
+| `lock_safety_timeout_s` | int | `60` | Singleflight lock auto-release. Set above the slowest plausible warehouse query; see caching.md § 6. **Not** the result TTL. |
+
+---
+
 ## `security` (optional)
 
 Path to the access-policy file that governs column/row visibility at request
