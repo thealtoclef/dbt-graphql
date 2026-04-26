@@ -67,16 +67,12 @@ serve:
 # docs/caching.md for the key-derivation argument.
 # -----------------------------------------------------------------------------
 # cache:
-#   backends:
-#     - url: "mem://?size=10000"        # default catch-all (in-memory LRU)
-#     # - url: "redis://localhost:6379/0"
-#     #   enabled: true
-#
-#   result:
-#     enabled: true
-#     default_ttl_s: 60                 # default freshness window
-#     per_table_ttl_s:                  # per-table overrides; 0 = realtime
-#       # orders: 30
-#       # daily_revenue: 3600
-#       # user_sessions: 0
-#     lock_safety_timeout_s: 60         # singleflight lock auto-release
+#   enabled: true
+#   url: "mem://?size=10000"           # default — in-memory LRU
+#   # url: "redis://localhost:6379/0"  # multi-replica: shares cache + locks across pods
+#   default_ttl_s: 60                  # default freshness window
+#   per_table_ttl_s:                   # per-table overrides; 0 = realtime
+#     # orders: 30
+#     # daily_revenue: 3600
+#     # user_sessions: 0
+#   lock_safety_timeout_s: 60          # singleflight lock auto-release

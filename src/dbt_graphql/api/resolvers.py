@@ -61,13 +61,13 @@ def _make_resolver(table_name: str):
 
         logger.debug("query {}: {}", table_name, stmt)
 
-        if cache_cfg is not None and cache_cfg.result.enabled:
+        if cache_cfg is not None and cache_cfg.enabled:
             rows = await execute_with_cache(
                 stmt,
                 dialect_name=dialect,
                 table_names=(table_name,),
                 runner=db.execute,
-                cfg=cache_cfg.result,
+                cfg=cache_cfg,
             )
         else:
             rows = await db.execute(stmt)

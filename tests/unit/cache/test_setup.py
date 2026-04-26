@@ -1,10 +1,6 @@
 """Cache setup wiring.
 
-Tests the lifespan-style hooks that bind cashews backends. We assert
-behavior the operator depends on:
-- default config produces a working in-memory cache
-- disabled backends are skipped
-- setup is idempotent (matters for tests + reload scenarios)
+Tests the lifespan-style hooks that bind cashews to the configured URL.
 """
 
 from __future__ import annotations
@@ -12,7 +8,7 @@ from __future__ import annotations
 import pytest
 from cashews import cache
 
-from dbt_graphql.cache.config import CacheBackendConfig, CacheConfig
+from dbt_graphql.cache.config import CacheConfig
 from dbt_graphql.cache.setup import close_cache, is_configured, setup_cache
 
 
@@ -29,16 +25,11 @@ async def test_default_config_boots_and_serves():
 
 
 @pytest.mark.asyncio
-async def test_disabled_backend_skipped():
-    cfg = CacheConfig(
-        backends=[
-            CacheBackendConfig(url="mem://?size=10", enabled=False),
-        ]
-    )
-    setup_cache(cfg)
-    # When all backends are disabled, the singleton is left untouched and
-    # is_configured stays False — operators can detect "I forgot to enable
-    # anything" without an opaque crash later.
+async def test_disabled_skipped():
+    setup_cache(CacheConfig(enabled=False))
+    # ``enabled=False`` is the only operator-facing way to disable
+    # caching from YAML; ``is_configured`` stays False so the resolver
+    # never reaches into a half-initialized cashews backend.
     assert not is_configured()
     await close_cache()
 

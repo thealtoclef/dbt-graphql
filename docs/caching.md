@@ -17,7 +17,7 @@ See [architecture.md](architecture.md) for where the cache sits in the overall p
 - [5. Per-table TTLs](#5-per-table-ttls)
 - [6. Self-protection — what the cache does and does not defend against](#6-self-protection--what-the-cache-does-and-does-not-defend-against)
 - [7. Observability](#7-observability)
-- [8. Backends](#8-backends)
+- [8. Backend](#8-backend)
 - [9. Things the cache deliberately doesn't do](#9-things-the-cache-deliberately-doesnt-do)
 
 ---
@@ -115,6 +115,8 @@ The key is `sql:` + sha256 of a canonical JSON of `{ "sql": ..., "params": ..., 
 
 This means the key is determined by what gets sent over the wire, not by anything from above the SQL boundary (no JWT claims, no policy state, no GraphQL AST). Two requests share a cache entry if and only if they would send byte-identical SQL to the warehouse.
 
+If `dialect_name` is one SQLAlchemy cannot load, `hash_sql` raises `ValueError` rather than falling back. An earlier version fell back to `str(stmt)` for unknown dialects — which omits bound parameter values from the key, silently letting two queries with different binds collide. Refusing to emit the key was the safer fix; today's two adapters (`postgresql`, `mysql`) both load cleanly, and any future adapter SA can register works automatically.
+
 ---
 
 ## 4. Multi-tenant correctness — the key claim
@@ -197,20 +199,17 @@ The split between `hit` and `coalesced` matters operationally: a high `coalesced
 
 ---
 
-## 8. Backends
+## 8. Backend
 
-Backends are configured by a list of cashews URIs with optional prefix routing:
+A single cashews URI:
 
 ```yaml
 cache:
-  backends:
-    - url: "mem://?size=10000"        # default — single-replica
-    # - url: "redis://localhost:6379/0"  # multi-replica: shares cache + locks across pods
+  url: "mem://?size=10000"             # default — single-replica
+  # url: "redis://localhost:6379/0"    # multi-replica: shares cache + locks across pods
 ```
 
-For multi-replica deployments, a Redis backend lets all replicas share both the result cache and the singleflight lock — so coalescing crosses replicas, not just per-process.
-
-The backend abstraction is provided by [cashews](https://github.com/Krukov/cashews) — see its docs for the URI grammar (TLS, sentinel, cluster, etc.).
+The lock key uses the same prefix as the cache value (`{key}:lock`, not `lock:{key}`), so a Redis URI moves both the cache entries and the singleflight locks to Redis — coalescing crosses replicas, not just per-process. See [cashews](https://github.com/Krukov/cashews) for the URI grammar (TLS, sentinel, cluster, etc.).
 
 ---
 

@@ -88,25 +88,12 @@ Result cache + singleflight, sitting between the resolver and the warehouse. See
 [caching.md](caching.md) for the key-derivation argument and tenant-isolation
 proof.
 
-Omit the block to use the default in-memory result cache. Pass `cache_config=None` programmatically to `create_app()` to disable caching entirely — useful for tests measuring an uncached baseline.
-
-### `cache.backends`
-
-List of [cashews](https://github.com/Krukov/cashews) backends. Each entry is one `cache.setup(url, prefix=...)` call. Empty `prefix` is the catch-all backend; non-empty prefixes route any key starting with that string to this backend.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `url` | string | `"mem://?size=10000"` | cashews URI. Examples: `mem://?size=N`, `redis://host:6379/0`, `redis://...?cluster=true`. |
-| `prefix` | string | `""` | Route keys with this prefix to this backend. Empty = catch-all. |
-| `enabled` | bool | `true` | Skip this backend without removing it from the file. |
-
-For multi-replica deployments, point `backends` at Redis so all replicas share the result cache; the singleflight lock then coalesces bursts cluster-wide rather than per-replica.
-
-### `cache.result`
+Omit the block to use the default in-memory cache. Pass `cache_config=None` programmatically to `create_app()` to disable caching entirely — useful for tests measuring an uncached baseline.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Disable to bypass the cache entirely (no caching, no coalescing). |
+| `url` | string | `"mem://?size=10000"` | [cashews](https://github.com/Krukov/cashews) URI. Examples: `mem://?size=N`, `redis://host:6379/0`, `redis://...?cluster=true`. Use a Redis URI for multi-replica deployments — both the cache and the singleflight lock then live on the shared backend, so coalescing crosses replicas. |
 | `default_ttl_s` | int | `60` | TTL applied to any table not in `per_table_ttl_s`. |
 | `per_table_ttl_s` | dict[str, int] | `{}` | Per-table TTL overrides. `0` = realtime + 1 s coalescing window; see caching.md. The strictest TTL across all tables touched by a query wins. |
 | `lock_safety_timeout_s` | int | `60` | Singleflight lock auto-release. Set above the slowest plausible warehouse query. **Not** the result TTL. |

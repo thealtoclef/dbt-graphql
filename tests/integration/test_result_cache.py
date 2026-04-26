@@ -29,7 +29,6 @@ from dbt_graphql.api.policy import (
     TablePolicy,
 )
 from dbt_graphql.cache import CacheConfig, stats
-from dbt_graphql.cache.config import CacheBackendConfig, ResultConfig
 from dbt_graphql.cache.setup import close_cache
 
 pytest.importorskip("ariadne", reason="ariadne required for serve tests")
@@ -59,8 +58,9 @@ def _gql(client, query, headers=None):
 
 def _cache_config(per_table=None, ttl=60) -> CacheConfig:
     return CacheConfig(
-        backends=[CacheBackendConfig(url="mem://?size=1000")],
-        result=ResultConfig(default_ttl_s=ttl, per_table_ttl_s=per_table or {}),
+        url="mem://?size=1000",
+        default_ttl_s=ttl,
+        per_table_ttl_s=per_table or {},
     )
 
 
@@ -145,13 +145,9 @@ class TestCacheEndToEnd:
         client, counter = cached_client()
         try:
             with client as c:
-                rows1 = _gql(c, "{ customers { customer_id first_name } }")[
-                    "customers"
-                ]
+                rows1 = _gql(c, "{ customers { customer_id first_name } }")["customers"]
                 first = counter["n"]
-                rows2 = _gql(c, "{ customers { customer_id first_name } }")[
-                    "customers"
-                ]
+                rows2 = _gql(c, "{ customers { customer_id first_name } }")["customers"]
                 second = counter["n"]
             assert first >= 1
             assert second == first
@@ -214,7 +210,7 @@ class TestTenantIsolation:
     """Two users with row-filtered policies must NEVER see each other's rows.
 
     This is the cache-correctness invariant: even though both queries have
-    the same GraphQL shape, the bound row-filter values differ → L3 SQL
+    the same GraphQL shape, the bound row-filter values differ → SQL
     keys differ → no cache cross-contamination.
     """
 

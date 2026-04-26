@@ -15,15 +15,13 @@ warehouse-roundtrip cache earns its keep.
 
 from __future__ import annotations
 
-from .config import CacheBackendConfig, CacheConfig, ResultConfig
+from .config import CacheConfig
 from .setup import close_cache, setup_cache
 from .stats import CacheStats, stats
 
 __all__ = [
-    "CacheBackendConfig",
     "CacheConfig",
     "CacheStats",
-    "ResultConfig",
     "close_cache",
     "setup_cache",
     "stats",

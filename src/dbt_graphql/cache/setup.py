@@ -1,12 +1,8 @@
-"""Lifespan hooks that bind cashews backends to the configured URIs.
+"""Lifespan hooks that bind cashews to the configured backend URL.
 
-The full module exports a single ``cache`` singleton from ``cashews``. Setting
-it up multiple times against different prefixes routes by prefix; the catch-all
-backend has ``prefix=""``.
-
-Tests rely on ``setup_cache`` being idempotent: calling it twice with the same
-config in a single process must not raise. cashews itself does not guard
-against double-setup, so we tear down before re-setting up.
+Tests rely on ``setup_cache`` being idempotent: calling it twice with the
+same config in a single process must not raise. cashews itself does not
+guard against double-setup, so we tear down before re-setting up.
 """
 
 from __future__ import annotations
@@ -20,27 +16,24 @@ _CONFIGURED: bool = False
 
 
 def setup_cache(cfg: CacheConfig) -> None:
-    """Wire all enabled backends. Idempotent."""
+    """Bind cashews to ``cfg.url``. Idempotent. No-op when ``enabled=False``."""
     global _CONFIGURED
     if _CONFIGURED:
-        # Re-setup: clear before reconfiguring so prefix routing reflects
-        # the new config (cashews accumulates backends otherwise).
         cache._backends.clear()  # type: ignore[attr-defined]
         _CONFIGURED = False
 
-    enabled_backends = [b for b in cfg.backends if b.enabled]
-    if not enabled_backends:
-        logger.warning("cache: no enabled backends configured — caching disabled")
+    if not cfg.enabled:
+        logger.info("cache: disabled (cfg.enabled=False)")
         return
 
-    for b in enabled_backends:
-        cache.setup(b.url, prefix=b.prefix)
-        logger.info("cache backend: {} (prefix={!r})", b.url, b.prefix)
+    cache.setup(cfg.url)
+    logger.info("cache backend: {}", cfg.url)
     _CONFIGURED = True
 
 
 async def close_cache() -> None:
-    """Release all cashews resources. Safe to call from a Starlette lifespan."""
+    """Release cashews resources. Safe to call from a Starlette lifespan
+    even if setup never ran."""
     global _CONFIGURED
     if not _CONFIGURED:
         return

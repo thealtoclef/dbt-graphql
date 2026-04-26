@@ -15,17 +15,15 @@ from __future__ import annotations
 import pytest_asyncio
 from cashews import cache
 
+from dbt_graphql.cache.config import CacheConfig
 from dbt_graphql.cache.setup import close_cache, setup_cache
-from dbt_graphql.cache.config import CacheBackendConfig, CacheConfig
 from dbt_graphql.cache.stats import stats
 
 
 @pytest_asyncio.fixture
 async def fresh_cache():
     """In-memory cashews + zeroed stats. Yields the active CacheConfig."""
-    cfg = CacheConfig(
-        backends=[CacheBackendConfig(url="mem://?size=1000")],
-    )
+    cfg = CacheConfig(url="mem://?size=1000")
     setup_cache(cfg)
     await cache.clear()
     stats.reset()

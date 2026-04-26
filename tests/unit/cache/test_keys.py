@@ -1,12 +1,13 @@
 """Cache-key derivation: pure function, no fixtures needed.
 
-The L3 key is the *whole* contract. A regression here is a correctness
-regression — different tenants sharing keys, or identical queries failing
-to share keys. Both are silent failures in production.
+This is the *whole* tenant-isolation contract. A regression here is a
+correctness regression — different tenants sharing keys, or identical
+queries failing to share keys. Both are silent failures in production.
 """
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import Column, Integer, MetaData, String, Table, select
 
 from dbt_graphql.cache.keys import hash_sql
@@ -48,10 +49,21 @@ class TestHashSql:
         b = hash_sql(_stmt(), "mysql")
         assert a != b
 
-    def test_unknown_dialect_falls_back_safely(self):
-        # Should not raise; falls back to ``str(stmt)``.
-        h = hash_sql(_stmt(), "doris")
-        assert isinstance(h, str) and h.startswith("sql:")
+    def test_unknown_dialect_raises(self):
+        # We refuse to emit a key rather than silently emit an unsafe
+        # one. The previous fallback to ``str(stmt)`` lost bound
+        # parameter values from the key — two queries with different
+        # bind values would have collided. Cross-tenant leak.
+        with pytest.raises(ValueError, match="cannot resolve SQLAlchemy dialect"):
+            hash_sql(_stmt(), "doris")
+
+    def test_other_sa_dialects_isolate_params(self):
+        # Any dialect SA can load (e.g., sqlite) must still encode bind
+        # values into the key. Pins the regression that motivated
+        # rejecting unknown dialects: silent param loss = silent leak.
+        a = hash_sql(_stmt("alice"), "sqlite")
+        b = hash_sql(_stmt("bob"), "sqlite")
+        assert a != b
 
     def test_different_limit_different_hash(self):
         meta = MetaData()
