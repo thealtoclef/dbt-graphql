@@ -30,7 +30,7 @@ class TestInstrumentSqlalchemy:
             },
         ):
             from importlib import reload
-            import dbt_graphql.api.monitoring as tel
+            import dbt_graphql.graphql.monitoring as tel
 
             reload(tel)
             tel.instrument_sqlalchemy(async_engine)
@@ -56,7 +56,7 @@ class TestInstrumentSqlalchemy:
             },
         ):
             from importlib import reload
-            import dbt_graphql.api.monitoring as tel
+            import dbt_graphql.graphql.monitoring as tel
 
             reload(tel)
             tel.instrument_sqlalchemy(async_engine)
@@ -82,7 +82,7 @@ class TestInstrumentStarlette:
             },
         ):
             from importlib import reload
-            import dbt_graphql.api.monitoring as tel
+            import dbt_graphql.graphql.monitoring as tel
 
             reload(tel)
             tel.instrument_starlette(app)
@@ -93,7 +93,7 @@ class TestInstrumentStarlette:
 class TestBuildGraphqlHttpHandler:
     def test_handler_carries_metrics_and_otel_extensions(self):
         """Handler is built and carries both extensions."""
-        import dbt_graphql.api.monitoring as tel
+        import dbt_graphql.graphql.monitoring as tel
         from ariadne.contrib.tracing.opentelemetry import OpenTelemetryExtension
 
         handler = tel.build_graphql_http_handler()
@@ -107,8 +107,8 @@ class TestBuildGraphqlHttpHandler:
     def test_pool_timeout_response_elevated_to_503(self):
         """Result with a POOL_TIMEOUT error → HTTP 503 + Retry-After header."""
         import asyncio
-        import dbt_graphql.api.monitoring as tel
-        from dbt_graphql.api.resolvers import POOL_TIMEOUT_CODE
+        import dbt_graphql.graphql.monitoring as tel
+        from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE
 
         handler = tel.build_graphql_http_handler()
         result = {
@@ -126,7 +126,7 @@ class TestBuildGraphqlHttpHandler:
     def test_normal_response_unaffected(self):
         """Result with no POOL_TIMEOUT error → unchanged 200/400 path."""
         import asyncio
-        import dbt_graphql.api.monitoring as tel
+        import dbt_graphql.graphql.monitoring as tel
 
         handler = tel.build_graphql_http_handler()
         result = {"data": {"customers": []}}

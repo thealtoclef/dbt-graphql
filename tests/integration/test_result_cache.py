@@ -21,8 +21,8 @@ import pytest_asyncio
 from cashews import cache
 from starlette.testclient import TestClient
 
-from dbt_graphql.api.app import create_app
-from dbt_graphql.api.policy import (
+from dbt_graphql.graphql.app import create_app
+from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
     PolicyEntry,

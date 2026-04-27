@@ -9,7 +9,7 @@ import httpx
 import pytest
 from joserfc.jwk import KeySet, OctKey, RSAKey
 
-from dbt_graphql.api.auth.keys import (
+from dbt_graphql.graphql.auth.keys import (
     JWKSResolver,
     StaticKeyResolver,
     _parse_key_material,

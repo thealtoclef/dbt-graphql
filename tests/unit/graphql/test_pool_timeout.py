@@ -13,7 +13,7 @@ import pytest
 from graphql import GraphQLError
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
-from dbt_graphql.api.resolvers import POOL_TIMEOUT_CODE, _make_resolver
+from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE, _make_resolver
 from dbt_graphql.config import PoolConfig
 
 
@@ -44,7 +44,7 @@ async def test_resolver_translates_pool_timeout_to_graphql_error(monkeypatch):
     with ``extensions.code == POOL_TIMEOUT`` and the configured retry-after."""
     # Stub compile_query so we don't need a real registry/table def.
     monkeypatch.setattr(
-        "dbt_graphql.api.resolvers.compile_query",
+        "dbt_graphql.graphql.resolvers.compile_query",
         lambda **_: MagicMock(name="stmt"),
     )
 

@@ -11,8 +11,8 @@ import pytest
 import jwt as pyjwt
 from starlette.testclient import TestClient
 
-from dbt_graphql.api.app import create_app
-from dbt_graphql.api.policy import (
+from dbt_graphql.graphql.app import create_app
+from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
     PolicyEntry,

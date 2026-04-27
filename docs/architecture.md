@@ -2,7 +2,7 @@
 
 The design doc for dbt-graphql: the problem it solves, how the pipeline fits together, and the design principles that govern every component.
 
-**Component deep-dives:** [Schema Synthesis](schema-synthesis.md) | [API & Compiler](api.md) | [Caching & Burst Protection](caching.md) | [MCP Server](mcp.md) | [Security](security.md) | [Access Policy](access-policy.md)
+**Component deep-dives:** [Schema Synthesis](schema-synthesis.md) | [Compiler](compiler.md) | [GraphQL HTTP](graphql.md) | [Caching & Burst Protection](caching.md) | [MCP Server](mcp.md) | [Security](security.md) | [Access Policy](access-policy.md)
 
 ---
 
@@ -43,19 +43,25 @@ Steps 2–4 never touch `manifest.json` again. The only coupling to dbt lives in
 
 ## 2. Pipeline flow
 
+Primary pipeline (both modes):
+
 ```
- dbt artifacts                     IR (ProjectInfo)            Outputs
- ─────────────                     ──────────────────           ───────
- catalog.json                                                   db.graphql      ◀── formatter/graphql.py
- manifest.json   ──▶ pipeline.extract_project()  ──▶  ───────▶  lineage.json   ◀── ProjectInfo.build_lineage_schema()
-                            │                                   GraphQL API     ◀── api/    (uses db.graphql)
-                            │                                   MCP tools       ◀── mcp/    (uses ProjectInfo)
-                            ▼
-                     dbt/processors/
-                       artifacts.py       — load manifest & catalog
-                       constraints.py     — dbt v1.5+ constraints   → PKs + FKs
-                       data_tests.py      — dbt data tests          → not_null / unique / enums / FKs
-                       compiled_sql.py    — sqlglot over compiled SQL → table + column lineage + JOIN-derived FKs
+  catalog.json  ─┐
+  manifest.json  ─┘──▶ extract_project() ──▶ ProjectInfo ──▶ build_registry() ──▶ TableRegistry
+                             │                                                           │
+                             ▼                                               ┌───────────┴──────────┐
+                      dbt/processors/                                        ▼                      ▼
+                        artifacts.py       — load manifest & catalog    GraphQL API            MCP tools
+                        constraints.py     — dbt v1.5+ constraints        (graphql/)             (mcp/)
+                        data_tests.py      — not_null / unique / enums / FKs
+                        compiled_sql.py    — sqlglot → lineage + JOIN FKs
+```
+
+Side export (`--output DIR` only — no server is started):
+
+```
+  TableRegistry  ──▶  _registry_to_sdl()        ──▶  db.graphql
+  ProjectInfo    ──▶  build_lineage_schema()     ──▶  lineage.json
 ```
 
 Entry point: [`src/dbt_graphql/pipeline.py`](../src/dbt_graphql/pipeline.py) — `extract_project()`.
@@ -121,26 +127,37 @@ See [schema-synthesis.md § 2](schema-synthesis.md#2-intermediate-representation
 
 [`src/dbt_graphql/cli.py`](../src/dbt_graphql/cli.py)
 
-Two subcommands:
+One entry point, two modes controlled by `--output`:
 
-- **`generate`** — `extract_project()` + `format_graphql()` + `ProjectInfo.build_lineage_schema()`. Writes `db.graphql` and `lineage.json`.
-- **`serve --target TARGET`** — starts one or both interfaces:
-  - `api` — loads `db.graphql`, builds the Starlette app via `create_app()`, runs under Granian (HTTP, blocks main thread).
-  - `mcp` — `extract_project()`, optional `DatabaseManager`, `serve_mcp()` over stdio (blocks main thread).
-  - `api,mcp` — MCP starts in a daemon thread, API blocks main thread.
+```
+dbt-graphql --config config.yml                # serve mode
+dbt-graphql --config config.yml --output DIR   # export mode
+```
+
+**Serve mode** (no `--output`):
+1. `load_config()` reads `config.yml`; dbt artifact paths resolved relative to the config file.
+2. `extract_project()` builds `ProjectInfo` from dbt artifacts.
+3. `build_registry()` builds `TableRegistry` from `ProjectInfo` — the Python object consumed by the serve layer.
+4. Depending on `serve.graphql` / `serve.mcp` flags in config:
+   - Both `true` — co-mounts GraphQL at `/graphql` and MCP at `/mcp` under one Granian process.
+   - Only `serve.graphql` — GraphQL-only.
+   - Only `serve.mcp` — MCP standalone.
+
+**Export mode** (`--output DIR`):
+Steps 1–2 only, then `_registry_to_sdl()` writes `db.graphql` and `build_lineage_schema()` writes `lineage.json` to `DIR`. No server is started.
 
 ---
 
 ## 6. Cross-cutting design notes
 
 1. **Directives encode metadata the SDL readers need.** `@column`, `@id`, `@unique`, `@relation`, `@table` — together they make `db.graphql` self-sufficient at runtime.
-2. **Correlated subqueries over LATERAL.** Portable to Apache Doris and older engines. See [api.md § 1](api.md#why-correlated-subqueries-not-lateral-joins).
+2. **Correlated subqueries over LATERAL.** Portable to Apache Doris and older engines. See [compiler.md § 2](compiler.md#2-why-correlated-subqueries-not-lateral-joins).
 3. **Standard scalars + `@column`.** Familiar GraphQL types, exact warehouse types preserved in directives. See principle 3.4.
 4. **Next-steps hint pattern.** Each MCP tool response includes `_meta.next_steps`. See [mcp.md](mcp.md).
 5. **Enum deduplication by sorted value set.** `accepted_values(['a','b'])` on two columns becomes one enum, not two.
 6. **Read-only.** See principle 3.5. If this ever changes, it's a major version.
 7. **Bidirectional relationship adjacency for BFS.** Every `RelationshipInfo` is stored on both the from-model and to-model; BFS works in either direction.
-8. **Database config decoupled from dbt profiles.** See [api.md § 1](api.md#connection-management-compilerconnectionpy).
+8. **Database config decoupled from dbt profiles.** See [compiler.md § 5](compiler.md#5-connection-management-compilerconnectionpy).
 9. **Relationship origin tiers.** Every `RelationshipInfo` records its source (`constraint` > `data_test` > `lineage`). Constraints and tests are user-authored; lineage-inferred relationships are best-effort.
 10. **Processor modules are source-based, not output-based.** `constraints.py` / `data_tests.py` / `compiled_sql.py` each correspond to one input surface. When chasing a bug, "where did this fact come from?" is the question that matters.
 11. **Column lineage via dbt-colibri's traversal approach.** The core recursive `to_node()` logic (qualify → build_scope → CTE/subquery/UNION/PIVOT resolution, max-rank classification) is absorbed into `compiled_sql.py` — no runtime dependency on dbt-colibri. See [schema-synthesis.md § 4](schema-synthesis.md#4-lineage-extraction).
@@ -231,7 +248,6 @@ Where we differ: Wren's interface to agents is "write SQL against MDL" (text-to-
 |---|---|
 | **No metrics / semantic layer** | No measures, no predefined aggregations. For governed metrics, pair with MetricFlow or Cube. |
 | **Read-only** (also a strength) | No mutations, writes, or upserts. Wrong tool for app backends. |
-| **JWT signatures not yet verified** | Sec-A ships a trust-only JWT decoder today; signature + `exp`/`iss`/`aud` verification is the blocker for production-facing deployments. See [security.md](security.md). |
 | **Single-process Python serving** | The serve layer is async but still Python. Hasura/PostGraphile handle high-throughput concurrent agent workloads more easily. |
 | **Compiler feature coverage** | No filter/order on nested fields; `where` supports only equality; no operators, no aggregates. |
 | **Maturity** | Needs an integration-test corpus covering real dbt projects across dialects. |

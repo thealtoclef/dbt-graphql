@@ -8,6 +8,16 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 
 ---
 
+## Table of contents
+
+- [1. Tools](#tools)
+- [2. `SchemaDiscovery` — the engine behind the tools](#schemadiscovery--the-engine-behind-the-tools)
+- [3. Transport](#transport)
+- [4. Observability](#observability)
+- [5. Why MCP-first matters](#why-mcp-first-matters)
+
+---
+
 ## Tools
 
 | Tool                                | Purpose                                                              |
@@ -30,6 +40,21 @@ Each response includes `_meta.next_steps` — a short list guiding the agent's n
 - Builds a **bidirectional adjacency list** at construction time: every `RelationshipInfo` becomes two edges (outgoing from `from_model`, incoming to `to_model`).
 - `find_path()` runs BFS, early-terminating when a longer path would extend. Returns *all* shortest paths, not just one — an agent benefits from seeing alternatives (`orders → customers` vs. `orders → payments → customers`).
 - `describe_table()` live-enriches results when a DB connection is available: `row_count`, `sample_rows` (3 rows), and per-column `value_summary` (enum, date range, or distinct values depending on SQL type and cardinality). Column enrichment respects an `EnrichmentConfig.budget` cap (default: 20 queries per call). Override via `enrichment.budget` in config or the `DBT_GRAPHQL__ENRICHMENT__BUDGET` env var.
+
+---
+
+## Transport
+
+The MCP server uses **Streamable HTTP transport** (FastMCP's default). It mounts at `/mcp` and is created via `create_mcp_http_app()`.
+
+Two deployment modes, controlled by `serve.graphql` / `serve.mcp` in `config.yml`:
+
+| Config | Result |
+|---|---|
+| `serve.graphql: true`, `serve.mcp: true` | GraphQL at `/graphql` and MCP at `/mcp` co-mount on the same Granian process, sharing one DB connection pool. |
+| `serve.graphql: false`, `serve.mcp: true` | MCP runs standalone — no GraphQL endpoint. |
+
+MCP input arrives as `POST /mcp`; server-to-client events stream via `GET /mcp` (SSE).
 
 ---
 

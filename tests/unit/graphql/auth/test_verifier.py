@@ -9,7 +9,7 @@ import pytest
 from joserfc import jwt as joserfc_jwt
 from joserfc.jwk import KeySet, OctKey, RSAKey
 
-from dbt_graphql.api.auth.verifier import AuthError, Verifier, extract_scopes
+from dbt_graphql.graphql.auth.verifier import AuthError, Verifier, extract_scopes
 
 
 # ---------------------------------------------------------------------------

@@ -1,23 +1,24 @@
-# API & Compiler
+# GraphQL → SQL Compiler
 
-The two runtime components that execute GraphQL queries: the GraphQL→SQL compiler and the HTTP API layer built on top of it.
+The core engine that translates a GraphQL selection into a single warehouse SQL statement. Used by both the [GraphQL HTTP layer](graphql.md) (via resolvers) and the MCP server (via `execute_query`).
 
-See [architecture.md](architecture.md) for the design principles that govern both.
+**Source:** [`src/dbt_graphql/compiler/`](../src/dbt_graphql/compiler/)
+
+See [architecture.md](architecture.md) for the design principles that govern this component.
 
 ---
 
 ## Table of contents
 
-- [1. GraphQL → SQL compiler (`compiler/`)](#1-graphql--sql-compiler-compiler)
-- [2. GraphQL API layer (`api/`)](#2-graphql-api-layer-api)
+- [1. What compilation produces](#1-what-compilation-produces)
+- [2. Why correlated subqueries, not LATERAL joins](#2-why-correlated-subqueries-not-lateral-joins)
+- [3. Dialect-aware JSON aggregation](#3-dialect-aware-json-aggregation)
+- [4. `compile_query()` walkthrough](#4-compile_query-walkthrough)
+- [5. Connection management (`compiler/connection.py`)](#5-connection-management-compilerconnectionpy)
 
 ---
 
-## 1. GraphQL → SQL compiler (`compiler/`)
-
-[`src/dbt_graphql/compiler/query.py`](../src/dbt_graphql/compiler/query.py)
-
-### What compilation produces
+## 1. What compilation produces
 
 Given a GraphQL field like:
 
@@ -48,11 +49,15 @@ WHERE _parent.status = 'completed'
 LIMIT 10;
 ```
 
-### Why correlated subqueries, not LATERAL joins
+---
+
+## 2. Why correlated subqueries, not LATERAL joins
 
 Apache Doris (and some older warehouse engines) do not support `LATERAL`. A correlated subquery is portable everywhere and the optimizer collapses it to the same plan on engines that could use LATERAL anyway. The tradeoff is that ordering/limit on nested fields is harder to express; the current compiler doesn't expose those knobs, which is a conscious scope decision.
 
-### Dialect-aware JSON aggregation
+---
+
+## 3. Dialect-aware JSON aggregation
 
 Different engines have different JSON aggregation functions. Rather than branching in Python, we define marker classes `json_agg` and `json_build_obj` (`FunctionElement` subclasses) and register per-dialect `@compiles` functions:
 
@@ -64,7 +69,9 @@ Different engines have different JSON aggregation functions. Rather than branchi
 
 SQL generation stays dialect-agnostic until the moment of rendering.
 
-### `compile_query()` walkthrough
+---
+
+## 4. `compile_query()` walkthrough
 
 Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus optional `limit` / `offset` / `where` / `max_depth`.
 
@@ -79,53 +86,12 @@ Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus opt
 - Operators beyond `=` in `where`.
 - Aggregates, group-by, metrics — that's the job of a semantic layer (Cube, MetricFlow).
 
-### Connection management (`compiler/connection.py`)
+---
+
+## 5. Connection management (`compiler/connection.py`)
 
 `DatabaseManager` owns an async SQLAlchemy 2.0 engine, exposes `execute()` for a `Select` and `execute_text()` for raw SQL, and tracks the dialect name. Two construction paths: pass a raw `db_url` string, or pass a `DbConfig` which runs through `build_db_url()`.
 
 `build_db_url()` maps `config.type` keys to async driver schemes (`aiomysql`, `asyncpg`).
 
 No dbt profiles parser — the database configuration is deliberately decoupled from `profiles.yml`. A production serve layer connects differently from a dbt transformation run (different credentials, pooling, network).
-
----
-
-## 2. GraphQL API layer (`api/`)
-
-[`src/dbt_graphql/api/app.py`](../src/dbt_graphql/api/app.py)
-
-Starlette + Ariadne, served via `granian` (Rust-based ASGI server). Starlette is a hard dependency of Ariadne, so no extra package is needed for the outer app.
-
-### Assembling the Ariadne schema
-
-`db.graphql` uses standard GraphQL scalars and custom directives. Ariadne needs a clean executable schema without those directives. `_build_ariadne_sdl()`:
-
-1. Parses `db.graphql`.
-2. Collects any type names that aren't standard scalars and declares them as `scalar`.
-3. Builds a per-table `XxxWhereInput` input type for filtering.
-4. Builds a `Query` type with one field per table, each accepting `limit: Int`, `offset: Int`, and `where: XxxWhereInput`.
-
-This keeps `db.graphql` as a *description* of the warehouse; the Ariadne schema is the *executable* schema derived from it at runtime.
-
-### Lifecycle
-
-`create_app()` builds the Starlette app, mounts `/graphql`, and uses an `@asynccontextmanager` lifespan to connect/close the `DatabaseManager`. State that resolvers need (`TableRegistry`, `DatabaseManager`) is attached to `info.context` — never closure-captured, never module-global.
-
-### Resolvers
-
-`api/resolvers.py` registers one resolver per table. Each resolver:
-
-1. Pulls the `TableDef` out of the registry.
-2. Calls `compile_query()` with the GraphQL field nodes, `limit`, `offset`, `where` from kwargs.
-3. Executes via the `DatabaseManager`, returns rows as dicts.
-
-No N+1 issues — nested relations are resolved inside the same query via the correlated-subquery mechanism.
-
-### Observability
-
-OTel is bundled with `dbt-graphql[api]`. Three layers activate automatically:
-
-- **Starlette** (`opentelemetry-instrumentation-starlette`) — HTTP request spans.
-- **Ariadne** (`ariadne.contrib.tracing.opentelemetry.OpenTelemetryExtension`) — GraphQL operation and per-resolver spans.
-- **SQLAlchemy** (`opentelemetry-instrumentation-sqlalchemy`) — per-query spans attached to the engine after connect.
-
-Configure via the `monitoring` block in `config.yml` (see [configuration.md](configuration.md)). Each signal (traces, metrics, logs) has its own `endpoint` and `protocol` field. Instrumentation is bootstrapped in `api/monitoring.py` before the app starts.

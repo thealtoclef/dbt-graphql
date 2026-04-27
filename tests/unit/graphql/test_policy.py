@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dbt_graphql.api.policy import (
+from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
     PolicyEngine,
@@ -14,7 +14,7 @@ from dbt_graphql.api.policy import (
     load_access_policy,
     render_row_filter,
 )
-from dbt_graphql.api.auth import JWTPayload
+from dbt_graphql.graphql.auth import JWTPayload
 
 
 # ---------------------------------------------------------------------------

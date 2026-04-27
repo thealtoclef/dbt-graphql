@@ -28,9 +28,9 @@ from sqlalchemy.sql.elements import ClauseElement
 from sqlalchemy.sql.expression import FunctionElement
 
 if TYPE_CHECKING:
-    from ..api.policy import ResolvedPolicy
+    from ..graphql.policy import ResolvedPolicy
 
-from ..api.policy import ColumnAccessDenied
+from ..graphql.policy import ColumnAccessDenied
 from ..formatter.schema import ColumnDef, RelationDef, TableDef, TableRegistry
 
 ResolvePolicy = Callable[[str], "ResolvedPolicy"]

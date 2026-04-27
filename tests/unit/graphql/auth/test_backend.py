@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 import pytest
 from starlette.authentication import AuthenticationError
 
-from dbt_graphql.api.auth import JWTAuthBackend, JWTPayload, JWTUser
-from dbt_graphql.api.auth.backend import auth_on_error, build_auth_backend
-from dbt_graphql.api.auth.verifier import AuthError
+from dbt_graphql.graphql.auth import JWTAuthBackend, JWTPayload, JWTUser
+from dbt_graphql.graphql.auth.backend import auth_on_error, build_auth_backend
+from dbt_graphql.graphql.auth.verifier import AuthError
 from dbt_graphql.config import JWTConfig
 
 

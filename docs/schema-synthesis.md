@@ -1,6 +1,6 @@
 # Schema Synthesis
 
-The phase that reads dbt artifacts and produces `db.graphql` and `lineage.json`. Triggered by the `generate` CLI command and internally by `serve --target mcp`.
+The phase that reads dbt artifacts and produces a `TableRegistry` — the Python object the serve layer consumes directly. In `--output` mode it also serialises `db.graphql` and `lineage.json` as side artifacts.
 
 **Entry point:** [`src/dbt_graphql/pipeline.py`](../src/dbt_graphql/pipeline.py) — `extract_project()`.
 
@@ -34,7 +34,7 @@ See [architecture.md](architecture.md) for the pipeline overview and design prin
 9. **Build enums dict.** Flattens `{enum_name: [values]}` for formatters that want it.
 10. **Return `ProjectInfo`.** The single boundary between extraction and everything that follows.
 
-Once `ProjectInfo` is in hand, the rest of the system is deterministic: format → SDL, parse SDL → registry, compile GraphQL selections → SQL, execute.
+Once `ProjectInfo` is in hand, the rest of the system is deterministic: `build_registry()` → `TableRegistry`, compile GraphQL selections → SQL, execute. In `--output` mode, `_registry_to_sdl()` serialises `TableRegistry` to SDL and writes `db.graphql`.
 
 ---
 
@@ -141,11 +141,17 @@ No DB-introspection tool (Hasura, pg_graphql, PostGraphile) can produce lineage 
 
 ---
 
-## 5. SDL emission (`formatter/graphql.py`)
+## 5. Schema object + SDL emission (`formatter/graphql.py`)
 
 [`src/dbt_graphql/formatter/graphql.py`](../src/dbt_graphql/formatter/graphql.py)
 
-Converts `ProjectInfo` to SDL. One `ModelInfo` becomes one `type` block.
+Three functions with a clear split of responsibility:
+
+- **`build_registry(project)`** — the canonical path. Converts `ProjectInfo` directly to a `TableRegistry` (Python dataclasses). This is what the serve layer uses; no file I/O, no SDL roundtrip.
+- **`_registry_to_sdl(registry)`** — serialises a `TableRegistry` to SDL string. Used only in `--output` mode to write `db.graphql`.
+- **`format_graphql(project)`** — convenience composition of the two above, used in tests and the `--output` export path.
+
+One `ModelInfo` becomes one `type` block in SDL.
 
 ### Type-level directive
 
@@ -197,4 +203,4 @@ At serve time and compile time, `db.graphql` is re-parsed into typed Python obje
 
 Parsing uses `graphql-core`. `_unwrap_type()` walks `NonNullTypeNode` → `ListTypeNode` → `NamedTypeNode` to compute `(type_name, not_null, is_array)`. `_directive_args()` flattens directive arguments into a `dict[str, str]`.
 
-**Why parse, instead of keeping the IR around?** `db.graphql` is a deployable artifact. In production you generate it once (at CI time, against CI dbt artifacts) and ship it. The serve layer needs only the SDL — it can run in containers that don't have `manifest.json`.
+**When is parsing used?** The primary serve path does not use `parse_db_graphql` — it calls `build_registry()` directly from dbt artifacts. `parse_db_graphql` is still useful when you have a pre-built `db.graphql` (e.g. a CI-generated artifact shipped to production without dbt artifacts) and want to reconstruct a `TableRegistry` from it without re-running extraction.

@@ -13,7 +13,7 @@ import pytest
 from graphql import parse
 from sqlalchemy.dialects import postgresql
 
-from dbt_graphql.api.policy import (
+from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnAccessDenied,
     ColumnLevelPolicy,
@@ -22,7 +22,7 @@ from dbt_graphql.api.policy import (
     TableAccessDenied,
     TablePolicy,
 )
-from dbt_graphql.api.auth import JWTPayload
+from dbt_graphql.graphql.auth import JWTPayload
 from dbt_graphql.compiler.query import compile_query
 from dbt_graphql.formatter.schema import (
     ColumnDef,

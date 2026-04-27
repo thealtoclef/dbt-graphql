@@ -130,7 +130,7 @@ def test_cli_relative_paths_resolved_from_config_dir(tmp_path):
 
 def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
     """DBT_GRAPHQL__ENRICHMENT__BUDGET env var must override config.yml enrichment.budget."""
-    import dbt_graphql.api.app as api_app_mod
+    import dbt_graphql.serve as serve_mod
     import dbt_graphql.compiler.connection as conn_mod
     import dbt_graphql.mcp.server as mcp_server_mod
 
@@ -140,13 +140,13 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
         captured["enrichment"] = enrichment
         return object()
 
-    def _fake_serve_mcp_http(**_kwargs):
+    def _fake_serve_mcp(**_kwargs):
         raise SystemExit(0)
 
     monkeypatch.setattr(
         mcp_server_mod, "create_mcp_http_app", _fake_create_mcp_http_app
     )
-    monkeypatch.setattr(api_app_mod, "serve_mcp_http", _fake_serve_mcp_http)
+    monkeypatch.setattr(serve_mod, "serve_mcp", _fake_serve_mcp)
     monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
     monkeypatch.setenv("DBT_GRAPHQL__ENRICHMENT__BUDGET", "7")
 

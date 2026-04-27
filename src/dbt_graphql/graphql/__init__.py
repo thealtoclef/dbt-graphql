@@ -1,8 +1,8 @@
-"""GraphQL API server (Starlette + Ariadne + Granian)."""
+"""GraphQL core — Starlette + Ariadne schema assembly and resolvers."""
 
 
 def __getattr__(name):
-    if name in ("create_app", "serve", "serve_mcp_http"):
+    if name == "create_app":
         from . import app
 
         return getattr(app, name)

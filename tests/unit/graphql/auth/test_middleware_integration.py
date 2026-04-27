@@ -23,10 +23,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from dbt_graphql.api.auth import auth_on_error, build_auth_backend
-from dbt_graphql.api.auth.backend import JWTAuthBackend
-from dbt_graphql.api.auth.keys import JWKSResolver
-from dbt_graphql.api.auth.verifier import Verifier
+from dbt_graphql.graphql.auth import auth_on_error, build_auth_backend
+from dbt_graphql.graphql.auth.backend import JWTAuthBackend
+from dbt_graphql.graphql.auth.keys import JWKSResolver
+from dbt_graphql.graphql.auth.verifier import Verifier
 from dbt_graphql.config import JWTConfig
 
 

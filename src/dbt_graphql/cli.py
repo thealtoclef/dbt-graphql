@@ -121,9 +121,9 @@ def _run_serve(project, config) -> None:
         mcp_http_app = create_mcp_http_app(project, db=db, enrichment=config.enrichment)
 
     if serve_graphql:
-        from .api import serve
-        from .api.policy import load_access_policy
+        from .graphql.policy import load_access_policy
         from .formatter.graphql import build_registry
+        from .serve import serve_graphql as _serve_graphql
 
         registry = build_registry(project)
 
@@ -135,13 +135,13 @@ def _run_serve(project, config) -> None:
                 print(f"Error loading policy: {exc}", file=sys.stderr)
                 sys.exit(1)
 
-        serve(
+        _serve_graphql(
             registry=registry,
             config=config,
             access_policy=access_policy,
             mcp_http_app=mcp_http_app,
         )
     else:
-        from .api import serve_mcp_http
+        from .serve import serve_mcp
 
-        serve_mcp_http(mcp_http_app=mcp_http_app, config=config)
+        serve_mcp(mcp_http_app=mcp_http_app, config=config)
