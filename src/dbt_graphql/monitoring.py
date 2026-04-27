@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
+import time
 
 from loguru import logger
 
@@ -233,3 +235,21 @@ def configure_monitoring(config: MonitoringConfig | None = None) -> None:
         config.logs.endpoint or "off",
         level,
     )
+
+
+@contextlib.asynccontextmanager
+async def timed(histogram, counter, base_attributes: dict):
+    """Async context manager that records duration and call count on exit.
+
+    Sets status=success on normal exit, status=error if an exception escapes.
+    """
+    start = time.perf_counter()
+    attrs = {**base_attributes, "status": "success"}
+    try:
+        yield
+    except Exception:
+        attrs["status"] = "error"
+        raise
+    finally:
+        histogram.record((time.perf_counter() - start) * 1000, attrs)
+        counter.add(1, attrs)

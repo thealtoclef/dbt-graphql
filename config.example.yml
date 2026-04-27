@@ -1,16 +1,28 @@
 # dbt-graphql configuration — copy to `config.yml` and edit.
 #
-# Loaded with `dbt-graphql serve --config config.yml`. Any field can be
-# overridden by a `DBT_GRAPHQL__*` env var (nested fields use `__` as
-# delimiter, e.g. `DBT_GRAPHQL__DB__PASSWORD=secret`). Env vars take
+# Usage:
+#   dbt-graphql --config config.yml            # serve mode
+#   dbt-graphql --config config.yml --output . # generate mode (write db.graphql + lineage.json)
+#
+# Any field can be overridden by a `DBT_GRAPHQL__*` env var (nested fields use
+# `__` as delimiter, e.g. `DBT_GRAPHQL__DB__PASSWORD=secret`). Env vars take
 # precedence over values in this file.
 #
 # Default values for optional fields are defined as constants in
-# `src/dbt_graphql/defaults.py` — they are repeated here as comments for
-# documentation only.
+# `src/dbt_graphql/defaults.py`.
 
 # -----------------------------------------------------------------------------
-# db (required) — database connection
+# dbt (required) — paths to dbt artifacts
+# -----------------------------------------------------------------------------
+dbt:
+  catalog: target/catalog.json    # relative to this file, or absolute
+  manifest: target/manifest.json
+  # exclude:                      # regex patterns to skip models (OR logic)
+  #   - '^stg_'
+  #   - '^int_'
+
+# -----------------------------------------------------------------------------
+# db (required for serve mode) — database connection
 # -----------------------------------------------------------------------------
 db:
   type: postgres            # postgres | mysql | mariadb | doris
@@ -21,11 +33,14 @@ db:
   password: ""              # prefer DBT_GRAPHQL__DB__PASSWORD env var
 
 # -----------------------------------------------------------------------------
-# serve (required for `--target api`) — HTTP server bind config
+# serve (required for serve mode) — HTTP server bind config
 # -----------------------------------------------------------------------------
 serve:
   host: 0.0.0.0
   port: 9876
+  graphql: true             # mount GraphQL API at /graphql
+  mcp: false                # mount MCP server at /mcp (Streamable HTTP)
+  # Both can be true — they share the same Granian process.
 
 # -----------------------------------------------------------------------------
 # enrichment (optional) — controls live DB queries fired by MCP describe_table.
@@ -68,8 +83,7 @@ serve:
 #     issuer: https://issuer.example/
 #     leeway: 30                     # seconds; clock-skew tolerance for exp/nbf
 #     required_claims: [exp]         # forced-essential claims
-#     roles_claim: scope             # claim read for Starlette scopes; defaults
-#                                    #   to scope/scp/roles in that order
+#     roles_claim: scope             # claim read for Starlette scopes
 #     # exactly one key source:
 #     jwks_url: https://issuer.example/.well-known/jwks.json
 #     jwks_cache_ttl: 3600           # only meaningful with jwks_url

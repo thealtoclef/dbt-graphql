@@ -33,8 +33,6 @@ from dbt_graphql.cache.setup import close_cache
 
 from .conftest import JWT_TEST_SECRET, make_test_jwt_config
 
-pytest.importorskip("ariadne", reason="ariadne required for serve tests")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -99,7 +97,7 @@ def cached_client(serve_adapter_env, _cleanup_cache):
         access_policy: AccessPolicy | None = None,
     ):
         app = create_app(
-            db_graphql_path=serve_adapter_env["db_graphql_path"],
+            registry=serve_adapter_env["registry"],
             db_url=serve_adapter_env["db_url"],
             access_policy=access_policy,
             cache_config=cache_cfg if cache_cfg is not None else _cache_config(),

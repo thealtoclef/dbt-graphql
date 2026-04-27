@@ -117,13 +117,12 @@ _adapter_cache: dict[str, dict] = {}
 
 def _get_adapter_data(name: str, artifacts: dict) -> dict:
     if name not in _adapter_cache:
-        from dbt_graphql.formatter.graphql import format_graphql
-        from dbt_graphql.formatter.schema import parse_db_graphql
+        from dbt_graphql.formatter.graphql import build_registry, format_graphql
         from dbt_graphql.pipeline import extract_project
 
         project = extract_project(artifacts["catalog_path"], artifacts["manifest_path"])
         result = format_graphql(project)
-        _, registry = parse_db_graphql(result.db_graphql)
+        registry = build_registry(project)
         _adapter_cache[name] = {
             "project": project,
             "registry": registry,
@@ -314,11 +313,8 @@ def serve_adapter_env(request, tmp_path):
     artifacts = request.getfixturevalue(f"{name}_artifacts")
     data = _get_adapter_data(name, artifacts)
 
-    gql_path = tmp_path / f"db_{name}.graphql"
-    gql_path.write_text(data["db_graphql"])
-
     yield {
         "name": name,
         "db_url": _ASYNC_URL[name],
-        "db_graphql_path": gql_path,
+        "registry": data["registry"],
     }

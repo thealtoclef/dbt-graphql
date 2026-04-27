@@ -14,6 +14,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | 3 | MCP SOTA surface (tools + resources + prompts) | 🔲 Pending |
 | 4 | Few-shot Q→GraphQL example store | 🔲 Pending |
 | 5 | Docs + env-var config | ✅ Done |
+| 6 | Config-driven CLI + HTTP MCP transport | ✅ Done |
 | — | dbt Selector Support (`--select`) | 🔲 Pending |
 | — | Source Node Inclusion (`catalog.sources`) | 🔲 Pending |
 | Sec-A | Identity & JWT Auth | ✅ Done (joserfc verifier; JWKS + static sources) |
@@ -79,6 +80,24 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Unit tests (no-DB path returns nulls) | ✅ |
 | Integration test (Postgres + MySQL): distinct values + row_count + sample_rows | ✅ |
 | Cache: second call returns same object | ✅ |
+
+---
+
+## ✅ Phase 6 — Config-driven CLI + HTTP MCP Transport
+
+| Item | Status |
+|---|---|
+| `DbtConfig` (`catalog`, `manifest`, `exclude`) in `AppConfig` | ✅ |
+| Flat CLI: `--config` + `--output` (no subcommands) | ✅ |
+| Relative path resolution for `catalog`/`manifest` from config dir | ✅ |
+| `serve.graphql` / `serve.mcp` flags | ✅ |
+| `build_registry(project)` — direct `ProjectInfo → TableRegistry` (no SDL roundtrip) | ✅ |
+| `create_mcp_http_app` — Streamable HTTP transport via FastMCP | ✅ |
+| `serve_mcp_http` — standalone MCP-only Granian server | ✅ |
+| Co-mounted GraphQL + MCP on single Granian process | ✅ |
+| `api`/`mcp` optional extras collapsed into core deps | ✅ |
+| `redis` optional extra for Redis cache backend | ✅ |
+| `timed` async context manager in `monitoring.py` (shared OTel recording) | ✅ |
 
 ---
 

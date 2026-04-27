@@ -4,9 +4,38 @@ All configuration is loaded from a single YAML file passed via `--config`. A doc
 
 ---
 
-## `db` (required)
+## CLI
 
-Database connection. The `type` field selects the adapter; remaining fields vary by adapter.
+```
+dbt-graphql --config config.yml [--output DIR]
+```
+
+| Flag | Description |
+|---|---|
+| `--config PATH` | Path to `config.yml` (required). |
+| `--output DIR` | Write `db.graphql` + `lineage.json` to DIR and exit (generate mode). Omit to serve. |
+
+**Generate mode** (`--output` present): parse dbt artifacts, write schema files, exit. No database connection required.
+
+**Serve mode** (no `--output`): parse dbt artifacts, then serve based on `serve.graphql` / `serve.mcp` flags.
+
+---
+
+## `dbt` (required)
+
+Paths to dbt artifact files produced by `dbt docs generate`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `catalog` | Path | — | Path to `target/catalog.json`. Relative paths resolve from the config file's directory. |
+| `manifest` | Path | — | Path to `target/manifest.json`. Relative paths resolve from the config file's directory. |
+| `exclude` | list | `[]` | Regex patterns matched against model names; matching models are excluded (OR logic). |
+
+---
+
+## `db` (optional)
+
+Database connection — required when `serve.graphql: true` or `serve.mcp: true`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -30,20 +59,24 @@ Set `timeout` **below** your upstream LB idle timeout so the API responds before
 | `max_overflow` | int | `10` | Burst capacity above `size` (hard cap = `size + max_overflow`) |
 | `timeout` | int | `10` | Seconds to wait on checkout before raising. Below LB idle timeout. |
 | `recycle` | int | `1800` | Recycle connections after N seconds (NAT/firewall hygiene). `-1` to disable. |
-| `retry_after` | int | `5` | Seconds emitted in the `Retry-After` header on 503 responses (per RFC 9110 §10.2.3). Should approximate **p50 warehouse query time** — i.e. how long until a connection is likely free again. Distinct from `timeout` (which is admission, not recovery). |
+| `retry_after` | int | `5` | Seconds emitted in the `Retry-After` header on 503 responses (per RFC 9110 §10.2.3). Should approximate **p50 warehouse query time**. Distinct from `timeout` (which is admission, not recovery). |
 
 **Sizing rule of thumb:** with `R` replicas and warehouse capacity `Q`, set `size + max_overflow ≤ Q / R`. dbt-graphql doesn't coordinate across replicas — total warehouse concurrency is the sum of per-replica pools.
 
 ---
 
-## `serve` (required for `--target api`)
+## `serve` (optional)
 
-HTTP server bind config.
+HTTP server bind config. Required when running in serve mode.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `host` | string | — | Bind address (e.g. `0.0.0.0`) |
 | `port` | int | — | TCP port |
+| `graphql` | bool | `false` | Serve the GraphQL API at `/graphql`. Requires `db:` section. |
+| `mcp` | bool | `false` | Serve the MCP server at `/mcp` (Streamable HTTP). Requires `db:` section. |
+
+Both `graphql` and `mcp` can be `true` at the same time — they are mounted on the same Granian process as `/graphql` and `/mcp` respectively.
 
 ---
 
@@ -110,9 +143,9 @@ Omit the block to use the default in-memory cache. Pass `cache_config=None` prog
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Disable to bypass the cache entirely (no caching, no coalescing). |
-| `url` | string | `"mem://?size=10000"` | [cashews](https://github.com/Krukov/cashews) URI. Examples: `mem://?size=N`, `redis://host:6379/0`, `redis://...?cluster=true`. Use a Redis URI for multi-replica deployments — both the cache and the singleflight lock then live on the shared backend, so coalescing crosses replicas. |
+| `url` | string | `"mem://?size=10000"` | [cashews](https://github.com/Krukov/cashews) URI. Examples: `mem://?size=N`, `redis://host:6379/0`, `redis://...?cluster=true`. Use a Redis URI for multi-replica deployments — both the cache and the singleflight lock then live on the shared backend, so coalescing crosses replicas. Redis requires `pip install dbt-graphql[redis]`. |
 | `ttl` | int | `60` | Freshness window in seconds. `0` = realtime + 1 s coalescing window; see caching.md. |
-| `lock_safety_timeout` | int | `10` | Singleflight lock auto-release, in seconds. Set **above your p99 warehouse query time** (so legitimate slow queries don't trigger duplicate executions) and **below your LB idle timeout** (so dead-holder recovery completes before the LB resets connections). Default targets fast warehouses (ClickHouse, Doris, Postgres on dbt-modeled tables, p99 ≤ 5s) behind a 30s LB. Bump to 25–60 for slower workloads. **Not** the result TTL. |
+| `lock_safety_timeout` | int | `10` | Singleflight lock auto-release, in seconds. Set **above your p99 warehouse query time** and **below your LB idle timeout**. Default targets fast warehouses (p99 ≤ 5s) behind a 30s LB. Bump to 25–60 for slower workloads. **Not** the result TTL. |
 
 ---
 
@@ -169,16 +202,3 @@ DBT_GRAPHQL__MONITORING__TRACES__PROTOCOL=grpc
 ```
 
 Env vars take precedence over values in `config.yml`.
-
----
-
-## CLI flags (MCP serve)
-
-These flags are passed to `dbt-graphql serve --target mcp`:
-
-| Flag | Description |
-|---|---|
-| `--config PATH` | Path to `config.yml`. Optional for MCP; required for API. |
-| `--catalog PATH` | Path to `catalog.json` (required). |
-| `--manifest PATH` | Path to `manifest.json` (required). |
-| `--exclude PATTERN` | Regex to exclude models by name. Repeatable. |

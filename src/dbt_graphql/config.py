@@ -41,6 +41,8 @@ class DbConfig(BaseModel):
 class ServeConfig(BaseModel):
     host: str
     port: int
+    graphql: bool = False
+    mcp: bool = False
 
 
 class TracesConfig(BaseModel):
@@ -133,13 +135,20 @@ class SecurityConfig(BaseModel):
     jwt: JWTConfig = JWTConfig()
 
 
+class DbtConfig(BaseModel):
+    catalog: Path
+    manifest: Path
+    exclude: list[str] = []
+
+
 class AppConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="DBT_GRAPHQL__",
         env_nested_delimiter="__",
     )
 
-    db: DbConfig
+    dbt: DbtConfig
+    db: DbConfig | None = None
     serve: ServeConfig | None = None
     monitoring: MonitoringConfig = MonitoringConfig()
     enrichment: EnrichmentConfig = EnrichmentConfig()
@@ -163,8 +172,19 @@ def load_config(path: str | Path) -> AppConfig:
     """Load config.yml and merge with DBT_GRAPHQL__* environment variables.
 
     Env vars override file values. Example: DBT_GRAPHQL__ENRICHMENT__BUDGET=5
+    Relative paths for catalog and manifest are resolved against the config file's directory.
     """
-    data = yaml.safe_load(Path(path).read_text())
+    config_path = Path(path).resolve()
+    config_dir = config_path.parent
+    data = yaml.safe_load(config_path.read_text())
     if not isinstance(data, dict):
         raise ValueError("config.yml must be a YAML mapping")
+    dbt = data.get("dbt", {})
+    if isinstance(dbt, dict):
+        for field in ("catalog", "manifest"):
+            if field in dbt and dbt[field]:
+                p = Path(str(dbt[field]))
+                if not p.is_absolute():
+                    dbt[field] = str(config_dir / p)
+        data["dbt"] = dbt
     return AppConfig(**data)

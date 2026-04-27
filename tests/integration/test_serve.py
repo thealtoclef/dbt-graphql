@@ -21,8 +21,6 @@ from dbt_graphql.api.policy import (
 
 from .conftest import JWT_TEST_SECRET, make_test_jwt_config
 
-pytest.importorskip("ariadne", reason="ariadne required for serve tests")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,7 +60,7 @@ def _gql_error(client, query: str, headers: dict | None = None) -> dict:
 @pytest.fixture
 def client(serve_adapter_env):
     app = create_app(
-        db_graphql_path=serve_adapter_env["db_graphql_path"],
+        registry=serve_adapter_env["registry"],
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
     )
@@ -230,7 +228,7 @@ def policy_client(serve_adapter_env):
 
     def _make(policy: AccessPolicy | None = None):
         app = create_app(
-            db_graphql_path=serve_adapter_env["db_graphql_path"],
+            registry=serve_adapter_env["registry"],
             db_url=serve_adapter_env["db_url"],
             access_policy=policy,
             jwt_config=make_test_jwt_config(),

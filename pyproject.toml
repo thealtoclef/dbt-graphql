@@ -9,29 +9,28 @@ dependencies = [
     "dbt-artifacts-parser>=0.13.0",
     "dbt-colibri>=0.3.0,<0.4",
     "graphql-core>=3.2.8",
-    "jinja2>=3.1.6",
-    "loguru>=0.7.3",
-    "opentelemetry-exporter-otlp>=1.41.0",
-    "opentelemetry-sdk>=1.41.0",
-    "pydantic-settings>=2.0",
-    "pyyaml>=6.0.2",
-    "simpleeval>=1.0.7",
     "sqlalchemy[asyncio]>=2.0.49",
-]
-
-[project.optional-dependencies]
-postgres = ["asyncpg>=0.31"]
-mysql = ["aiomysql>=0.3.2"]
-api = [
+    "pyyaml>=6.0.2",
+    "pydantic-settings>=2.14.0",
+    "simpleeval>=1.0.7",
+    "jinja2>=3.1.6",
     "ariadne>=1.0.1",
+    "fastmcp>=3.2.4",
     "granian>=2.7.3",
-    "joserfc>=1.6.4",
     "httpx>=0.28.1",
+    "joserfc>=1.6.4",
     "cashews>=7.5.0",
+    "loguru>=0.7.3",
+    "opentelemetry-sdk>=1.41.0",
+    "opentelemetry-exporter-otlp>=1.41.0",
     "opentelemetry-instrumentation-sqlalchemy>=0.62b0",
     "opentelemetry-instrumentation-starlette>=0.62b0",
 ]
-mcp = ["fastmcp>=3.2.4"]
+
+[project.optional-dependencies]
+redis = ["redis>=7.4"]
+postgres = ["asyncpg>=0.31"]
+mysql = ["aiomysql>=0.3.2"]
 
 [project.scripts]
 dbt-graphql = "dbt_graphql.cli:main"
@@ -42,9 +41,7 @@ test = [
     "pytest-cov",
     "pytest-asyncio",
     "pytest-docker",
-    "httpx",
     "pyjwt",
-    "redis",
 ]
 lint = ["ruff", "ty"]
 

@@ -11,262 +11,121 @@ from .pipeline import extract_project
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="dbt-graphql",
-        description="Convert dbt artifacts to GraphQL schema and serve a SQL-backed GraphQL API.",
-    )
-    subparsers = parser.add_subparsers(dest="command")
-
-    gen = subparsers.add_parser(
-        "generate", help="Generate output files from dbt artifacts."
-    )
-    _add_generate_args(gen)
-
-    srv = subparsers.add_parser(
-        "serve",
-        help="Serve one or both interfaces: api (GraphQL HTTP) and/or mcp (stdio).",
-    )
-    _add_serve_args(srv)
-
-    args = parser.parse_args(argv)
-
-    if args.command is None:
-        parser.print_help()
-        sys.exit(0)
-    elif args.command == "generate":
-        _run_generate(args)
-    elif args.command == "serve":
-        _run_serve(args)
-
-
-# ---------------------------------------------------------------------------
-# generate
-# ---------------------------------------------------------------------------
-
-
-def _add_generate_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--catalog",
-        type=Path,
-        metavar="PATH",
-        help="Path to catalog.json.",
+        description=(
+            "Convert dbt artifacts to a GraphQL/MCP server. "
+            "With --output: write schema files to disk. "
+            "Without --output: serve based on config."
+        ),
     )
     parser.add_argument(
-        "--manifest",
+        "--config",
         type=Path,
         metavar="PATH",
-        help="Path to manifest.json.",
+        help="Path to config.yml (required).",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("."),
         metavar="DIR",
-        help="Output directory for generated files (default: current directory).",
-    )
-    parser.add_argument(
-        "--exclude",
-        action="append",
-        default=None,
-        metavar="PATTERN",
-        help=(
-            "Regex pattern matched against model names; matching models are excluded. "
-            "May be repeated to add multiple patterns (OR logic). "
-            "Example: --exclude '^stg_' --exclude '^int_'"
-        ),
+        help="Write db.graphql + lineage.json to DIR and exit (generate mode).",
     )
 
+    args = parser.parse_args(argv)
 
-def _run_generate(args) -> None:
-    if not args.catalog or not args.manifest:
-        print(
-            "Error: --catalog and --manifest are required for generation.",
-            file=sys.stderr,
-        )
+    if not args.config:
+        parser.print_help()
+        sys.exit(0)
+
+    from .config import load_config
+
+    try:
+        config = load_config(args.config)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
     try:
         project = extract_project(
-            catalog_path=args.catalog,
-            manifest_path=args.manifest,
-            exclude_patterns=args.exclude,
+            catalog_path=config.dbt.catalog,
+            manifest_path=config.dbt.manifest,
+            exclude_patterns=config.dbt.exclude or None,
         )
     except (FileNotFoundError, ValueError, KeyError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    output_dir: Path = args.output
+    if args.output:
+        _write_artifacts(project, args.output)
+        return
+
+    _run_serve(project, config)
+
+
+# ---------------------------------------------------------------------------
+# Generate mode
+# ---------------------------------------------------------------------------
+
+
+def _write_artifacts(project, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        _write_lineage(project, output_dir)
-        _write_graphql(project, output_dir)
-    except (ValueError, KeyError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-
-def _write_lineage(project, output_dir: Path) -> None:
     lineage = project.build_lineage_schema()
     if lineage.table_lineage or lineage.column_lineage:
         lineage_path = output_dir / "lineage.json"
         lineage_path.write_text(lineage.model_dump_json(by_alias=True, indent=2))
-        print(f"lineage.json          -> {lineage_path}")
+        print(f"lineage.json -> {lineage_path}")
 
-
-def _write_graphql(project, output_dir: Path) -> None:
     gj = format_graphql(project)
-
     db_graphql_path = output_dir / "db.graphql"
     db_graphql_path.write_text(gj.db_graphql)
-    print(f"db.graphql            -> {db_graphql_path}")
+    print(f"db.graphql   -> {db_graphql_path}")
 
 
 # ---------------------------------------------------------------------------
-# serve
+# Serve mode
 # ---------------------------------------------------------------------------
 
-_VALID_TARGETS = {"api", "mcp"}
 
+def _run_serve(project, config) -> None:
+    from .monitoring import configure_monitoring
 
-def _add_serve_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--target",
-        default="api",
-        metavar="TARGET",
-        help=(
-            "Comma-separated list of interfaces to serve: api, mcp, or api,mcp. "
-            "Default: api."
-        ),
-    )
-    # api args
-    parser.add_argument(
-        "--db-graphql",
-        type=Path,
-        metavar="PATH",
-        help="Path to db.graphql SDL file (required for target=api).",
-    )
-    # shared / mcp args
-    parser.add_argument(
-        "--config",
-        type=Path,
-        metavar="PATH",
-        help="Path to config.yml (required for target=api; optional for mcp).",
-    )
-    parser.add_argument(
-        "--catalog",
-        type=Path,
-        metavar="PATH",
-        help="Path to catalog.json (required for target=mcp).",
-    )
-    parser.add_argument(
-        "--manifest",
-        type=Path,
-        metavar="PATH",
-        help="Path to manifest.json (required for target=mcp).",
-    )
-    parser.add_argument(
-        "--exclude",
-        action="append",
-        default=None,
-        metavar="PATTERN",
-        help="Regex pattern to exclude models (mcp only). May be repeated.",
-    )
+    configure_monitoring(config.monitoring)
 
+    if config.serve is None:
+        print("Error: config.yml must have a 'serve:' section.", file=sys.stderr)
+        sys.exit(1)
 
-def _parse_targets(raw: str) -> set[str]:
-    targets = {t.strip().lower() for t in raw.split(",")}
-    unknown = targets - _VALID_TARGETS
-    if unknown:
+    if config.db is None:
         print(
-            f"Error: unknown target(s): {', '.join(sorted(unknown))}. "
-            f"Valid: {', '.join(sorted(_VALID_TARGETS))}.",
+            "Error: config.yml must have a 'db:' section for serve mode.",
             file=sys.stderr,
         )
         sys.exit(1)
-    return targets
 
+    serve_graphql = config.serve.graphql
+    serve_mcp = config.serve.mcp
 
-def _run_serve(args) -> None:
-    from .config import load_config
-    from .monitoring import configure_monitoring
+    if not serve_graphql and not serve_mcp:
+        print(
+            "Error: at least one of serve.graphql or serve.mcp must be true in config.yml.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    config = None
-    if args.config:
-        try:
-            config = load_config(args.config)
-        except Exception as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-    configure_monitoring(config.monitoring if config is not None else None)
-
-    targets = _parse_targets(args.target)
-
-    # Validate required args per target
-    if "api" in targets:
-        if not args.db_graphql:
-            print("Error: --db-graphql is required for target=api.", file=sys.stderr)
-            sys.exit(1)
-        if not args.config:
-            print("Error: --config is required for target=api.", file=sys.stderr)
-            sys.exit(1)
-    if "mcp" in targets:
-        if not args.catalog or not args.manifest:
-            print(
-                "Error: --catalog and --manifest are required for target=mcp.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    # Build shared db connection for mcp (if config provided)
-    db = None
-    from .config import EnrichmentConfig
-
-    enrichment = config.enrichment if config is not None else EnrichmentConfig()
-    if "mcp" in targets and config is not None:
+    mcp_http_app = None
+    if serve_mcp:
         from .compiler.connection import DatabaseManager
+        from .mcp.server import create_mcp_http_app
 
         db = DatabaseManager(config=config.db)
+        mcp_http_app = create_mcp_http_app(project, db=db, enrichment=config.enrichment)
 
-    # Start MCP in a daemon thread when serving both, so the API can block main
-    if "mcp" in targets:
-        try:
-            project = extract_project(
-                catalog_path=args.catalog,
-                manifest_path=args.manifest,
-                exclude_patterns=args.exclude,
-            )
-        except (FileNotFoundError, ValueError, KeyError) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-        if targets == {"mcp"}:
-            # MCP only — run directly in main thread
-            from .mcp.server import serve_mcp
-
-            serve_mcp(project, db=db, enrichment=enrichment)
-            return
-
-        # api + mcp — start MCP in a daemon thread
-        import threading
-        from .mcp.server import serve_mcp
-
-        t = threading.Thread(
-            target=serve_mcp,
-            args=(project,),
-            kwargs={"db": db, "enrichment": enrichment},
-            daemon=True,
-        )
-        t.start()
-
-    if "api" in targets:
+    if serve_graphql:
         from .api import serve
         from .api.policy import load_access_policy
+        from .formatter.graphql import build_registry
 
-        assert config is not None  # guaranteed by validation above
-
-        if config.serve is None:
-            print("Error: config.yml must have a 'serve:' section.", file=sys.stderr)
-            sys.exit(1)
+        registry = build_registry(project)
 
         access_policy = None
         if config.security.policy_path:
@@ -277,7 +136,12 @@ def _run_serve(args) -> None:
                 sys.exit(1)
 
         serve(
-            db_graphql_path=args.db_graphql,
+            registry=registry,
             config=config,
             access_policy=access_policy,
+            mcp_http_app=mcp_http_app,
         )
+    else:
+        from .api import serve_mcp_http
+
+        serve_mcp_http(mcp_http_app=mcp_http_app, config=config)

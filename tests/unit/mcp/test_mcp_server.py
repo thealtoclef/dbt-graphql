@@ -1,7 +1,6 @@
 """Tests for MCP tool outputs (McpTools class)."""
 
 import asyncio
-import pytest
 from pathlib import Path
 
 from dbt_graphql.pipeline import extract_project
@@ -141,7 +140,6 @@ class TestExecuteQuery:
 
 class TestMcpServerRegistration:
     def test_create_server_does_not_crash(self):
-        pytest.importorskip("fastmcp")
         from dbt_graphql.mcp.server import create_mcp_server
 
         project = extract_project(CATALOG, MANIFEST)

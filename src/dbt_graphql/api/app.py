@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import contextlib
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from ariadne import make_executable_schema
 from ariadne.asgi import GraphQL
@@ -13,7 +13,7 @@ from starlette.routing import Mount
 from ..cache import CacheConfig, close_cache, setup_cache
 from ..compiler.connection import DatabaseManager
 from ..config import AppConfig, DbConfig, JWTConfig
-from ..formatter.schema import TableRegistry, load_db_graphql
+from ..formatter.schema import TableRegistry
 from .auth import auth_on_error, build_auth_backend
 from .monitoring import (
     build_graphql_http_handler,
@@ -71,20 +71,20 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
 
 def create_app(
     *,
-    db_graphql_path: str | Path,
+    registry: TableRegistry,
     db_url: str | None = None,
     config: DbConfig | None = None,
     access_policy: AccessPolicy | None = None,
     cache_config: CacheConfig | None = None,
     jwt_config: JWTConfig,
+    mcp_http_app=None,
 ) -> Starlette:
-    """Build a Starlette app with Ariadne GraphQL mounted at ``/graphql``.
+    """Build a Starlette app with GraphQL at ``/graphql`` and optionally MCP at ``/mcp``.
 
     ``cache_config=None`` disables the result cache entirely — every
     request goes through to the warehouse. Pass an explicit
     ``CacheConfig()`` to opt into the default result cache + singleflight.
     """
-    _, registry = load_db_graphql(db_graphql_path)
     db = DatabaseManager(db_url=db_url, config=config)
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
 
@@ -108,23 +108,31 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
-        logger.info("connecting to database")
-        await db.connect()
-        instrument_sqlalchemy(db._engine)
-        if cache_config is not None:
-            setup_cache(cache_config)
-        logger.info("app ready — serving GraphQL at /graphql")
-        yield
-        if cache_config is not None:
-            await close_cache()
-        if owned_http is not None:
-            await owned_http.aclose()
-        await db.close()
-        logger.info("database connection closed")
+        async with contextlib.AsyncExitStack() as stack:
+            if mcp_http_app is not None:
+                await stack.enter_async_context(mcp_http_app.lifespan(_app))
+            logger.info("connecting to database")
+            await db.connect()
+            instrument_sqlalchemy(db._engine)
+            if cache_config is not None:
+                setup_cache(cache_config)
+            endpoints = "/graphql" + (" + /mcp" if mcp_http_app is not None else "")
+            logger.info("app ready — serving {}", endpoints)
+            yield
+            if cache_config is not None:
+                await close_cache()
+            if owned_http is not None:
+                await owned_http.aclose()
+            await db.close()
+            logger.info("database connection closed")
+
+    routes = [Mount("/graphql", graphql_app)]
+    if mcp_http_app is not None:
+        routes.append(Mount("/mcp", mcp_http_app))
 
     app = Starlette(
         lifespan=lifespan,
-        routes=[Mount("/graphql", graphql_app)],
+        routes=routes,
         middleware=[
             Middleware(
                 AuthenticationMiddleware,
@@ -138,13 +146,15 @@ def create_app(
 
 
 _asgi_app: Starlette | None = None
+_mcp_asgi_app: Starlette | None = None
 
 
 def serve(
     *,
-    db_graphql_path: str | Path,
+    registry: TableRegistry,
     config: AppConfig,
     access_policy: AccessPolicy | None = None,
+    mcp_http_app=None,
 ) -> None:
     """Create and run the app with granian."""
     from granian import Granian
@@ -156,11 +166,12 @@ def serve(
 
     global _asgi_app
     _asgi_app = create_app(
-        db_graphql_path=db_graphql_path,
+        registry=registry,
         config=config.db,
         access_policy=access_policy,
         cache_config=config.cache,
         jwt_config=config.security.jwt,
+        mcp_http_app=mcp_http_app,
     )
     host = config.serve.host
     port = config.serve.port
@@ -168,6 +179,41 @@ def serve(
     logger.info("listening on http://{}:{}", host, port)
     Granian(
         target=f"{__name__}:_asgi_app",
+        address=host,
+        port=port,
+        interface=Interfaces.ASGI,
+        log_level=log_level,
+    ).serve()
+
+
+def serve_mcp_http(*, mcp_http_app, config: AppConfig | None = None) -> None:
+    """Serve MCP as a standalone HTTP app (no GraphQL) using Granian."""
+    from granian import Granian
+    from granian.constants import Interfaces
+    from granian.log import LogLevels
+
+    @asynccontextmanager
+    async def lifespan(app: Starlette):
+        async with mcp_http_app.lifespan(app):
+            logger.info("MCP server ready at /mcp")
+            yield
+
+    global _mcp_asgi_app
+    _mcp_asgi_app = Starlette(
+        lifespan=lifespan,
+        routes=[Mount("/mcp", mcp_http_app)],
+    )
+    instrument_starlette(_mcp_asgi_app)
+
+    host = config.serve.host if config and config.serve else "0.0.0.0"
+    port = config.serve.port if config and config.serve else 8000
+    log_level = (
+        LogLevels(config.monitoring.logs.level.lower()) if config else LogLevels.info
+    )
+
+    logger.info("MCP server listening on http://{}:{}/mcp", host, port)
+    Granian(
+        target=f"{__name__}:_mcp_asgi_app",
         address=host,
         port=port,
         interface=Interfaces.ASGI,

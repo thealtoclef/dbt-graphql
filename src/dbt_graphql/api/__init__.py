@@ -1,11 +1,8 @@
-"""GraphQL API server (Starlette + Ariadne + Granian).
-
-Requires the ``api`` extra: ``pip install dbt-graphql[api]``
-"""
+"""GraphQL API server (Starlette + Ariadne + Granian)."""
 
 
 def __getattr__(name):
-    if name in ("create_app", "serve"):
+    if name in ("create_app", "serve", "serve_mcp_http"):
         from . import app
 
         return getattr(app, name)

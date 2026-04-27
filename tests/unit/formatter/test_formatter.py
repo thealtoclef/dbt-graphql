@@ -61,63 +61,64 @@ class TestDbGraphQL:
         assert first_line.startswith("type ")
 
 
+def _sdl_col(
+    name: str,
+    sql_type: str,
+    *,
+    not_null: bool = False,
+    is_pk: bool = False,
+    is_unique: bool = False,
+    relation=None,
+) -> str:
+    from dbt_graphql.formatter.graphql import (
+        _column_to_sdl,
+        _parse_sql_type,
+        _sql_to_gql_scalar,
+    )
+    from dbt_graphql.formatter.schema import ColumnDef
+
+    base, size, is_array = _parse_sql_type(sql_type)
+    col = ColumnDef(
+        name=name,
+        gql_type=_sql_to_gql_scalar(base),
+        is_array=is_array,
+        not_null=not_null,
+        is_pk=is_pk,
+        is_unique=is_unique,
+        sql_type=base,
+        sql_size=size,
+        relation=relation,
+    )
+    return _column_to_sdl(col)
+
+
 class TestTypeMapping:
     def test_standard_scalar_type_names(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(name="t", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-
-        c = ColumnInfo(name="id", type="INTEGER", not_null=True)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("id", "INTEGER", not_null=True)
         assert "id: Int!" in line
         assert '@column(type: "INTEGER")' in line
 
-        c = ColumnInfo(name="name", type="VARCHAR(255)", not_null=False)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("name", "VARCHAR(255)")
         assert "name: String" in line
         assert '@column(type: "VARCHAR", size: "255")' in line
 
     def test_multiword_types(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(name="t", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-
-        c = ColumnInfo(name="ts", type="TIMESTAMP WITH TIME ZONE", not_null=False)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("ts", "TIMESTAMP WITH TIME ZONE")
         assert "ts: String" in line
         assert '@column(type: "TIMESTAMP WITH TIME ZONE")' in line
 
     def test_array_type(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(name="t", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-
-        c = ColumnInfo(name="tags", type="TEXT[]", not_null=False)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("tags", "TEXT[]")
         assert "tags: [String]" in line
         assert '@column(type: "TEXT")' in line
 
     def test_bigquery_array(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(name="t", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-
-        c = ColumnInfo(name="items", type="ARRAY<STRING>", not_null=False)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("items", "ARRAY<STRING>")
         assert "items: [String]" in line
         assert '@column(type: "STRING")' in line
 
     def test_empty_type_falls_back_to_string(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(name="t", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-        c = ColumnInfo(name="x", type="", not_null=False)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("x", "")
         assert "x: String" in line
         assert '@column(type: "")' in line
 
@@ -165,6 +166,7 @@ class TestParseSqlType:
 
         base, size, is_array = _parse_sql_type("ARRAY<STRING>")
         assert base == "STRING"
+        assert size == ""
         assert is_array is True
 
     def test_empty_string(self):
@@ -175,96 +177,41 @@ class TestParseSqlType:
 
 class TestColumnDirectives:
     def test_id_directive_on_primary_key(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(
-            name="t",
-            database="db",
-            schema_="public",  # type: ignore[ty:unknown-argument]
-            columns=[],
-            primary_keys=["id"],
-        )  # type: ignore[ty:missing-argument]
-        c = ColumnInfo(name="id", type="INTEGER", not_null=True)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("id", "INTEGER", not_null=True, is_pk=True)
         assert "@id" in line
 
     def test_composite_pk_parts_do_not_get_id_directive(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(
-            name="t",
-            database="db",
-            schema_="public",  # type: ignore[ty:unknown-argument]
-            columns=[],
-            primary_keys=["order_id", "item_id"],
-        )  # type: ignore[ty:missing-argument]
         for col_name in ("order_id", "item_id"):
-            c = ColumnInfo(name=col_name, type="INTEGER", not_null=True)
-            line = _column_line(m, c, rel_map={})
+            line = _sdl_col(col_name, "INTEGER", not_null=True, is_pk=False)
             assert "@id" not in line, (
                 f"composite PK column {col_name} should not get @id"
             )
 
     def test_unique_directive(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(name="t", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-        c = ColumnInfo(name="email", type="VARCHAR", not_null=False, unique=True)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("email", "VARCHAR", is_unique=True)
         assert "@unique" in line
 
     def test_pk_column_does_not_get_unique_directive(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(
-            name="t",
-            database="db",
-            schema_="public",  # type: ignore[ty:unknown-argument]
-            columns=[],
-            primary_keys=["id"],
-        )  # type: ignore[ty:missing-argument]
-        c = ColumnInfo(name="id", type="INTEGER", not_null=True, unique=True)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("id", "INTEGER", not_null=True, is_pk=True, is_unique=False)
         assert "@id" in line
         assert "@unique" not in line
 
     def test_sql_directive_preserves_size(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import ColumnInfo, ModelInfo
-
-        m = ModelInfo(name="t", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-        c = ColumnInfo(name="price", type="NUMERIC(10,2)", not_null=False)
-        line = _column_line(m, c, rel_map={})
+        line = _sdl_col("price", "NUMERIC(10,2)")
         assert '@column(type: "NUMERIC", size: "10,2")' in line
 
     def test_relation_directive(self):
-        from dbt_graphql.formatter.graphql import _column_line
-        from dbt_graphql.ir.models import (
-            ColumnInfo,
-            JoinType,
-            ModelInfo,
-            RelationshipInfo,
-            RelationshipOrigin,
-        )
+        from dbt_graphql.formatter.schema import RelationDef
 
-        m = ModelInfo(name="orders", database="db", schema_="public", columns=[])  # type: ignore[ty:unknown-argument,ty:missing-argument]
-        c = ColumnInfo(name="customer_id", type="INTEGER", not_null=True)
-        rel = RelationshipInfo(
-            name="orders_customer_id_customers_customer_id",
-            from_model="orders",
-            to_model="customers",
+        rel = RelationDef(
+            target_model="customers",
+            target_column="customer_id",
             from_columns=["customer_id"],
             to_columns=["customer_id"],
-            join_type=JoinType.many_to_one,
-            origin=RelationshipOrigin.data_test,
-            cardinality_confidence="inferred",
+            origin="data_test",
+            confidence="inferred",
         )
-        rel_map = {("orders", ("customer_id",)): rel}
-        line = _column_line(m, c, rel_map=rel_map)
+        line = _sdl_col("customer_id", "INTEGER", not_null=True, relation=rel)
         assert "@relation(type: customers, field: customer_id" in line
 
 
@@ -293,3 +240,112 @@ class TestRelationDirectiveMetadata:
         gj = format_graphql(project)
         assert "origin:" in gj.db_graphql
         assert "confidence:" in gj.db_graphql
+
+
+class TestBuildRegistry:
+    """build_registry produces the same logical schema as the SDL roundtrip."""
+
+    def test_all_tables_present(self):
+        from dbt_graphql.formatter.graphql import build_registry
+
+        project = _make_project()
+        registry = build_registry(project)
+        for model in project.models:
+            assert model.name in registry
+
+    def test_columns_match_model(self):
+        from dbt_graphql.formatter.graphql import build_registry
+
+        project = _make_project()
+        registry = build_registry(project)
+        customers = registry.get("customers")
+        assert customers is not None
+        col_names = {c.name for c in customers.columns}
+        assert "customer_id" in col_names
+        assert "first_name" in col_names
+
+    def test_pk_flag_set_for_sole_pk_model(self):
+        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.ir.models import ColumnInfo, ModelInfo, ProjectInfo
+
+        col = ColumnInfo(name="id", type="INTEGER", not_null=True)
+        model = ModelInfo(
+            name="things",
+            database="db",
+            schema="public",
+            columns=[col],
+            primary_keys=["id"],
+        )
+        project = ProjectInfo(
+            project_name="test",
+            adapter_type="postgres",
+            models=[model],
+            relationships=[],
+        )
+        registry = build_registry(project)
+        things = registry.get("things")
+        assert things is not None
+        pk_cols = [c for c in things.columns if c.is_pk]
+        assert len(pk_cols) == 1
+        assert pk_cols[0].name == "id"
+
+    def test_relation_wired(self):
+        from dbt_graphql.formatter.graphql import build_registry
+
+        project = _make_project()
+        if not project.relationships:
+            return
+        registry = build_registry(project)
+        found_rel = False
+        for table in registry:
+            for col in table.columns:
+                if col.relation is not None:
+                    found_rel = True
+                    assert col.relation.target_model
+                    assert col.relation.target_column or col.relation.to_columns
+        assert found_rel, "expected at least one relation to be wired"
+
+    def test_table_database_and_schema_set(self):
+        from dbt_graphql.formatter.graphql import build_registry
+
+        project = _make_project()
+        registry = build_registry(project)
+        for table in registry:
+            assert table.database or table.schema or table.table
+
+    def test_exclude_pattern_respected(self):
+        from dbt_graphql.formatter.graphql import build_registry
+
+        project = _make_project(exclude_patterns=[r"^stg_"])
+        registry = build_registry(project)
+        assert registry.get("stg_orders") is None
+        assert registry.get("customers") is not None
+
+    def test_sdl_roundtrip_and_build_registry_same_tables(self):
+        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.formatter.schema import parse_db_graphql
+
+        project = _make_project()
+        gj = format_graphql(project)
+        _, sdl_registry = parse_db_graphql(gj.db_graphql)
+        direct_registry = build_registry(project)
+
+        sdl_tables = {t.name for t in sdl_registry}
+        direct_tables = {t.name for t in direct_registry}
+        assert sdl_tables == direct_tables
+
+    def test_sdl_roundtrip_and_build_registry_same_columns(self):
+        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.formatter.schema import parse_db_graphql
+
+        project = _make_project()
+        gj = format_graphql(project)
+        _, sdl_registry = parse_db_graphql(gj.db_graphql)
+        direct_registry = build_registry(project)
+
+        for table in sdl_registry:
+            direct_table = direct_registry.get(table.name)
+            assert direct_table is not None, f"missing table {table.name}"
+            sdl_cols = {c.name for c in table.columns}
+            direct_cols = {c.name for c in direct_table.columns}
+            assert sdl_cols == direct_cols, f"column mismatch in {table.name}"

@@ -6,13 +6,27 @@ Produces:
 Column types are mapped to standard GraphQL scalars (Int, Float, Boolean, String).
 The exact SQL type is always preserved in an ``@column(type: "...")`` directive so the
 compiler never needs to parse the GraphQL type name back into SQL.
+
+Flow:
+  ProjectInfo  ──build_registry()──▶  TableRegistry  (Python object, used by the server)
+                                            │
+                                   _registry_to_sdl()
+                                            │
+                                            ▼
+                                      db.graphql file  (--output mode)
+
+format_graphql() = build_registry() + _registry_to_sdl().  There is only one code path
+from dbt artifacts to the schema representation; --output just adds serialization.
 """
 
 from __future__ import annotations
 
 import re
-from ..ir.models import ColumnInfo, ProjectInfo, ModelInfo, RelationshipInfo
+
 from pydantic import BaseModel
+
+from ..ir.models import ProjectInfo, RelationshipInfo
+from .schema import ColumnDef, RelationDef, TableDef, TableRegistry
 
 # Explicit int aliases that don't end with "INT" (e.g. INTEGER, UINTEGER, INT64).
 _INT_EXACT = frozenset({"INT", "INT2", "INT4", "INT8", "INT64", "INTEGER", "UINTEGER"})
@@ -69,7 +83,122 @@ class GraphQLResult(BaseModel):
 
 def format_graphql(project: ProjectInfo) -> GraphQLResult:
     """Convert domain-neutral ProjectInfo into GraphQL db schema."""
-    return GraphQLResult(db_graphql=_build_db_graphql(project))
+    return GraphQLResult(db_graphql=_registry_to_sdl(build_registry(project)))
+
+
+def build_registry(project: ProjectInfo) -> TableRegistry:
+    """Build a TableRegistry from dbt project info.
+
+    This is the single code path from dbt artifacts to the Python schema
+    representation.  The server uses this object directly; --output mode
+    additionally serialises it to SDL via _registry_to_sdl().
+    """
+    rel_map = _build_rel_map(project.relationships)
+    tables: list[TableDef] = []
+
+    for model in project.models:
+        table = TableDef(
+            name=model.name,
+            database=model.database,
+            schema=model.schema_,
+            table=model.relation_name,
+        )
+        for col in model.columns:
+            base, size, is_array = _parse_sql_type(col.type)
+            scalar = _sql_to_gql_scalar(base)
+            is_sole_pk = len(model.primary_keys) == 1 and col.name in model.primary_keys
+            is_pk = is_sole_pk or col.is_primary_key
+            is_unique = col.unique and not is_sole_pk and not col.is_primary_key
+
+            col_def = ColumnDef(
+                name=col.name,
+                gql_type=scalar,
+                is_array=is_array,
+                not_null=col.not_null,
+                is_pk=is_pk,
+                is_unique=is_unique,
+                sql_type=base,
+                sql_size=size,
+            )
+            rel = rel_map.get((model.name, (col.name,)))
+            if rel:
+                single = len(rel.to_columns) == 1
+                col_def.relation = RelationDef(
+                    target_model=rel.to_model,
+                    target_column=rel.to_columns[0] if single else "",
+                    from_columns=[] if single else rel.from_columns,
+                    to_columns=rel.to_columns,
+                    origin=str(rel.origin),
+                    confidence=str(rel.cardinality_confidence),
+                    business_name=rel.business_name,
+                    description=rel.description,
+                )
+            table.columns.append(col_def)
+
+        tables.append(table)
+
+    return TableRegistry(tables)
+
+
+# ---------------------------------------------------------------------------
+# SDL serialisation  (TableRegistry → db.graphql string)
+# ---------------------------------------------------------------------------
+
+
+def _registry_to_sdl(registry: TableRegistry) -> str:
+    """Serialise a TableRegistry to db.graphql SDL format."""
+    blocks = [_table_to_sdl(t) for t in registry]
+    return "\n".join(blocks).rstrip() + "\n"
+
+
+def _table_to_sdl(table: TableDef) -> str:
+    directive = (
+        f'@table(database: "{table.database}", schema: "{table.schema}",'
+        f' name: "{table.table}")'
+    )
+    lines = [f"type {table.name} {directive} {{"]
+    for col in table.columns:
+        lines.append("  " + _column_to_sdl(col))
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _column_to_sdl(col: ColumnDef) -> str:
+    gql_type = f"[{col.gql_type}]" if col.is_array else col.gql_type
+    if col.not_null:
+        gql_type += "!"
+
+    sql_args = f'type: "{col.sql_type}"'
+    if col.sql_size:
+        sql_args += f', size: "{col.sql_size}"'
+
+    directives: list[str] = [f"@column({sql_args})"]
+    if col.is_pk:
+        directives.append("@id")
+    if col.is_unique:
+        directives.append("@unique")
+
+    if col.relation:
+        r = col.relation
+        args = [f"type: {r.target_model}"]
+        if r.to_columns and len(r.to_columns) > 1:
+            args.append(f"fields: [{', '.join(r.from_columns)}]")
+            args.append(f"toFields: [{', '.join(r.to_columns)}]")
+        else:
+            args.append(f"field: {r.target_column}")
+        args.append(f"origin: {r.origin}")
+        args.append(f"confidence: {r.confidence}")
+        if r.business_name:
+            args.append(f'name: "{r.business_name}"')
+        if r.description:
+            args.append(f'description: "{r.description}"')
+        directives.append(f"@relation({', '.join(args)})")
+
+    line = f"{col.name}: {gql_type}"
+    dir_str = " ".join(directives)
+    if dir_str:
+        line += f" {dir_str}"
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -116,17 +245,8 @@ def _parse_sql_type(raw: str) -> tuple[str, str, bool]:
 
 
 # ---------------------------------------------------------------------------
-# db.graphql builder
+# Relationship map
 # ---------------------------------------------------------------------------
-
-
-def _build_db_graphql(project: ProjectInfo) -> str:
-    """Build a GraphQL SDL schema for all dbt models."""
-    rel_map = _build_rel_map(project.relationships)
-    blocks: list[str] = []
-    for model in project.models:
-        blocks.append(_type_block(model, rel_map))
-    return "\n".join(blocks).rstrip() + "\n"
 
 
 def _build_rel_map(
@@ -139,65 +259,3 @@ def _build_rel_map(
         key = (rel.from_model, tuple(rel.from_columns))
         rel_map[key] = rel
     return rel_map
-
-
-def _type_block(
-    model: ModelInfo,
-    rel_map: dict[tuple[str, tuple[str, ...]], RelationshipInfo],
-) -> str:
-    """Build a GraphQL SDL type block for a dbt model."""
-    type_directives: list[str] = [
-        f'@table(database: "{model.database}", schema: "{model.schema_}", name: "{model.relation_name}")',
-    ]
-
-    header = f"type {model.name} " + " ".join(type_directives) + " {"
-
-    lines = [header]
-    for col in model.columns:
-        lines.append("  " + _column_line(model, col, rel_map))
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def _column_line(
-    model: ModelInfo,
-    col: ColumnInfo,
-    rel_map: dict[tuple[str, tuple[str, ...]], RelationshipInfo],
-) -> str:
-    base, size, is_array = _parse_sql_type(col.type)
-    scalar = _sql_to_gql_scalar(base)
-    gql_type = f"[{scalar}]" if is_array else scalar
-    if col.not_null:
-        gql_type += "!"
-
-    sql_args = f'type: "{base}"'
-    if size:
-        sql_args += f', size: "{size}"'
-    directives: list[str] = [f"@column({sql_args})"]
-    is_sole_pk = len(model.primary_keys) == 1 and col.name in model.primary_keys
-    if is_sole_pk or col.is_primary_key:
-        directives.append("@id")
-    if col.unique and not is_sole_pk and not col.is_primary_key:
-        directives.append("@unique")
-
-    rel = rel_map.get((model.name, (col.name,)))
-    if rel:
-        args = [f"type: {rel.to_model}"]
-        if len(rel.to_columns) == 1:
-            args.append(f"field: {rel.to_columns[0]}")
-        else:
-            args.append(f"fields: [{', '.join(rel.from_columns)}]")
-            args.append(f"toFields: [{', '.join(rel.to_columns)}]")
-        args.append(f"origin: {rel.origin}")
-        args.append(f"confidence: {rel.cardinality_confidence}")
-        if rel.business_name:
-            args.append(f'name: "{rel.business_name}"')
-        if rel.description:
-            args.append(f'description: "{rel.description}"')
-        directives.append(f"@relation({', '.join(args)})")
-
-    dir_str = " ".join(directives)
-    line = f"{col.name}: {gql_type}"
-    if dir_str:
-        line += f" {dir_str}"
-    return line

@@ -181,6 +181,67 @@ class TestConfigureMonitoring:
 
         mock_sink.assert_called_once()
 
+
+class TestTimed:
+    """timed() records histogram duration and counter on normal and error exit."""
+
+    def _make_instruments(self):
+        from unittest.mock import MagicMock
+
+        histogram = MagicMock()
+        counter = MagicMock()
+        return histogram, counter
+
+    def test_success_records_histogram_and_counter(self):
+        import asyncio
+        from dbt_graphql.monitoring import timed
+
+        histogram, counter = self._make_instruments()
+
+        async def _run():
+            async with timed(histogram, counter, {"op": "test"}):
+                pass
+
+        asyncio.run(_run())
+        histogram.record.assert_called_once()
+        call_attrs = histogram.record.call_args[0][1]
+        assert call_attrs["status"] == "success"
+        assert call_attrs["op"] == "test"
+        counter.add.assert_called_once_with(1, call_attrs)
+
+    def test_error_records_error_status(self):
+        import asyncio
+        from dbt_graphql.monitoring import timed
+
+        histogram, counter = self._make_instruments()
+
+        async def _run():
+            async with timed(histogram, counter, {"op": "fail"}):
+                raise ValueError("boom")
+
+        with __import__("pytest").raises(ValueError, match="boom"):
+            asyncio.run(_run())
+
+        histogram.record.assert_called_once()
+        call_attrs = histogram.record.call_args[0][1]
+        assert call_attrs["status"] == "error"
+        counter.add.assert_called_once_with(1, call_attrs)
+
+    def test_histogram_records_positive_duration(self):
+        import asyncio
+        import time
+        from dbt_graphql.monitoring import timed
+
+        histogram, counter = self._make_instruments()
+
+        async def _run():
+            async with timed(histogram, counter, {}):
+                time.sleep(0.01)
+
+        asyncio.run(_run())
+        duration_ms = histogram.record.call_args[0][0]
+        assert duration_ms >= 10
+
     def test_no_otlp_log_sink_without_endpoint(self):
         mocks = _make_otel_mocks()
         with patch.dict("sys.modules", mocks):

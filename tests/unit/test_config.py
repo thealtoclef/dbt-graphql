@@ -1,5 +1,7 @@
 """Unit tests for config loading and pydantic-settings env var overrides."""
 
+import shutil
+
 import pytest
 from pathlib import Path
 
@@ -12,7 +14,12 @@ def _write_config(tmp_path: Path, content: str) -> Path:
     return p
 
 
-_MINIMAL_YAML = """\
+_FIXTURES = Path(__file__).parent.parent / "fixtures" / "dbt-artifacts"
+
+_MINIMAL_YAML = f"""\
+dbt:
+  catalog: {_FIXTURES / "catalog.json"}
+  manifest: {_FIXTURES / "manifest.json"}
 db:
   type: postgres
   host: localhost
@@ -23,6 +30,7 @@ db:
 class TestLoadConfig:
     def test_reads_db_fields(self, tmp_path):
         cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
+        assert cfg.db is not None
         assert cfg.db.type == "postgres"
         assert cfg.db.host == "localhost"
         assert cfg.db.dbname == "mydb"
@@ -58,6 +66,7 @@ class TestEnvVarOverrides:
     def test_env_overrides_db_host(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DBT_GRAPHQL__DB__HOST", "envhost")
         cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
+        assert cfg.db is not None
         assert cfg.db.host == "envhost"
 
     def test_env_overrides_monitoring_log_level(self, tmp_path, monkeypatch):
@@ -112,3 +121,76 @@ class TestProtocolValidation:
     def test_logs_endpoint_without_protocol_raises(self):
         with pytest.raises(ValueError, match="protocol is required"):
             LogsConfig(endpoint="http://collector:4317")
+
+
+class TestDbtConfig:
+    def test_catalog_and_manifest_fields(self, tmp_path):
+        cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
+        assert cfg.dbt.catalog == _FIXTURES / "catalog.json"
+        assert cfg.dbt.manifest == _FIXTURES / "manifest.json"
+
+    def test_exclude_defaults_to_empty_list(self, tmp_path):
+        cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
+        assert cfg.dbt.exclude == []
+
+    def test_exclude_list_from_yaml(self, tmp_path):
+        yaml = (
+            f"dbt:\n"
+            f"  catalog: {_FIXTURES / 'catalog.json'}\n"
+            f"  manifest: {_FIXTURES / 'manifest.json'}\n"
+            f"  exclude:\n    - '^stg_'\n    - '^int_'\n"
+        )
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert "^stg_" in cfg.dbt.exclude
+        assert "^int_" in cfg.dbt.exclude
+
+    def test_relative_paths_resolved_from_config_dir(self, tmp_path):
+        catalog_dst = tmp_path / "catalog.json"
+        manifest_dst = tmp_path / "manifest.json"
+        shutil.copy(_FIXTURES / "catalog.json", catalog_dst)
+        shutil.copy(_FIXTURES / "manifest.json", manifest_dst)
+
+        cfg_path = _write_config(
+            tmp_path, "dbt:\n  catalog: catalog.json\n  manifest: manifest.json\n"
+        )
+        cfg = load_config(cfg_path)
+        assert cfg.dbt.catalog == catalog_dst
+        assert cfg.dbt.manifest == manifest_dst
+
+    def test_absolute_paths_unchanged(self, tmp_path):
+        cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
+        assert cfg.dbt.catalog.is_absolute()
+        assert cfg.dbt.manifest.is_absolute()
+
+
+class TestServeConfig:
+    def test_graphql_and_mcp_default_false(self, tmp_path):
+        yaml = _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert cfg.serve is not None
+        assert cfg.serve.graphql is False
+        assert cfg.serve.mcp is False
+
+    def test_serve_graphql_true(self, tmp_path):
+        yaml = (
+            _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n  graphql: true\n"
+        )
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert cfg.serve is not None
+        assert cfg.serve.graphql is True
+        assert cfg.serve.mcp is False
+
+    def test_serve_mcp_true(self, tmp_path):
+        yaml = _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n  mcp: true\n"
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert cfg.serve is not None
+        assert cfg.serve.mcp is True
+        assert cfg.serve.graphql is False
+
+    def test_db_optional(self, tmp_path):
+        yaml = (
+            f"dbt:\n  catalog: {_FIXTURES / 'catalog.json'}\n"
+            f"  manifest: {_FIXTURES / 'manifest.json'}\n"
+        )
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert cfg.db is None

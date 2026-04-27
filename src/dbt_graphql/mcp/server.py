@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any, Awaitable, Callable
 
 
 from .discovery import SchemaDiscovery
 
-# OTel metrics instruments for MCP (initialized lazily)
+# OTel instruments for MCP (initialized lazily)
 _meter = None
 _tool_call_counter = None
 _tool_duration_histogram = None
 
 
 def _get_mcp_metrics_instruments():
-    """Get or create OTel metric instruments for MCP tools."""
     global _meter, _tool_call_counter, _tool_duration_histogram
 
     if _meter is None:
@@ -37,32 +35,27 @@ def _get_mcp_metrics_instruments():
 
 
 def _instrument_tool(tool_name: str, func: Callable) -> Callable:
-    """Wrap an MCP tool function to record metrics.
+    """Wrap an MCP tool with metrics (counter + duration histogram).
 
-    Note: FastMCP doesn't support functions with *args, so we must preserve
-    the original function's signature via functools.wraps.
+    FastMCP inspects function signatures to generate the tool schema, so we
+    preserve the original signature on the wrapper via functools.wraps +
+    explicit __signature__ assignment.
     """
     import functools
     import inspect
+
+    from ..monitoring import timed
 
     counter, histogram = _get_mcp_metrics_instruments()
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
-        start_time = time.perf_counter()
-        attributes = {"tool.name": tool_name}
-
-        try:
+        async with timed(histogram, counter, {"tool.name": tool_name}):
             result = func(*args, **kwargs)
             if isinstance(result, Awaitable):
                 result = await result
             return result
-        finally:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            counter.add(1, attributes)
-            histogram.record(duration_ms, attributes)
 
-    # Preserve the original function's signature so FastMCP can inspect it
     sig = inspect.signature(func)
     wrapper.__signature__ = sig  # type: ignore[attr-defined]
 
@@ -240,7 +233,6 @@ def create_mcp_server(project, db=None, enrichment=None):
     return mcp
 
 
-def serve_mcp(project, db=None, enrichment=None) -> None:
-    """Start the MCP server with stdio transport."""
-    mcp = create_mcp_server(project, db=db, enrichment=enrichment)
-    mcp.run(transport="stdio")
+def create_mcp_http_app(project, db=None, enrichment=None):
+    """Return a FastMCP Starlette sub-app using Streamable HTTP transport."""
+    return create_mcp_server(project, db=db, enrichment=enrichment).http_app()
