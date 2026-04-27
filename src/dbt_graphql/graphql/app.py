@@ -80,6 +80,7 @@ class GraphQLBundle:
 
     asgi: GraphQL
     schema: GraphQLSchema
+    registry: TableRegistry
     build_context: Any  # callable: (jwt_payload, request|None) -> dict
     db: DatabaseManager
     policy_engine: PolicyEngine | None
@@ -122,6 +123,7 @@ def create_graphql_subapp(
     return GraphQLBundle(
         asgi=asgi,
         schema=gql_schema,
+        registry=registry,
         build_context=build_context,
         db=db,
         policy_engine=policy_engine,

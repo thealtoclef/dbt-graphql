@@ -46,9 +46,12 @@ There is no raw-SQL tool. `run_graphql` is the only data-read tool, by design �
 
 [`src/dbt_graphql/mcp/discovery.py`](../src/dbt_graphql/mcp/discovery.py)
 
-- Builds a **bidirectional adjacency list** at construction time: every `RelationshipInfo` becomes two edges (outgoing from `from_model`, incoming to `to_model`).
-- `find_path()` runs BFS, early-terminating when a longer path would extend. Returns *all* shortest paths, not just one — an agent benefits from seeing alternatives (`orders → customers` vs. `orders → payments → customers`).
+`SchemaDiscovery` derives **structure** (tables, columns, types, FK relationships) from the same `TableRegistry` that GraphQL serves. The dbt `ProjectInfo` is layered on as **enrichment metadata only** — table/column descriptions and declared enum values that don't survive into the GraphQL SDL. This means MCP cannot expose a table or column that GraphQL won't: the registry is the single contract.
+
+- Builds a **bidirectional adjacency list** at construction time by walking the registry: every `RelationDef` on a column becomes two edges (outgoing from the owning table, incoming on the target).
+- `find_path()` runs BFS level-by-level, returning *all* shortest paths so the agent can choose between e.g. `orders → customers` and `orders → payments → customers`.
 - `describe_table()` live-enriches results when a DB connection is available: `row_count`, `sample_rows` (3 rows), and per-column `value_summary` (enum, date range, or distinct values depending on SQL type and cardinality). Column enrichment respects an `EnrichmentConfig.budget` cap (default: 20 queries per call). Override via `enrichment.budget` in config or the `DBT_GRAPHQL__ENRICHMENT__BUDGET` env var.
+- `build_query()` validates the candidate query against the live GraphQL schema (`graphql.validate`) before returning, so an agent never receives a string that won't parse.
 
 ---
 

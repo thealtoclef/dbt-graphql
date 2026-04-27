@@ -139,12 +139,7 @@ def _enforce_strict_columns(
     policy: ResolvedPolicy,
 ) -> None:
     """Raise ``ColumnAccessDenied`` if any requested column is unauthorized."""
-    denied = []
-    for col in requested:
-        if policy.allowed_columns is not None and col not in policy.allowed_columns:
-            denied.append(col)
-        elif col in policy.blocked_columns:
-            denied.append(col)
+    denied = [col for col in requested if not policy.is_column_allowed(col)]
     if denied:
         raise ColumnAccessDenied(table_name, denied)
 

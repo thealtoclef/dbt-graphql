@@ -13,10 +13,25 @@ from dbt_graphql.mcp.discovery import SchemaDiscovery
 from dbt_graphql.mcp.server import McpTools
 
 
+def _discovery(adapter_env, **kwargs) -> SchemaDiscovery:
+    return SchemaDiscovery(
+        adapter_env.registry,
+        project=adapter_env.project,
+        db=adapter_env.db,
+        **kwargs,
+    )
+
+
+def _tools(adapter_env) -> McpTools:
+    return McpTools(
+        adapter_env.registry, project=adapter_env.project, db=adapter_env.db
+    )
+
+
 class TestSchemaDiscoveryLiveEnrichment:
     @pytest.mark.asyncio
     async def test_row_count_is_positive(self, adapter_env):
-        d = SchemaDiscovery(adapter_env.project, db=adapter_env.db)
+        d = _discovery(adapter_env)
         detail = await d.describe_table("orders")
         assert detail is not None
         assert isinstance(detail.row_count, int)
@@ -24,7 +39,7 @@ class TestSchemaDiscoveryLiveEnrichment:
 
     @pytest.mark.asyncio
     async def test_sample_rows_returned(self, adapter_env):
-        d = SchemaDiscovery(adapter_env.project, db=adapter_env.db)
+        d = _discovery(adapter_env)
         detail = await d.describe_table("orders")
         assert detail is not None
         assert len(detail.sample_rows) == 3
@@ -32,7 +47,7 @@ class TestSchemaDiscoveryLiveEnrichment:
 
     @pytest.mark.asyncio
     async def test_status_is_enum_summary(self, adapter_env):
-        d = SchemaDiscovery(adapter_env.project, db=adapter_env.db)
+        d = _discovery(adapter_env)
         detail = await d.describe_table("orders")
         assert detail is not None
         status = next(c for c in detail.columns if c.name == "status")
@@ -48,7 +63,7 @@ class TestSchemaDiscoveryLiveEnrichment:
 
     @pytest.mark.asyncio
     async def test_low_cardinality_column_gets_distinct_summary(self, adapter_env):
-        d = SchemaDiscovery(adapter_env.project, db=adapter_env.db)
+        d = _discovery(adapter_env)
         detail = await d.describe_table("stg_payments")
         assert detail is not None
         pm = next((c for c in detail.columns if c.name == "payment_method"), None)
@@ -62,18 +77,14 @@ class TestSchemaDiscoveryLiveEnrichment:
 
     @pytest.mark.asyncio
     async def test_cache_returns_same_object(self, adapter_env):
-        d = SchemaDiscovery(adapter_env.project, db=adapter_env.db)
+        d = _discovery(adapter_env)
         first = await d.describe_table("customers")
         second = await d.describe_table("customers")
         assert first is second
 
     @pytest.mark.asyncio
     async def test_budget_zero_skips_non_enum_column_queries(self, adapter_env):
-        d = SchemaDiscovery(
-            adapter_env.project,
-            db=adapter_env.db,
-            enrichment=EnrichmentConfig(budget=0),
-        )
+        d = _discovery(adapter_env, enrichment=EnrichmentConfig(budget=0))
         detail = await d.describe_table("stg_customers")
         assert detail is not None
         assert detail.row_count is not None
@@ -84,11 +95,7 @@ class TestSchemaDiscoveryLiveEnrichment:
 
     @pytest.mark.asyncio
     async def test_budget_limits_column_queries(self, adapter_env):
-        d = SchemaDiscovery(
-            adapter_env.project,
-            db=adapter_env.db,
-            enrichment=EnrichmentConfig(budget=2),
-        )
+        d = _discovery(adapter_env, enrichment=EnrichmentConfig(budget=2))
         detail = await d.describe_table("customers")
         assert detail is not None
         live_summaries = [
@@ -102,20 +109,20 @@ class TestSchemaDiscoveryLiveEnrichment:
 class TestMcpToolsLiveEnrichment:
     @pytest.mark.asyncio
     async def test_describe_table_response_has_row_count(self, adapter_env):
-        tools = McpTools(adapter_env.project, db=adapter_env.db)
+        tools = _tools(adapter_env)
         result = await tools.describe_table("orders")
         assert result.get("row_count") is not None
         assert result["row_count"] > 0
 
     @pytest.mark.asyncio
     async def test_describe_table_response_has_sample_rows(self, adapter_env):
-        tools = McpTools(adapter_env.project, db=adapter_env.db)
+        tools = _tools(adapter_env)
         result = await tools.describe_table("orders")
         assert len(result["sample_rows"]) == 3
 
     @pytest.mark.asyncio
     async def test_describe_table_enum_column_has_value_summary(self, adapter_env):
-        tools = McpTools(adapter_env.project, db=adapter_env.db)
+        tools = _tools(adapter_env)
         result = await tools.describe_table("orders")
         status = next(c for c in result["columns"] if c["name"] == "status")
         assert status["value_summary"] is not None
@@ -123,7 +130,7 @@ class TestMcpToolsLiveEnrichment:
 
     @pytest.mark.asyncio
     async def test_describe_table_column_has_value_summary_field(self, adapter_env):
-        tools = McpTools(adapter_env.project, db=adapter_env.db)
+        tools = _tools(adapter_env)
         result = await tools.describe_table("customers")
         for col in result["columns"]:
             assert "value_summary" in col

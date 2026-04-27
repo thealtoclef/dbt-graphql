@@ -140,7 +140,7 @@ dbt-graphql --config config.yml --output DIR   # export mode
 3. `build_registry()` builds `TableRegistry` from `ProjectInfo` — the Python object consumed by the serve layer.
 4. Mount transports under one Granian process:
    - GraphQL at `/graphql` (always).
-   - MCP at `/mcp` when `serve.mcp_enabled: true`. The MCP server shares the GraphQL bundle so `run_graphql` runs through the same engine and policy.
+   - MCP at `/mcp` when `serve.mcp_enabled: true`. The MCP server shares the GraphQL bundle: the `TableRegistry` drives schema discovery, the executable schema backs `run_graphql`, and the same `PolicyEngine` filters every tool's view. dbt artifacts contribute descriptions and enum metadata only.
 
 **Export mode** (`--output DIR`):
 Steps 1–2 only, then `_registry_to_sdl()` writes `db.graphql` and `build_lineage_schema()` writes `lineage.json` to `DIR`. No server is started.

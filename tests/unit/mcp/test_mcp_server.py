@@ -27,7 +27,8 @@ MANIFEST = FIXTURES_DIR / "manifest.json"
 
 def _make_tools() -> McpTools:
     project = extract_project(CATALOG, MANIFEST)
-    return McpTools(project)
+    registry = build_registry(project)
+    return McpTools(registry, project=project)
 
 
 class TestListTables:
@@ -152,7 +153,8 @@ class TestMcpServerRegistration:
         from dbt_graphql.mcp.server import create_mcp_server
 
         project = extract_project(CATALOG, MANIFEST)
-        mcp = create_mcp_server(project)
+        registry = build_registry(project)
+        mcp = create_mcp_server(registry, project=project)
         assert mcp is not None
 
 
@@ -193,7 +195,10 @@ def _customers_only_engine() -> PolicyEngine:
 
 def _make_policy_tools() -> McpTools:
     project = extract_project(CATALOG, MANIFEST)
-    return McpTools(project, policy_engine=_customers_only_engine())
+    registry = build_registry(project)
+    return McpTools(
+        registry, project=project, policy_engine=_customers_only_engine()
+    )
 
 
 class TestPolicyFiltering:
@@ -279,8 +284,7 @@ def _bundle_with(rows, *, access_policy: AccessPolicy | None = None):
 class TestRunGraphqlWithBundle:
     def test_executes_query_through_bundle(self):
         bundle = _bundle_with([{"customer_id": 1}, {"customer_id": 2}])
-        project = extract_project(CATALOG, MANIFEST)
-        tools = McpTools(project, bundle=bundle)
+        tools = McpTools(bundle.registry, bundle=bundle)
         result = asyncio.run(
             tools.run_graphql("query { customers { customer_id } }")
         )
@@ -289,8 +293,7 @@ class TestRunGraphqlWithBundle:
 
     def test_parse_error_returned_as_errors(self):
         bundle = _bundle_with([])
-        project = extract_project(CATALOG, MANIFEST)
-        tools = McpTools(project, bundle=bundle)
+        tools = McpTools(bundle.registry, bundle=bundle)
         result = asyncio.run(tools.run_graphql("query { nonexistent_table }"))
         assert "errors" in result
 
@@ -309,9 +312,8 @@ class TestRunGraphqlWithBundle:
             ]
         )
         bundle = _bundle_with([], access_policy=access_policy)
-        project = extract_project(CATALOG, MANIFEST)
         tools = McpTools(
-            project, bundle=bundle, policy_engine=bundle.policy_engine
+            bundle.registry, bundle=bundle, policy_engine=bundle.policy_engine
         )
         # ``orders`` is not in the policy → resolver raises TableAccessDenied,
         # which surfaces as a structured GraphQL error.

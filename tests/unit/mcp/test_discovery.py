@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 
+from dbt_graphql.formatter.graphql import build_registry
 from dbt_graphql.pipeline import extract_project
 from dbt_graphql.mcp.discovery import SchemaDiscovery
 from dbt_graphql.ir.models import (
@@ -26,7 +27,11 @@ MANIFEST = FIXTURES_DIR / "manifest.json"
 
 def _make_discovery():
     project = extract_project(CATALOG, MANIFEST)
-    return SchemaDiscovery(project)
+    return SchemaDiscovery(build_registry(project), project=project)
+
+
+def _discovery_from(project: ProjectInfo, **kwargs) -> SchemaDiscovery:
+    return SchemaDiscovery(build_registry(project), project=project, **kwargs)
 
 
 class TestListTables:
@@ -74,7 +79,7 @@ class TestDescribeTable:
         project = ProjectInfo(
             project_name="test", adapter_type="postgres", models=[model]
         )
-        d = SchemaDiscovery(project)
+        d = _discovery_from(project)
         detail = asyncio.run(d.describe_table("orders"))
         assert detail is not None
         status_col = next(c for c in detail.columns if c.name == "status")
@@ -128,12 +133,19 @@ def _make_col(name: str) -> ColumnInfo:
     return ColumnInfo(name=name, type="INTEGER")
 
 
-def _make_model(name: str) -> ModelInfo:
+def _make_model(name: str, *fk_cols: str) -> ModelInfo:
+    """Build a model with an ``id`` column plus optional FK columns.
+
+    Hand-rolled relationships need an actual column on the source model
+    or ``build_registry`` won't pick them up — the registry only carries
+    relations attached to a real column.
+    """
+    cols = [_make_col("id"), *(_make_col(c) for c in fk_cols)]
     return ModelInfo(
         name=name,
         database="db",
         schema="main",
-        columns=[_make_col("id")],
+        columns=cols,
     )
 
 
@@ -158,7 +170,12 @@ class TestFindPathDiamond:
     """
 
     def _diamond_discovery(self) -> SchemaDiscovery:
-        models = [_make_model(n) for n in ("A", "B", "C", "D")]
+        models = [
+            _make_model("A", "b_id", "c_id"),
+            _make_model("B", "d_id"),
+            _make_model("C", "d_id"),
+            _make_model("D"),
+        ]
         # A→B, A→C, B→D, C→D
         rels = [
             _make_rel("A", "b_id", "B", "id"),
@@ -172,7 +189,7 @@ class TestFindPathDiamond:
             models=models,
             relationships=rels,
         )
-        return SchemaDiscovery(project)
+        return _discovery_from(project)
 
     def test_returns_both_shortest_paths(self):
         d = self._diamond_discovery()
@@ -188,7 +205,12 @@ class TestFindPathDiamond:
 
     def test_no_path_between_disconnected_tables_returns_empty(self):
         # Two disconnected clusters: {A, B} and {C, D} — no path from A to D.
-        models = [_make_model(n) for n in ("A", "B", "C", "D")]
+        models = [
+            _make_model("A", "b_id"),
+            _make_model("B"),
+            _make_model("C", "d_id"),
+            _make_model("D"),
+        ]
         rels = [_make_rel("A", "b_id", "B", "id"), _make_rel("C", "d_id", "D", "id")]
         project = ProjectInfo(
             project_name="test",
@@ -196,7 +218,7 @@ class TestFindPathDiamond:
             models=models,
             relationships=rels,
         )
-        d = SchemaDiscovery(project)
+        d = _discovery_from(project)
         assert d.find_path("A", "D") == []
 
 
@@ -229,7 +251,7 @@ class TestEnrichmentBudget:
         model = ModelInfo(name="t", database="db", schema="main", columns=cols)
         project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
         enrichment = EnrichmentConfig(budget=0)
-        d = SchemaDiscovery(project, db=db, enrichment=enrichment)
+        d = _discovery_from(project, db=db, enrichment=enrichment)
         detail = asyncio.run(d.describe_table("t"))
         assert detail is not None
         # row_count + sample_rows are NOT counted against budget
@@ -250,7 +272,7 @@ class TestEnrichmentBudget:
         model = ModelInfo(name="t", database="db", schema="main", columns=cols)
         project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
         enrichment = EnrichmentConfig(budget=3)
-        d = SchemaDiscovery(project, db=db, enrichment=enrichment)
+        d = _discovery_from(project, db=db, enrichment=enrichment)
         asyncio.run(d.describe_table("t"))
         col_queries = [q for q in calls if "DISTINCT" in q or "MIN(" in q]
         assert len(col_queries) == 3
@@ -261,7 +283,7 @@ class TestEnrichmentBudget:
         cols = [ColumnInfo(name="x", type="VARCHAR")]
         model = ModelInfo(name="t", database="db", schema="main", columns=cols)
         project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
-        d = SchemaDiscovery(project, db=db)
+        d = _discovery_from(project, db=db)
         asyncio.run(d.describe_table("t"))
         calls.clear()
         asyncio.run(d.describe_table("t"))
@@ -296,7 +318,7 @@ class TestDistinctValuesKeyMismatch:
         project = ProjectInfo(
             project_name="p", adapter_type="postgresql", models=[model]
         )
-        d = SchemaDiscovery(project, db=db)
+        d = _discovery_from(project, db=db)
         detail = asyncio.run(d.describe_table("t"))
         assert detail is not None
         vs = detail.columns[0].value_summary

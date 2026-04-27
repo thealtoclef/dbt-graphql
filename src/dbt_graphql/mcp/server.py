@@ -15,11 +15,12 @@ import functools
 import json
 from typing import Any, Awaitable, Callable
 
-from graphql import graphql as graphql_execute
+from graphql import graphql as graphql_execute, parse, validate
 
+from ..formatter.schema import TableRegistry
 from ..graphql.app import GraphQLBundle
 from ..graphql.auth import JWTPayload
-from ..graphql.policy import PolicyEngine, PolicyError
+from ..graphql.policy import PolicyEngine, PolicyError, ResolvedPolicy
 from .discovery import SchemaDiscovery
 
 
@@ -117,16 +118,19 @@ class McpTools:
 
     def __init__(
         self,
-        project,
+        registry: TableRegistry,
         *,
         bundle: GraphQLBundle | None = None,
+        project=None,
         db=None,
         policy_engine: PolicyEngine | None = None,
         enrichment=None,
     ) -> None:
         if db is None and bundle is not None:
             db = bundle.db
-        self._discovery = SchemaDiscovery(project, db=db, enrichment=enrichment)
+        self._discovery = SchemaDiscovery(
+            registry, project=project, db=db, enrichment=enrichment
+        )
         self._bundle = bundle
         self._policy_engine = policy_engine
 
@@ -149,14 +153,13 @@ class McpTools:
         except PolicyError:
             return False
 
-    def _column_visible(self, resolved, column_name: str) -> bool:
-        if resolved is None:
-            return True
-        if resolved.allowed_columns is not None and column_name not in resolved.allowed_columns:
-            return False
-        if column_name in resolved.blocked_columns:
-            return False
-        return True
+    def _column_visible(
+        self, resolved: ResolvedPolicy | None, column_name: str
+    ) -> bool:
+        # ``resolved is None`` means no policy engine configured (dev mode):
+        # show everything. Otherwise delegate to the single source of truth
+        # on ResolvedPolicy so MCP and compile_query agree on visibility.
+        return resolved is None or resolved.is_column_allowed(column_name)
 
     # ---- tools ----
 
@@ -291,7 +294,12 @@ class McpTools:
         }
 
     def build_query(self, table: str, fields: list[str]) -> dict[str, Any]:
-        """Generate a GraphQL query string. Filters fields by policy when configured."""
+        """Generate a GraphQL query string for ``table``.
+
+        Filters fields by policy when configured, then — when a bundle is
+        available — validates the candidate against the live GraphQL
+        schema so the agent never receives a string that won't parse.
+        """
         ctx = _current_jwt()
         try:
             resolved = self._resolve(table, ctx)
@@ -300,6 +308,18 @@ class McpTools:
         visible_fields = [f for f in fields if self._column_visible(resolved, f)]
         field_str = "\n    ".join(visible_fields)
         query = f"query {{\n  {table} {{\n    {field_str}\n  }}\n}}"
+        if self._bundle is not None:
+            try:
+                doc = parse(query)
+                errors = validate(self._bundle.schema, doc)
+            except Exception as exc:
+                return {"error": f"generated query is invalid: {exc}", "_meta": {}}
+            if errors:
+                return {
+                    "error": "generated query failed schema validation: "
+                    + "; ".join(e.message for e in errors),
+                    "_meta": {},
+                }
         return {
             "table": table,
             "fields": visible_fields,
@@ -346,17 +366,27 @@ class McpTools:
 
 
 def create_mcp_server(
-    project,
+    registry: TableRegistry,
     *,
     bundle: GraphQLBundle | None = None,
+    project=None,
     policy_engine: PolicyEngine | None = None,
     enrichment=None,
 ):
-    """Build and return a fastmcp Server with all tools registered."""
+    """Build and return a fastmcp Server with all tools registered.
+
+    ``registry`` is the structural source (same one GraphQL serves);
+    ``project`` is optional and contributes only dbt enrichment metadata
+    (table/column descriptions, declared enums).
+    """
     from fastmcp import FastMCP
 
     tools = McpTools(
-        project, bundle=bundle, policy_engine=policy_engine, enrichment=enrichment
+        registry,
+        bundle=bundle,
+        project=project,
+        policy_engine=policy_engine,
+        enrichment=enrichment,
     )
     mcp = FastMCP("dbt-graphql")
 
@@ -378,14 +408,17 @@ def build_mcp_factory(project, *, enrichment=None):
     """Return a factory that builds the MCP HTTP sub-app from a GraphQL bundle.
 
     The serve layer calls this once with the GraphQL bundle, so the MCP
-    server reuses the same executable schema, per-request context-builder,
-    DB pool, and access policy without re-deriving any of them.
+    server reuses the same registry (structure), executable schema,
+    per-request context-builder, DB pool, and access policy without
+    re-deriving any of them. The ``project`` is retained as the source
+    of dbt enrichment metadata (descriptions, enums) only.
     """
 
     def _factory(bundle: GraphQLBundle) -> Any:
         server = create_mcp_server(
-            project,
+            bundle.registry,
             bundle=bundle,
+            project=project,
             policy_engine=bundle.policy_engine,
             enrichment=enrichment,
         )

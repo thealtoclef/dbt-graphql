@@ -175,6 +175,19 @@ class ResolvedPolicy:
     # SQLAlchemy clause to AND into the SELECT's WHERE. None = no row filter.
     row_filter_clause: ColumnElement | None = None
 
+    def is_column_allowed(self, name: str) -> bool:
+        """Single source of truth for column visibility.
+
+        Used by ``compile_query`` (to enforce strict denial when a query
+        names a blocked column) and by MCP discovery tools (to filter the
+        view a caller sees). Both must agree on what "allowed" means.
+        """
+        if self.allowed_columns is not None and name not in self.allowed_columns:
+            return False
+        if name in self.blocked_columns:
+            return False
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Policy engine
