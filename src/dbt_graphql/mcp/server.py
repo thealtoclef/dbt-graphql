@@ -128,6 +128,7 @@ class McpTools:
     ) -> None:
         if db is None and bundle is not None:
             db = bundle.db
+        self._project = project
         self._discovery = SchemaDiscovery(
             registry, project=project, db=db, enrichment=enrichment
         )
@@ -163,11 +164,25 @@ class McpTools:
 
     # ---- tools ----
 
-    def list_tables(self) -> dict[str, Any]:
-        """List tables the caller's access policy authorizes."""
+    def list_tables(self, filter: str | None = None) -> dict[str, Any]:
+        """List tables the caller's access policy authorizes.
+
+        Args:
+            filter: If provided, only tables whose name or description contains
+                this substring (case-insensitive) are returned. Filter is applied
+                after visibility checks — tables the caller cannot see are never
+                returned regardless of whether they match the filter.
+        """
         ctx = _current_jwt()
         tables = self._discovery.list_tables()
         visible = [t for t in tables if self._is_visible(t.name, ctx)]
+        if filter is not None:
+            f = filter.lower()
+            visible = [
+                t
+                for t in visible
+                if f in t.name.lower() or (t.description and f in t.description.lower())
+            ]
         return {
             "tables": [
                 {
@@ -293,6 +308,40 @@ class McpTools:
             },
         }
 
+    def trace_column_lineage(self, table: str, column: str) -> dict[str, Any]:
+        """Return upstream sources and downstream consumers for a column."""
+        if self._project is None:
+            return {"error": "column lineage not available", "_meta": {}}
+
+        ctx = _current_jwt()
+        if not self._is_visible(table, ctx):
+            return {"error": f"Table '{table}' is not authorized", "_meta": {}}
+
+        upstream = []
+        downstream = []
+        for edge in self._project.column_lineage:
+            if edge.target == table:
+                # Find matching columns in this edge
+                cols = [c for c in edge.columns if c.target_column == column]
+                if cols and self._is_visible(edge.source, ctx):
+                    upstream.append(
+                        {"table": edge.source, "columns": [c.source_column for c in cols]}
+                    )
+            if edge.source == table:
+                cols = [c for c in edge.columns if c.source_column == column]
+                if cols and self._is_visible(edge.target, ctx):
+                    downstream.append(
+                        {"table": edge.target, "columns": [c.target_column for c in cols]}
+                    )
+
+        return {
+            "table": table,
+            "column": column,
+            "upstream": upstream,
+            "downstream": downstream,
+            "_meta": {"next_steps": ["Use build_query to construct a query using these tables."]},
+        }
+
     def build_query(self, table: str, fields: list[str]) -> dict[str, Any]:
         """Generate a GraphQL query string for ``table``.
 
@@ -343,6 +392,21 @@ class McpTools:
         """
         if self._bundle is None:
             return {"errors": [{"message": "GraphQL bundle not configured for this MCP server."}]}
+
+        # Query guard limits — fall back to defaults when config is not available.
+        from .. import defaults
+        from ..graphql.guards import check_query_limits
+
+        max_depth = defaults.QUERY_MAX_DEPTH
+        max_fields = defaults.QUERY_MAX_FIELDS
+        if self._bundle.graphql_config is not None:
+            max_depth = self._bundle.graphql_config.query_max_depth
+            max_fields = self._bundle.graphql_config.query_max_fields
+
+        errors = check_query_limits(query, max_depth, max_fields)
+        if errors:
+            return {"errors": [{"message": m} for m in errors]}
+
         ctx = _current_jwt()
         context_value = self._bundle.build_context(ctx)
         result = await graphql_execute(
@@ -363,6 +427,95 @@ class McpTools:
                 for e in result.errors
             ]
         return out
+
+    def get_usage_guide(self) -> dict[str, Any]:
+        """Return a prose guide teaching the LLM how to use the dbt-graphql MCP tools.
+
+        The guide focuses on workflow and policy semantics — not tool signatures,
+        which are captured in the MCP schema itself.
+        """
+        guide = """\
+## dbt-graphql MCP Tools — Usage Guide
+
+### Recommended Workflow
+
+1. **Discover available tables** with ``list_tables(filter=None)``.
+   The ``filter`` argument does a case-insensitive substring match on table name
+   and description, so you can narrow down a large warehouse without loading
+   everything into context.
+
+2. **Inspect a table's columns** with ``describe_table(name)``.
+   This returns column names, types, descriptions, and sample values — all
+   filtered to what your JWT authorizes you to see.
+
+3. **Find how tables connect** with ``explore_relationships(table_name)`` or
+   ``find_path(from_table, to_table)``. These return join relationships that
+   you can use to construct multi-table queries.
+
+4. **Build a query template** with ``build_query(table, fields)``.
+   Pass the fields you need from that table; the tool returns a valid GraphQL
+   query string you can edit and refine before execution. The tool validates
+   against the live schema when a bundle is configured, so it will tell you
+   if your query is malformed.
+
+5. **Execute the query** with ``run_graphql(query, variables=None)``.
+   The query runs through the same GraphQL engine as the HTTP endpoint, so
+   column allow-lists, masks, and row filters all apply uniformly.
+
+### Nested Relations via the ``where`` Argument
+
+When a table has ``has_many`` relationships (e.g., ``orders`` → ``line_items``),
+you can nest them in the query using the ``where`` argument:
+
+```graphql
+query {
+  customers {
+    customer_id
+    orders(where: { status: { _eq: "pending" } }) {
+      order_id
+      status
+    }
+  }
+}
+```
+
+The ``where`` argument accepts boolean expressions to filter related rows server-side.
+Omitting ``where`` returns all related rows.
+
+### Row Filters Are Invisible to the Caller
+
+If an access policy applies row-level filters (e.g., ``tenant_id = 'acme Corp'``),
+those filters are injected by the server **before** your query runs. You will
+not see the filter condition in the query output, and you cannot override it —
+the server enforces it on every query execution. This means:
+
+- You receive only rows you are authorized to see.
+- You cannot accidentally or intentionally query rows outside your policy.
+- ``run_graphql`` returns only data your JWT's policy allows.
+
+### JWT-Driven Column and Row Access
+
+Every tool honours the caller's JWT payload. Depending on the deployed policy:
+
+- **Column-level policy**: ``describe_table`` and ``build_query`` strip blocked
+  columns; ``run_graphql`` omits them from results.
+- **Row-level policy**: ``run_graphql`` silently injects row filters into every
+  relevant table's resolver. You cannot bypass row filters.
+- **Table-level policy**: ``list_tables``, ``describe_table``, ``find_path``,
+  ``explore_relationships`` all filter their output to authorized tables only.
+
+### ``build_query`` Generates Editable Templates
+
+``build_query`` returns a query string you own and can modify before passing
+it to ``run_graphql``. You can:
+- Add ``where`` arguments for nested relation filtering.
+- Request fields on related tables (has_many / has_one).
+- Rename field aliases for clarity.
+
+The tool validates the base query against the schema, but once you edit it,
+``run_graphql`` will re-validate and return errors if the query is invalid.
+"""
+        return {"guide": guide}
 
 
 def create_mcp_server(
@@ -398,8 +551,14 @@ def create_mcp_server(
     mcp.tool(name="explore_relationships")(
         _instrument_tool("explore_relationships", tools.explore_relationships)
     )
+    mcp.tool(name="trace_column_lineage")(
+        _instrument_tool("trace_column_lineage", tools.trace_column_lineage)
+    )
     mcp.tool(name="build_query")(_instrument_tool("build_query", tools.build_query))
     mcp.tool(name="run_graphql")(_instrument_tool("run_graphql", tools.run_graphql))
+    mcp.tool(name="get_usage_guide")(
+        _instrument_tool("get_usage_guide", tools.get_usage_guide)
+    )
 
     return mcp
 

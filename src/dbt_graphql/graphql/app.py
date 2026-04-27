@@ -16,6 +16,7 @@ from graphql import GraphQLSchema
 
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
+from ..config import GraphQLConfig
 from ..formatter.schema import TableRegistry
 from .auth import JWTPayload
 from .monitoring import build_graphql_http_handler
@@ -84,6 +85,7 @@ class GraphQLBundle:
     build_context: Any  # callable: (jwt_payload, request|None) -> dict
     db: DatabaseManager
     policy_engine: PolicyEngine | None
+    graphql_config: GraphQLConfig | None = None
 
 
 def create_graphql_subapp(
@@ -92,6 +94,7 @@ def create_graphql_subapp(
     db: DatabaseManager,
     access_policy: AccessPolicy | None = None,
     cache_config: CacheConfig | None = None,
+    graphql_config: GraphQLConfig | None = None,
     introspection: bool = False,
 ) -> GraphQLBundle:
     """Build the Ariadne GraphQL ASGI sub-app.
@@ -117,7 +120,7 @@ def create_graphql_subapp(
     asgi = GraphQL(
         gql_schema,
         context_value=lambda req, _data=None: build_context(req.user.payload, req),
-        http_handler=build_graphql_http_handler(),
+        http_handler=build_graphql_http_handler(graphql_config),
         introspection=introspection,
     )
     return GraphQLBundle(
@@ -127,4 +130,5 @@ def create_graphql_subapp(
         build_context=build_context,
         db=db,
         policy_engine=policy_engine,
+        graphql_config=graphql_config,
     )

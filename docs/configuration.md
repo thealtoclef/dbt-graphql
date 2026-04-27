@@ -106,6 +106,37 @@ Any field can be overridden at runtime via env var without editing the config fi
 
 ---
 
+## `graphql` (optional)
+
+Query guard limits applied to all incoming GraphQL operations — both HTTP `/graphql` and MCP `run_graphql`. Guards are checked *before* the query is executed; exceeding a limit returns a 400 response (HTTP) or an error dict (MCP) without touching the database.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `query_max_depth` | int | `5` | Maximum selection-set nesting depth. Introspection-only queries (`__schema { ... }`) are excluded from this limit. |
+| `query_max_fields` | int | `50` | Maximum total leaf fields across the entire query. |
+
+The default values (5 levels of nesting, 50 leaf fields) follow Hasura's defaults and cover typical analytics queries (5–10 tables × 5–10 fields each). Apollo Router defaults to 100/200 but is geared toward enterprise multi-tenant APIs.
+
+When a limit is exceeded, the HTTP path returns **400 Bad Request** with a GraphQL error body:
+
+```json
+{
+  "data": {},
+  "errors": [{
+    "message": "Query depth 12 exceeds the limit of 5",
+    "extensions": {"code": "MAX_DEPTH_EXCEEDED"}
+  }]
+}
+```
+
+The MCP path returns the same error messages in the tool result dict:
+
+```python
+{"errors": [{"message": "Query depth 12 exceeds the limit of 5"}]}
+```
+
+---
+
 ## `monitoring` (optional)
 
 OpenTelemetry configuration and log level. Omit the block (or any sub-block) to use defaults from [`defaults.py`](../src/dbt_graphql/defaults.py). Signals are configured independently — you can ship only traces, only logs, or any combination.

@@ -22,7 +22,7 @@ from starlette.routing import Mount
 
 from ..cache import CacheConfig, close_cache, setup_cache
 from ..compiler.connection import DatabaseManager
-from ..config import DbConfig, JWTConfig, PoolConfig
+from ..config import DbConfig, GraphQLConfig, JWTConfig, PoolConfig
 from ..formatter.schema import TableRegistry
 from ..graphql.app import GraphQLBundle, create_graphql_subapp
 from ..graphql.auth import auth_on_error, build_auth_backend
@@ -37,6 +37,7 @@ def create_app(
     config: DbConfig | None = None,
     access_policy: AccessPolicy | None = None,
     cache_config: CacheConfig | None = None,
+    graphql_config: GraphQLConfig | None = None,
     jwt_config: JWTConfig,
     introspection: bool = False,
     pool_config: PoolConfig | None = None,
@@ -61,6 +62,7 @@ def create_app(
         db=db,
         access_policy=access_policy,
         cache_config=cache_config,
+        graphql_config=graphql_config,
         introspection=introspection,
     )
     mcp_http_app = mcp_factory(bundle) if mcp_factory is not None else None

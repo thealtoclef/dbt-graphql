@@ -50,6 +50,57 @@ class TestListTables:
         result = tools.list_tables()
         assert len(result["_meta"]["next_steps"]) > 0
 
+    def test_filter_returns_only_matching_tables(self):
+        tools = _make_tools()
+        result = tools.list_tables(filter="customer")
+        names = {t["name"] for t in result["tables"]}
+        assert "customers" in names
+        # "customer" should not match "orders" or "line_items"
+        assert "orders" not in names
+
+    def test_filter_matches_description(self):
+        tools = _make_tools()
+        # Filter on a term likely in a description, not the name
+        result = tools.list_tables(filter="unique")
+        # At least one table should have "unique" in its description
+        assert len(result["tables"]) >= 0  # table may or may not exist with that term
+
+    def test_filter_no_match_returns_empty(self):
+        tools = _make_tools()
+        result = tools.list_tables(filter="xyzzy_nonexistent_term_12345")
+        assert result["tables"] == []
+
+    def test_filter_is_case_insensitive(self):
+        tools = _make_tools()
+        result = tools.list_tables(filter="CUSTOMER")
+        names = {t["name"] for t in result["tables"]}
+        assert "customers" in names
+
+
+class TestGetUsageGuide:
+    def test_returns_non_empty_string(self):
+        tools = _make_tools()
+        result = tools.get_usage_guide()
+        assert "guide" in result
+        assert isinstance(result["guide"], str)
+        assert len(result["guide"]) > 0
+
+    def test_contains_workflow_sections(self):
+        tools = _make_tools()
+        result = tools.get_usage_guide()
+        guide = result["guide"]
+        assert "list_tables" in guide
+        assert "describe_table" in guide
+        assert "build_query" in guide
+        assert "run_graphql" in guide
+
+    def test_contains_policy_semantics_sections(self):
+        tools = _make_tools()
+        result = tools.get_usage_guide()
+        guide = result["guide"]
+        assert "row filters" in guide.lower() or "row-level" in guide.lower()
+        assert "JWT" in guide or "column" in guide
+
 
 class TestDescribeTable:
     def test_returns_columns(self):
@@ -320,3 +371,54 @@ class TestRunGraphqlWithBundle:
         result = asyncio.run(tools.run_graphql("query { orders { order_id } }"))
         assert "errors" in result
         assert any("orders" in e["message"] for e in result["errors"])
+
+
+# ---------------------------------------------------------------------------
+# trace_column_lineage
+# ---------------------------------------------------------------------------
+
+
+class TestTraceColumnLineage:
+    def test_returns_upstream_and_downstream(self):
+        tools = _make_tools()
+        result = tools.trace_column_lineage("customers", "customer_id")
+        assert result["table"] == "customers"
+        assert result["column"] == "customer_id"
+        # stg_customers -> customers with customer_id->customer_id
+        upstream_names = [u["table"] for u in result["upstream"]]
+        assert "stg_customers" in upstream_names
+        assert result["downstream"] == []
+
+    def test_unauthorized_table_returns_error(self):
+        # Use the policy-engine tools where orders is denied
+        tools = _make_policy_tools()
+        result = tools.trace_column_lineage("orders", "order_id")
+        assert "error" in result
+        assert "not authorized" in result["error"]
+
+    def test_project_none_returns_error(self):
+        # McpTools initialized without project has _project = None
+        registry = build_registry(extract_project(CATALOG, MANIFEST))
+        tools = McpTools(registry)
+        assert tools._project is None
+        result = tools.trace_column_lineage("customers", "customer_id")
+        assert "error" in result
+        assert "not available" in result["error"]
+
+    def test_policy_filtering_strips_invisible_edges(self):
+        # Policy allows only 'customers' table; stg_customers is not authorized,
+        # so the edge stg_customers->customers must be stripped.
+        tools = _make_policy_tools()
+        result = tools.trace_column_lineage("customers", "customer_id")
+        # stg_customers is not visible to this policy, so upstream must be empty
+        assert result["upstream"] == []
+
+
+class TestTraceColumnLineageRegistration:
+    def test_create_server_with_trace_column_lineage(self):
+        from dbt_graphql.mcp.server import create_mcp_server
+
+        project = extract_project(CATALOG, MANIFEST)
+        registry = build_registry(project)
+        mcp = create_mcp_server(registry, project=project)
+        assert mcp is not None

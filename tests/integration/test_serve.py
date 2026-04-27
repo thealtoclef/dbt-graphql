@@ -18,6 +18,7 @@ from dbt_graphql.graphql.policy import (
     PolicyEntry,
     TablePolicy,
 )
+from dbt_graphql.config import GraphQLConfig
 
 from .conftest import JWT_TEST_SECRET, make_test_jwt_config
 
@@ -75,6 +76,20 @@ def client_no_introspection(serve_adapter_env):
         registry=serve_adapter_env["registry"],
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
+    )
+    with TestClient(app, raise_server_exceptions=True) as c:
+        yield c
+
+
+@pytest.fixture
+def client_with_tiny_limits(serve_adapter_env):
+    """Client with very small query limits (depth=2, fields=3) for testing guards."""
+    app = create_app(
+        registry=serve_adapter_env["registry"],
+        db_url=serve_adapter_env["db_url"],
+        jwt_config=make_test_jwt_config(),
+        graphql_config=GraphQLConfig(query_max_depth=2, query_max_fields=3),
+        introspection=True,
     )
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -199,6 +214,60 @@ class TestGraphQLHTTP:
         data = resp.json()
         assert "errors" not in data, data.get("errors")
         assert data["data"]["customers"] == []
+
+
+class TestQueryGuardsHTTP:
+    """Query guard limits (depth + field count) on the HTTP /graphql endpoint."""
+
+    def test_query_within_limits_succeeds(self, client_with_tiny_limits):
+        # depth 1, 2 fields — well within limits (depth=2, fields=3)
+        resp = client_with_tiny_limits.post(
+            "/graphql",
+            json={"query": "{ customers { customer_id first_name } }"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+
+    def test_query_exceeding_depth_returns_400(self, client_with_tiny_limits):
+        # depth 3 exceeds limit of 2
+        resp = client_with_tiny_limits.post(
+            "/graphql",
+            json={"query": "{ customers { orders { order_id } } }"},
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "errors" in body and body["errors"]
+        err = body["errors"][0]
+        assert "depth" in err["message"].lower()
+        assert "exceeds" in err["message"].lower()
+        assert err["extensions"]["code"] == "MAX_DEPTH_EXCEEDED"
+
+    def test_query_exceeding_field_count_returns_400(self, client_with_tiny_limits):
+        # 5 fields exceeds limit of 3
+        resp = client_with_tiny_limits.post(
+            "/graphql",
+            json={
+                "query": "{ customers { c1 c2 c3 c4 c5 } }"
+            },
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "errors" in body and body["errors"]
+        err = body["errors"][0]
+        assert "fields" in err["message"].lower()
+        assert err["extensions"]["code"] == "MAX_FIELDS_EXCEEDED"
+
+    def test_introspection_query_not_limited_by_depth(self, client_with_tiny_limits):
+        # __schema introspection is excluded from depth counting
+        resp = client_with_tiny_limits.post(
+            "/graphql",
+            json={"query": "{ __schema { types { name } } }"},
+        )
+        # depth 0 (excluded) should pass max_depth=2
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
 
 
 class TestAuthHTTP:

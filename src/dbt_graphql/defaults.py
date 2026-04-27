@@ -40,3 +40,7 @@ DB_POOL_RETRY_AFTER: Final[int] = 5
 # JWT — clock-skew tolerance and JWKS cache TTL.
 JWT_LEEWAY: Final[int] = 30
 JWT_JWKS_CACHE_TTL: Final[int] = 3600
+
+# Query guards — pre-execution limits on incoming GraphQL queries.
+QUERY_MAX_DEPTH: Final[int] = 5
+QUERY_MAX_FIELDS: Final[int] = 50

@@ -92,6 +92,13 @@ class EnrichmentConfig(BaseModel):
     )
 
 
+class GraphQLConfig(BaseModel):
+    """Query guard limits applied to all incoming GraphQL operations."""
+
+    query_max_depth: int = defaults.QUERY_MAX_DEPTH
+    query_max_fields: int = defaults.QUERY_MAX_FIELDS
+
+
 class JWTConfig(BaseModel):
     enabled: bool = False
     algorithms: list[str] = []
@@ -159,6 +166,7 @@ class AppConfig(BaseSettings):
     serve: ServeConfig | None = None
     monitoring: MonitoringConfig = MonitoringConfig()
     enrichment: EnrichmentConfig = EnrichmentConfig()
+    graphql: GraphQLConfig = GraphQLConfig()
     security: SecurityConfig = SecurityConfig()
     cache: CacheConfig = CacheConfig()
 
