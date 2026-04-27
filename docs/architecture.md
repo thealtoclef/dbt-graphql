@@ -251,7 +251,7 @@ Where we differ: Wren's interface to agents is "write SQL against MDL" (text-to-
 | **Single-process Python serving** | The serve layer is async but still Python. Hasura/PostGraphile handle high-throughput concurrent agent workloads more easily. |
 | **Compiler feature coverage** | No filter/order on nested fields; `where` supports only equality; no operators, no aggregates. |
 | **Maturity** | Needs an integration-test corpus covering real dbt projects across dialects. |
-| **GraphQL feature coverage** | No subscriptions, unions, federation, defer/stream. None are table stakes for analytics. |
+| **GraphQL feature coverage** | No subscriptions, unions, federation, defer/stream. None are table stakes for analytics over a warehouse: subscriptions need an event/CDC source we don't own, federation belongs at a gateway in front of multiple sub-graphs (we are the sub-graph), and defer/stream is for chunked rendering not aggregation queries. |
 | **No query-cost / safety guardrails** | No default `LIMIT`, no statement timeout, no cost estimation before execution. |
 | **Discovery UX for wide schemas** | Hundreds of models need pagination, tagging, and ranked relationship search. |
 | **Source nodes not yet included** | `catalog.sources` is ignored; FKs pointing at raw sources are dropped. |

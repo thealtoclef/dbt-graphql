@@ -2,7 +2,7 @@
 
 The HTTP interface for running GraphQL queries against the warehouse. Built on Starlette + Ariadne, served via Granian (Rust ASGI).
 
-**Source:** [`src/dbt_graphql/api/`](../src/dbt_graphql/api/)
+**Source:** [`src/dbt_graphql/graphql/`](../src/dbt_graphql/graphql/) (sub-app + resolvers + auth + policy) and [`src/dbt_graphql/serve/`](../src/dbt_graphql/serve/) (Starlette composition + Granian runner)
 
 The SQL compilation engine lives in [compiler.md](compiler.md). This document covers the HTTP layer: schema assembly, lifecycle, resolvers, auth, and observability.
 
@@ -35,10 +35,12 @@ See [architecture.md](architecture.md) for the design principles that govern thi
 
 ## 2. Lifecycle
 
-`create_app(registry, ...)` builds the Starlette app. The `@asynccontextmanager` lifespan:
+Composition lives in `serve/app.py:create_app`. `graphql/app.py:create_graphql_subapp` builds only the Ariadne ASGI sub-app — the Starlette assembly, auth middleware, lifespan, and any MCP co-mount are owned by `serve/app.py`. The single `serve/__init__.py:run()` entry point is what the CLI calls.
+
+The `@asynccontextmanager` lifespan:
 
 1. Enters the MCP app's lifespan (if co-mounted) via `AsyncExitStack`.
-2. Connects `DatabaseManager` and instruments the SQLAlchemy engine with OTel.
+2. Connects `DatabaseManager` (only if GraphQL is enabled) and instruments the SQLAlchemy engine with OTel.
 3. Sets up the result cache (if configured).
 4. Yields — Granian serves requests.
 5. Tears down in reverse order on shutdown.
@@ -49,7 +51,7 @@ State that resolvers need (`TableRegistry`, `DatabaseManager`, JWT payload, `Pol
 
 ## 3. Resolvers
 
-`api/resolvers.py` registers one resolver per table. Each resolver:
+`graphql/resolvers.py` registers one resolver per table. Each resolver:
 
 1. Pulls the `TableDef` out of the registry.
 2. Calls `compile_query()` (see [compiler.md](compiler.md)) with the GraphQL field nodes, `limit`, `offset`, `where` from kwargs.
@@ -83,9 +85,9 @@ Configure via the `monitoring` block in `config.yml` (see [configuration.md](con
 
 ## 6. Co-mounting with MCP
 
-When both `serve.graphql: true` and `serve.mcp: true` in config, the MCP HTTP app is co-mounted under the same Starlette + Granian process:
+When both `serve.graphql.enabled: true` and `serve.mcp.enabled: true` in config, the MCP HTTP app is co-mounted under the same Starlette + Granian process:
 
 - `/graphql` — GraphQL endpoint (Ariadne)
 - `/mcp` — MCP endpoint (FastMCP Streamable HTTP)
 
-Both share one DB connection pool and one Granian process. The MCP app's lifespan is composed into the Starlette lifespan via `AsyncExitStack`. When only `serve.mcp: true`, the MCP app runs standalone via `serve_mcp_http()`.
+The MCP app's lifespan is composed into the Starlette lifespan via `AsyncExitStack`. Either transport can run alone; `create_app` mounts only what's enabled. The same auth middleware and OTel instrumentation cover both endpoints.

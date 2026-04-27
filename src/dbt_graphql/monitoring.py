@@ -4,6 +4,7 @@ import contextlib
 import logging
 import sys
 import time
+from types import FrameType
 
 from loguru import logger
 
@@ -23,9 +24,10 @@ class _InterceptHandler(logging.Handler):
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        frame, depth = logging.currentframe(), 2
-        while frame.f_code.co_filename == logging.__file__:
-            frame = frame.f_back  # type: ignore[assignment]
+        frame: FrameType | None = logging.currentframe()
+        depth = 2
+        while frame is not None and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
             depth += 1
         logger.opt(depth=depth, exception=record.exc_info).log(
             level, record.getMessage()
@@ -50,7 +52,7 @@ def _instrument_loguru() -> None:
     provider = get_tracer_provider()
     service_name: str | None = None
 
-    def _patch(record: dict) -> None:
+    def _patch(record) -> None:  # loguru passes a Record-like dict-ish
         nonlocal service_name
         record["extra"].update(otelTraceID="0", otelSpanID="0", otelTraceSampled=False)
 
@@ -69,7 +71,8 @@ def _instrument_loguru() -> None:
                 record["extra"]["otelSpanID"] = format(ctx.span_id, "016x")
                 record["extra"]["otelTraceSampled"] = ctx.trace_flags.sampled
 
-    logger.configure(patcher=_patch)
+    # loguru's typed signature wants list[Patcher]; runtime accepts both.
+    logger.configure(patcher=_patch)  # type: ignore[arg-type]
 
 
 def _add_otlp_log_sink(config: MonitoringConfig, resource) -> None:
@@ -140,18 +143,18 @@ def _add_otlp_log_sink(config: MonitoringConfig, resource) -> None:
                     traceback.format_exception(exc[0], exc[1], exc[2])
                 )
 
-        try:
-            otel_logger.emit(
-                timestamp=int(r["time"].timestamp() * 1e9),
-                observed_timestamp=int(r["time"].timestamp() * 1e9),
-                context=ctx,
-                severity_number=severity_map.get(r["level"].name, SeverityNumber.INFO),
-                severity_text=r["level"].name,
-                body=r["message"],
-                attributes=attributes,
-            )
-        except Exception:
-            pass
+        # Routing through loguru would recurse into this sink. We rely on
+        # the OTel SDK's own internal error logger for emit failures rather
+        # than inventing per-error-type bookkeeping here.
+        otel_logger.emit(
+            timestamp=int(r["time"].timestamp() * 1e9),
+            observed_timestamp=int(r["time"].timestamp() * 1e9),
+            context=ctx,
+            severity_number=severity_map.get(r["level"].name, SeverityNumber.INFO),
+            severity_text=r["level"].name,
+            body=r["message"],
+            attributes=attributes,
+        )
 
     logger.add(_otlp_sink, level=config.logs.level.upper())
 

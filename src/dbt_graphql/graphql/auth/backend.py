@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Protocol
 
 import httpx
@@ -123,16 +124,29 @@ def _build_resolver(cfg: JWTConfig, http: httpx.AsyncClient | None) -> KeyResolv
 
 
 class _LazyURLResolver:
-    """Fetches a single static key on first call; caches forever."""
+    """Fetches a single static key on first call, caches it for the process.
+
+    ``_build_resolver`` is synchronous but ``StaticKeyResolver.from_url`` is
+    async, so the fetch is deferred to the first ``get()``. Concurrent first
+    calls coalesce on a lock so we make at most one HTTP fetch.
+
+    JWKS-shaped URLs are rejected by ``JWTConfig`` validation, so this path
+    is guaranteed to be a static PEM/JWK — no rotation, no refresh.
+    """
 
     def __init__(self, url: str, http: httpx.AsyncClient) -> None:
         self._url = url
         self._http = http
         self._inner: StaticKeyResolver | None = None
+        self._lock = asyncio.Lock()
 
     async def get(self) -> KeySet:
         if self._inner is None:
-            self._inner = await StaticKeyResolver.from_url(self._url, self._http)
+            async with self._lock:
+                if self._inner is None:
+                    self._inner = await StaticKeyResolver.from_url(
+                        self._url, self._http
+                    )
         return await self._inner.get()
 
 

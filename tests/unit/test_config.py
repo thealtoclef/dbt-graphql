@@ -168,24 +168,42 @@ class TestServeConfig:
         yaml = _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.serve is not None
-        assert cfg.serve.graphql is False
-        assert cfg.serve.mcp is False
+        assert cfg.serve.graphql.enabled is False
+        assert cfg.serve.graphql.introspection is False
+        assert cfg.serve.mcp.enabled is False
 
-    def test_serve_graphql_true(self, tmp_path):
+    def test_serve_graphql_enabled(self, tmp_path):
         yaml = (
-            _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n  graphql: true\n"
+            _MINIMAL_YAML
+            + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+            + "  graphql:\n    enabled: true\n"
         )
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.serve is not None
-        assert cfg.serve.graphql is True
-        assert cfg.serve.mcp is False
+        assert cfg.serve.graphql.enabled is True
+        assert cfg.serve.graphql.introspection is False
+        assert cfg.serve.mcp.enabled is False
 
-    def test_serve_mcp_true(self, tmp_path):
-        yaml = _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n  mcp: true\n"
+    def test_serve_graphql_introspection_opt_in(self, tmp_path):
+        yaml = (
+            _MINIMAL_YAML
+            + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+            + "  graphql:\n    enabled: true\n    introspection: true\n"
+        )
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.serve is not None
-        assert cfg.serve.mcp is True
-        assert cfg.serve.graphql is False
+        assert cfg.serve.graphql.introspection is True
+
+    def test_serve_mcp_enabled(self, tmp_path):
+        yaml = (
+            _MINIMAL_YAML
+            + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+            + "  mcp:\n    enabled: true\n"
+        )
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert cfg.serve is not None
+        assert cfg.serve.mcp.enabled is True
+        assert cfg.serve.graphql.enabled is False
 
     def test_db_optional(self, tmp_path):
         yaml = (
@@ -194,3 +212,61 @@ class TestServeConfig:
         )
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.db is None
+
+
+class TestJWTConfigKeyURLValidation:
+    """``key_url`` is for a single static PEM/JWK (fetched once, no refresh).
+    A JWKS endpoint must use ``jwks_url`` to get rotation. Reject ``key_url``
+    values that look like JWKS endpoints — the silent failure mode (key set
+    rotation breaks) is too easy to ship by accident."""
+
+    def test_key_url_jwks_path_rejected(self, tmp_path):
+        yaml = _MINIMAL_YAML + (
+            "security:\n"
+            "  allow_anonymous: false\n"
+            "  jwt:\n"
+            "    enabled: true\n"
+            "    algorithms: [RS256]\n"
+            "    key_url: https://issuer.example/.well-known/jwks.json\n"
+        )
+        with pytest.raises(ValueError, match="JWKS"):
+            load_config(_write_config(tmp_path, yaml))
+
+    def test_key_url_with_jwks_substring_rejected(self, tmp_path):
+        yaml = _MINIMAL_YAML + (
+            "security:\n"
+            "  allow_anonymous: false\n"
+            "  jwt:\n"
+            "    enabled: true\n"
+            "    algorithms: [RS256]\n"
+            "    key_url: https://internal/jwks/v1\n"
+        )
+        with pytest.raises(ValueError, match="JWKS"):
+            load_config(_write_config(tmp_path, yaml))
+
+    def test_key_url_pem_path_accepted(self, tmp_path):
+        yaml = _MINIMAL_YAML + (
+            "security:\n"
+            "  allow_anonymous: false\n"
+            "  jwt:\n"
+            "    enabled: true\n"
+            "    algorithms: [RS256]\n"
+            "    key_url: https://internal/keys/dbt-graphql.pem\n"
+        )
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert cfg.security.jwt.key_url is not None
+
+
+class TestConfigExampleSchemaGuard:
+    """The shipped ``config.example.yml`` is the operator's reference. If
+    ``AppConfig`` evolves but the example doesn't, operators copy a stale
+    file. Load the example against the live schema so drift fails CI."""
+
+    def test_config_example_yml_loads(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        example = repo_root / "config.example.yml"
+        assert example.exists(), f"config.example.yml missing at {example}"
+        cfg = load_config(example)
+        # Sanity: the example demonstrates a serve config so these must parse.
+        assert cfg.serve is not None
+        assert cfg.db is not None

@@ -38,9 +38,12 @@ db:
 serve:
   host: 0.0.0.0
   port: 9876
-  graphql: true             # mount GraphQL API at /graphql
-  mcp: false                # mount MCP server at /mcp (Streamable HTTP)
-  # Both can be true — they share the same Granian process.
+  graphql:
+    enabled: true           # mount GraphQL API at /graphql
+    introspection: false    # off by default; enable in dev only
+  mcp:
+    enabled: false          # mount MCP server at /mcp (Streamable HTTP)
+  # Both can be enabled — they share the same Granian process.
 
 # -----------------------------------------------------------------------------
 # enrichment (optional) — controls live DB queries fired by MCP describe_table.
@@ -73,6 +76,13 @@ serve:
 # -----------------------------------------------------------------------------
 # security:
 #   policy_path: access.yml          # see docs/access-policy.md
+#
+#   # When jwt.enabled is false, allow_anonymous MUST be set to true to
+#   # confirm that every request should be treated as anonymous (dev only,
+#   # or behind a trusted proxy that authenticates upstream). Otherwise the
+#   # server refuses to start — protects against the "forgot to enable JWT
+#   # in prod" footgun.
+#   allow_anonymous: false
 #
 #   # JWT verification — disabled by default. When disabled every request is
 #   # treated as anonymous (the policy engine sees an empty payload).

@@ -21,7 +21,6 @@ from sqlalchemy import (
     null,
     select,
     table,
-    text,
 )
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.elements import ClauseElement
@@ -246,10 +245,8 @@ def _build_correlated_subquery(
 
     stmt = select(agg).where(predicate).correlate(parent_aliased)
 
-    if policy is not None and policy.row_filter_sql:
-        stmt = stmt.where(
-            text(policy.row_filter_sql).bindparams(**policy.row_filter_params)
-        )
+    if policy is not None and policy.row_filter_clause is not None:
+        stmt = stmt.where(policy.row_filter_clause)
 
     return stmt
 
@@ -331,12 +328,8 @@ def compile_query(
 
     stmt = select(*cols).select_from(aliased)
 
-    if resolved_policy is not None and resolved_policy.row_filter_sql:
-        stmt = stmt.where(
-            text(resolved_policy.row_filter_sql).bindparams(
-                **resolved_policy.row_filter_params
-            )
-        )
+    if resolved_policy is not None and resolved_policy.row_filter_clause is not None:
+        stmt = stmt.where(resolved_policy.row_filter_clause)
 
     if where:
         unknown = [k for k in where if k not in aliased.c]

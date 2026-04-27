@@ -13,7 +13,6 @@ dependencies = [
     "pyyaml>=6.0.2",
     "pydantic-settings>=2.14.0",
     "simpleeval>=1.0.7",
-    "jinja2>=3.1.6",
     "ariadne>=1.0.1",
     "fastmcp>=3.2.4",
     "granian>=2.7.3",

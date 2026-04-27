@@ -130,9 +130,9 @@ def test_cli_relative_paths_resolved_from_config_dir(tmp_path):
 
 def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
     """DBT_GRAPHQL__ENRICHMENT__BUDGET env var must override config.yml enrichment.budget."""
-    import dbt_graphql.serve as serve_mod
     import dbt_graphql.compiler.connection as conn_mod
     import dbt_graphql.mcp.server as mcp_server_mod
+    import granian as granian_mod
 
     captured = {}
 
@@ -140,13 +140,17 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
         captured["enrichment"] = enrichment
         return object()
 
-    def _fake_serve_mcp(**_kwargs):
-        raise SystemExit(0)
+    class _FakeGranian:
+        def __init__(self, **_kw):
+            pass
+
+        def serve(self):
+            raise SystemExit(0)
 
     monkeypatch.setattr(
         mcp_server_mod, "create_mcp_http_app", _fake_create_mcp_http_app
     )
-    monkeypatch.setattr(serve_mod, "serve_mcp", _fake_serve_mcp)
+    monkeypatch.setattr(granian_mod, "Granian", _FakeGranian)
     monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
     monkeypatch.setenv("DBT_GRAPHQL__ENRICHMENT__BUDGET", "7")
 
@@ -154,7 +158,9 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
     config_file.write_text(
         f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
         "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
-        "serve:\n  host: 0.0.0.0\n  port: 8080\n  mcp: true\n"
+        "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+        "  mcp:\n    enabled: true\n"
+        "security:\n  allow_anonymous: true\n"
         "enrichment:\n  budget: 100\n"
     )
 
@@ -162,3 +168,24 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
         main(["--config", str(config_file)])
 
     assert captured["enrichment"].budget == 7
+
+
+def test_cli_refuses_serve_when_jwt_disabled_without_allow_anonymous(
+    tmp_path, capsys
+):
+    """The serve command must refuse to start when JWT verification is off
+    and the operator has not explicitly opted into anonymous access. This
+    closes the "forgot to enable JWT in prod" footgun."""
+    config_file = tmp_path / "config.yml"
+    config_file.write_text(
+        f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
+        "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
+        "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+        "  graphql:\n    enabled: true\n"
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--config", str(config_file)])
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "allow_anonymous" in err

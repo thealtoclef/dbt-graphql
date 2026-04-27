@@ -2,36 +2,30 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any, Awaitable, Callable
 
 
 from .discovery import SchemaDiscovery
 
-# OTel instruments for MCP (initialized lazily)
-_meter = None
-_tool_call_counter = None
-_tool_duration_histogram = None
 
-
+@functools.lru_cache(maxsize=1)
 def _get_mcp_metrics_instruments():
-    global _meter, _tool_call_counter, _tool_duration_histogram
+    """Build (counter, histogram) once on first call; cached for the process."""
+    from opentelemetry import metrics
 
-    if _meter is None:
-        from opentelemetry import metrics
-
-        _meter = metrics.get_meter("dbt_graphql.mcp")
-        _tool_call_counter = _meter.create_counter(
-            name="mcp.tool.calls",
-            description="Total number of MCP tool calls",
-            unit="1",
-        )
-        _tool_duration_histogram = _meter.create_histogram(
-            name="mcp.tool.duration",
-            description="MCP tool call duration in milliseconds",
-            unit="ms",
-        )
-
-    return _tool_call_counter, _tool_duration_histogram
+    meter = metrics.get_meter("dbt_graphql.mcp")
+    counter = meter.create_counter(
+        name="mcp.tool.calls",
+        description="Total number of MCP tool calls",
+        unit="1",
+    )
+    histogram = meter.create_histogram(
+        name="mcp.tool.duration",
+        description="MCP tool call duration in milliseconds",
+        unit="ms",
+    )
+    return counter, histogram
 
 
 def _instrument_tool(tool_name: str, func: Callable) -> Callable:
@@ -56,8 +50,10 @@ def _instrument_tool(tool_name: str, func: Callable) -> Callable:
                 result = await result
             return result
 
-    sig = inspect.signature(func)
-    wrapper.__signature__ = sig  # type: ignore[attr-defined]
+    # Use setattr to attach __signature__ — direct assignment trips the
+    # type checker because Callable doesn't formally carry the slot, but
+    # FastMCP's tool registration reads it via getattr.
+    setattr(wrapper, "__signature__", inspect.signature(func))
 
     return wrapper
 

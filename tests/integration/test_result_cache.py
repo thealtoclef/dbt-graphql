@@ -21,7 +21,7 @@ import pytest_asyncio
 from cashews import cache
 from starlette.testclient import TestClient
 
-from dbt_graphql.graphql.app import create_app
+from dbt_graphql.serve.app import create_app
 from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
@@ -221,7 +221,7 @@ class TestTenantIsolation:
                     tables={
                         "customers": TablePolicy(
                             column_level=ColumnLevelPolicy(include_all=True),
-                            row_level="customer_id = {{ jwt.claims.cust_id }}",
+                            row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
                         )
                     },
                 )

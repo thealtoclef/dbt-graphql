@@ -11,7 +11,7 @@ import pytest
 import jwt as pyjwt
 from starlette.testclient import TestClient
 
-from dbt_graphql.graphql.app import create_app
+from dbt_graphql.serve.app import create_app
 from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
@@ -59,6 +59,18 @@ def _gql_error(client, query: str, headers: dict | None = None) -> dict:
 
 @pytest.fixture
 def client(serve_adapter_env):
+    app = create_app(
+        registry=serve_adapter_env["registry"],
+        db_url=serve_adapter_env["db_url"],
+        jwt_config=make_test_jwt_config(),
+        introspection=True,
+    )
+    with TestClient(app, raise_server_exceptions=True) as c:
+        yield c
+
+
+@pytest.fixture
+def client_no_introspection(serve_adapter_env):
     app = create_app(
         registry=serve_adapter_env["registry"],
         db_url=serve_adapter_env["db_url"],
@@ -149,6 +161,18 @@ class TestGraphQLHTTP:
         type_names = {t["name"] for t in resp.json()["data"]["__schema"]["types"]}
         assert "customersWhereInput" in type_names
         assert "ordersWhereInput" in type_names
+
+    def test_introspection_disabled_by_default(self, client_no_introspection):
+        """When create_app is called without ``introspection=True``, schema
+        introspection queries are rejected. This is the production default —
+        the dev fixture above opts in explicitly."""
+        resp = client_no_introspection.post(
+            "/graphql",
+            json={"query": "{ __schema { types { name } } }"},
+        )
+        body = resp.json()
+        assert "errors" in body and body["errors"]
+        assert "introspection" in body["errors"][0]["message"].lower()
 
     def test_where_filter_end_to_end(self, client):
         resp = client.post(
@@ -339,7 +363,7 @@ class TestPolicyHTTP:
         policy = _full_access_policy(
             customers=TablePolicy(
                 column_level=ColumnLevelPolicy(include_all=True),
-                row_level="customer_id = {{ jwt.claims.cust_id }}",
+                row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
             )
         )
         with policy_client(policy) as c:
@@ -467,7 +491,7 @@ class TestPolicyHTTP:
         policy = _full_access_policy(
             orders=TablePolicy(
                 column_level=ColumnLevelPolicy(include_all=True),
-                row_level="customer_id = {{ jwt.claims.cust_id }}",
+                row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
             )
         )
         with policy_client(policy) as c:

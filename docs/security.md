@@ -125,10 +125,10 @@ whatever `access.yml` asks it to. Common conventions:
 
 | Claim | Typical use |
 |---|---|
-| `sub` | Stable user ID — useful for `row_level: "owner_id = {{ jwt.sub }}"`. |
+| `sub` | Stable user ID — useful for `row_filter: { owner_id: { _eq: { jwt: sub } } }`. |
 | `email` | Display / auditing. |
 | `groups` | List of role-like strings — drives `when: "'analysts' in jwt.groups"`. |
-| `claims.org_id` | Multi-tenant isolation — drives `row_level: "org_id = {{ jwt.claims.org_id }}"`. |
+| `claims.org_id` | Multi-tenant isolation — drives `row_filter: { org_id: { _eq: { jwt: claims.org_id } } }`. |
 | `claims.region` | Region-scoped filters. |
 
 If you control the IdP, match your claim structure to what's
@@ -150,7 +150,8 @@ policies:
     tables:
       products:
         column_level: { includes: [product_id, name, price] }
-        row_level: "published = TRUE"
+        row_filter:
+          published: { _eq: true }
 ```
 
 This keeps one code path (everything is "evaluate policy against a
@@ -165,8 +166,21 @@ tried to lie."
 
 When `security.jwt.enabled` is `false` (the default), verification is
 **skipped entirely** — every request is anonymous, even one carrying a
-forged token. Use this only for local development; production should
-always set `enabled: true` with a real key source.
+forged token.
+
+> ⚠️ **Dev-only mode.** To start the server with `jwt.enabled: false`
+> you **must** also set `security.allow_anonymous: true`. Otherwise
+> startup refuses with an error that explains the footgun. The opt-in
+> exists so a missing/typo'd JWT block in production cannot silently
+> become open-to-the-world. Use this only for local development or
+> behind a trusted proxy that authenticates upstream.
+
+> ⚠️ **`key_url` vs `jwks_url`.** `key_url` is for a single static
+> PEM/JWK and is fetched once with no refresh. JWKS endpoints (which
+> rotate) **must** use `jwks_url`. Config validation rejects
+> `key_url` values whose path looks like a JWKS endpoint (contains
+> `jwks` or ends in `/.well-known/jwks.json`) so a misconfigured rotating
+> key set fails fast at load time instead of silently going stale.
 
 ---
 
@@ -174,11 +188,11 @@ always set `enabled: true` with a real key source.
 
 | Component | Role | File |
 |---|---|---|
-| `JWTAuthBackend` | Reads `Authorization` header, delegates to `Verifier`, exposes `request.user.payload`. | [`src/dbt_graphql/api/auth/backend.py`](../src/dbt_graphql/api/auth/backend.py) |
-| `Verifier` | joserfc-backed signature + claims validation; emits OTel `auth.jwt` outcomes. | [`src/dbt_graphql/api/auth/verifier.py`](../src/dbt_graphql/api/auth/verifier.py) |
-| `JWKSResolver` / `StaticKeyResolver` | Key sources: rotating JWKS or a single static key (env / file / URL). | [`src/dbt_graphql/api/auth/keys.py`](../src/dbt_graphql/api/auth/keys.py) |
-| `AuthenticationMiddleware` | Starlette middleware that runs `JWTAuthBackend` per request. | [`src/dbt_graphql/api/app.py`](../src/dbt_graphql/api/app.py) |
-| `PolicyEngine` | Evaluates `access.yml` against the payload, returns a `ResolvedPolicy`. | [`src/dbt_graphql/api/policy.py`](../src/dbt_graphql/api/policy.py) |
+| `JWTAuthBackend` | Reads `Authorization` header, delegates to `Verifier`, exposes `request.user.payload`. | [`src/dbt_graphql/graphql/auth/backend.py`](../src/dbt_graphql/graphql/auth/backend.py) |
+| `Verifier` | joserfc-backed signature + claims validation; emits OTel `auth.jwt` outcomes. | [`src/dbt_graphql/graphql/auth/verifier.py`](../src/dbt_graphql/graphql/auth/verifier.py) |
+| `JWKSResolver` / `StaticKeyResolver` | Key sources: rotating JWKS or a single static key (env / file / URL). | [`src/dbt_graphql/graphql/auth/keys.py`](../src/dbt_graphql/graphql/auth/keys.py) |
+| `AuthenticationMiddleware` | Starlette middleware that runs `JWTAuthBackend` per request. | [`src/dbt_graphql/serve/app.py`](../src/dbt_graphql/serve/app.py) |
+| `PolicyEngine` | Evaluates `access.yml` against the payload, returns a `ResolvedPolicy`. | [`src/dbt_graphql/graphql/policy.py`](../src/dbt_graphql/graphql/policy.py) |
 | `compile_query` | Applies the `ResolvedPolicy` — strips blocked columns, rewrites masks, appends `WHERE`. | [`src/dbt_graphql/compiler/query.py`](../src/dbt_graphql/compiler/query.py) |
 
 ---
@@ -186,7 +200,7 @@ always set `enabled: true` with a real key source.
 ## Related docs
 
 - [access-policy.md](access-policy.md) — policy language, `when:` /
-  `row_level:` reference, evaluation model.
+  `row_filter:` reference, evaluation model.
 - [configuration.md](configuration.md) — `security.policy_path` and
   the `security.jwt` block (algorithms, audience, issuer, key source).
 - [../ROADMAP.md](../ROADMAP.md) — Sec-A through Sec-L security

@@ -340,7 +340,7 @@ def test_row_filter_uses_bind_param():
             tables={
                 "customers": TablePolicy(
                     column_level=ColumnLevelPolicy(include_all=True),
-                    row_level="org_id = {{ jwt.claims.org_id }}",
+                    row_filter={"org_id": {"_eq": {"jwt": "claims.org_id"}}},
                 )
             },
         )
@@ -368,7 +368,7 @@ def test_row_filter_injection_attempt_does_not_inject():
             tables={
                 "customers": TablePolicy(
                     column_level=ColumnLevelPolicy(include_all=True),
-                    row_level="org_id = {{ jwt.claims.org_id }}",
+                    row_filter={"org_id": {"_eq": {"jwt": "claims.org_id"}}},
                 )
             },
         )
@@ -398,7 +398,7 @@ def test_row_filter_combined_with_user_where():
             tables={
                 "customers": TablePolicy(
                     column_level=ColumnLevelPolicy(include_all=True),
-                    row_level="org_id = {{ jwt.claims.org_id }}",
+                    row_filter={"org_id": {"_eq": {"jwt": "claims.org_id"}}},
                 )
             },
         )
@@ -536,7 +536,7 @@ def test_nested_relation_row_filter_applied_to_subquery():
                 ),
                 "orders": TablePolicy(
                     column_level=ColumnLevelPolicy(include_all=True),
-                    row_level="customer_id = {{ jwt.claims.cust_id }}",
+                    row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
                 ),
             },
         )
@@ -555,4 +555,52 @@ def test_nested_relation_row_filter_applied_to_subquery():
     # The filter must NOT be applied at the outer level — that would
     # filter customers.customer_id (wrong semantics) instead of
     # orders.customer_id.
+    assert "_parent.customer_id = 7" not in sql
+
+
+def test_nested_relation_row_filter_AND_mask_both_inside_subquery():
+    """Most security-critical untested surface: a nested relation must apply
+    BOTH the row filter on the child table AND the mask on a child column —
+    inside the correlated subquery, not at the outer SELECT. If either is
+    silently dropped or hoisted, multi-tenant isolation breaks for nested
+    queries."""
+    customers, _orders, registry = _customers_orders_registry()
+    engine = _engine(
+        PolicyEntry(
+            name="all",
+            when="True",
+            tables={
+                "customers": TablePolicy(
+                    column_level=ColumnLevelPolicy(include_all=True)
+                ),
+                "orders": TablePolicy(
+                    column_level=ColumnLevelPolicy(
+                        include_all=True, mask={"internal_notes": None}
+                    ),
+                    row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
+                ),
+            },
+        )
+    )
+    fields = _nodes(
+        "{ customers { customer_id primary_order { order_id internal_notes } } }"
+    )
+    stmt = compile_query(
+        customers,
+        fields,
+        registry,
+        resolve_policy=_resolver(engine, JWTPayload({"claims": {"cust_id": 7}})),
+    )
+    sql = _sql(stmt)
+
+    # Mask was applied inside the subquery — internal_notes is NULL'd, the
+    # raw column reference does not appear anywhere.
+    assert "'internal_notes', NULL" in sql
+    assert "child_1.internal_notes" not in sql
+
+    # Row filter was applied inside the subquery — bind value is present.
+    assert "customer_id = 7" in sql
+
+    # Critically: row filter must NOT be applied at the outer level (which
+    # would filter customers.customer_id, the wrong table).
     assert "_parent.customer_id = 7" not in sql

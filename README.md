@@ -5,69 +5,79 @@ Turn a dbt project into a typed GraphQL schema, a SQL-backed GraphQL API, and an
 ## Installation
 
 ```bash
-pip install dbt-graphql             # generate only
-pip install dbt-graphql[api]        # + GraphQL API server
-pip install dbt-graphql[mcp]        # + MCP server
-pip install dbt-graphql[postgres]   # warehouse drivers
-pip install dbt-graphql[mysql]
+pip install dbt-graphql                    # core (generate + serve)
+pip install dbt-graphql[postgres]          # + asyncpg
+pip install dbt-graphql[mysql]             # + aiomysql
+pip install dbt-graphql[redis]             # + Redis-backed cache for multi-replica
 ```
 
 ## Quick start
 
-**1. Generate the schema**
+The CLI takes a single `--config` flag pointing at `config.yml`. See
+[`config.example.yml`](config.example.yml) for a documented template.
+
+**1. Generate schema files (no DB connection required)**
 
 ```bash
-dbt-graphql generate \
-  --catalog target/catalog.json \
-  --manifest target/manifest.json \
-  --output output/
+dbt-graphql --config config.yml --output ./out
+# → out/db.graphql, out/lineage.json
 ```
 
-Produces `output/db.graphql` and `output/lineage.json`.
-
-**2. Serve the GraphQL API**
+**2. Serve based on `serve.graphql.enabled` / `serve.mcp.enabled` in `config.yml`**
 
 ```bash
-dbt-graphql serve \
-  --target api \
-  --db-graphql output/db.graphql \
-  --config config.yml
+dbt-graphql --config config.yml
 ```
 
-Playground at `http://localhost:8080/graphql`. See [`config.example.yml`](config.example.yml) for the config format.
+Both transports share one Granian process, one auth middleware, one
+lifespan. Either or both can be enabled. With GraphQL on, the API
+mounts at `/graphql`; with MCP on, Streamable HTTP mounts at `/mcp`.
 
-**3. Start the MCP server**
-
-```bash
-dbt-graphql serve \
-  --target mcp \
-  --catalog target/catalog.json \
-  --manifest target/manifest.json \
-  --config config.yml
+```yaml
+# config.yml (excerpt)
+serve:
+  host: 0.0.0.0
+  port: 9876
+  graphql:
+    enabled: true
+    introspection: false      # off in prod; on for dev tooling
+  mcp:
+    enabled: false
 ```
 
-Starts an MCP stdio server for Claude Desktop, Cline, and other MCP clients.
+## Access policy
 
-**4. Serve both at once**
+Per-request RBAC, row filters (Hasura-style structured DSL), and
+column masking — all evaluated at SQL compile time:
 
-```bash
-dbt-graphql serve \
-  --target api,mcp \
-  --db-graphql output/db.graphql \
-  --catalog target/catalog.json \
-  --manifest target/manifest.json \
-  --config config.yml
+```yaml
+# access.yml
+policies:
+  - name: analyst
+    when: "'analysts' in jwt.groups"
+    tables:
+      customers:
+        column_level:
+          include_all: true
+          mask:
+            email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
+        row_filter:
+          org_id: { _eq: { jwt: claims.org_id } }
 ```
+
+See [`access.example.yml`](access.example.yml) and
+[docs/access-policy.md](docs/access-policy.md).
 
 ## Documentation
 
 - [**Architecture & Design**](docs/architecture.md) — pipeline, design principles, and landscape comparison.
 - [**Schema Synthesis**](docs/schema-synthesis.md) — dbt extraction, IR, formatter, and lineage in depth.
-- [**API & Compiler**](docs/api.md) — GraphQL→SQL compiler and HTTP API layer.
+- [**GraphQL API**](docs/graphql.md) — sub-app, resolvers, auth, observability.
+- [**Compiler**](docs/compiler.md) — GraphQL → SQL with correlated subqueries.
 - [**Caching & Burst Protection**](docs/caching.md) — result cache + singleflight between resolver and warehouse.
-- [**Access Policy**](docs/access-policy.md) — RBAC, row-level filters, and column-level masking.
-- [**Security**](docs/security.md) — threat model and the cross-tenant isolation contract.
-- [**Configuration Reference**](docs/configuration.md) — operator-facing config surface.
+- [**Access Policy**](docs/access-policy.md) — RBAC, structured row filters, column masking.
+- [**Security**](docs/security.md) — JWT verification, threat model, anonymous mode.
+- [**Configuration Reference**](docs/configuration.md) — operator-facing config surface and env-var precedence.
 - [**MCP Server**](docs/mcp.md) — tools, discovery engine, and observability.
 - [**Roadmap**](ROADMAP.md)
 

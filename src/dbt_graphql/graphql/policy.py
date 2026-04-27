@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from jinja2.sandbox import SandboxedEnvironment
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 from simpleeval import EvalWithCompoundTypes
+from sqlalchemy import or_
+from sqlalchemy.sql.elements import ColumnElement
 
 from .auth import JWTPayload
+from .row_filter import compile_row_filter, validate_row_filter
 
 
 # ---------------------------------------------------------------------------
@@ -57,9 +59,26 @@ class ColumnAccessDenied(PolicyError):
         self.columns = sorted(columns)
 
 
+class MaskConflictError(PolicyError):
+    """Raised when matching policies disagree on the mask expression for a column."""
+
+    code = "POLICY_MASK_CONFLICT"
+
+    def __init__(self, table: str, column: str, exprs: list[str | None]) -> None:
+        super().__init__(
+            f"conflicting masks for column {column!r} on table {table!r}: "
+            f"{sorted(exprs, key=lambda x: x or '')}"
+        )
+        self.table = table
+        self.column = column
+
+
 # ---------------------------------------------------------------------------
 # Pydantic config models (parsed from access.yml)
 # ---------------------------------------------------------------------------
+
+
+_MASK_REJECT_TOKENS = (";", "--", "/*", "*/")
 
 
 class ColumnLevelPolicy(BaseModel):
@@ -74,10 +93,27 @@ class ColumnLevelPolicy(BaseModel):
             raise ValueError("include_all and includes are mutually exclusive")
         return self
 
+    @model_validator(mode="after")
+    def _check_mask_safety(self) -> "ColumnLevelPolicy":
+        for col, expr in self.mask.items():
+            if expr is None:
+                continue
+            for tok in _MASK_REJECT_TOKENS:
+                if tok in expr:
+                    raise ValueError(
+                        f"mask for column {col!r} contains forbidden token "
+                        f"{tok!r}: {expr!r}. Statement terminators and "
+                        f"comment markers are rejected to prevent malformed "
+                        f"compiled SQL."
+                    )
+        return self
+
 
 class TablePolicy(BaseModel):
     column_level: ColumnLevelPolicy | None = None
-    row_level: str | None = None
+    # Structured DSL — validated against the table registry by
+    # ``validate_access_policy_against_registry`` at policy-load time.
+    row_filter: dict[str, Any] | None = None
 
 
 class PolicyEntry(BaseModel):
@@ -98,6 +134,33 @@ def load_access_policy(path: str | Path) -> AccessPolicy:
     return AccessPolicy(**data)
 
 
+def validate_access_policy_against_registry(
+    policy: AccessPolicy, registry: Any
+) -> None:
+    """Walk every ``row_filter`` in the policy and verify column refs.
+
+    Called from the CLI after the registry is built. Catches typos like
+    ``orgg_id`` at startup instead of producing a per-request runtime error.
+    """
+    for entry in policy.policies:
+        for table_name, table_policy in entry.tables.items():
+            if table_policy.row_filter is None:
+                continue
+            tdef = registry.get(table_name)
+            if tdef is None:
+                raise ValueError(
+                    f"policy {entry.name!r} references row_filter on unknown "
+                    f"table {table_name!r}"
+                )
+            allowed = {c.name for c in tdef.columns}
+            try:
+                validate_row_filter(table_policy.row_filter, allowed_columns=allowed)
+            except ValueError as exc:
+                raise ValueError(
+                    f"policy {entry.name!r} table {table_name!r}: {exc}"
+                ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Runtime resolved policy (produced per-request per-table)
 # ---------------------------------------------------------------------------
@@ -109,25 +172,8 @@ class ResolvedPolicy:
     allowed_columns: frozenset[str] | None = None
     blocked_columns: frozenset[str] = field(default_factory=frozenset)
     masks: dict[str, str | None] = field(default_factory=dict)
-    # Pre-rendered SQL fragment with :named placeholders. The actual values
-    # live in row_filter_params and are passed via SQLAlchemy bindparams.
-    row_filter_sql: str | None = None
-    row_filter_params: dict[str, Any] = field(default_factory=dict)
-
-
-def render_row_filter(
-    template: str, ctx: JWTPayload, *, prefix: str = "p"
-) -> tuple[str, dict[str, Any]]:
-    """Render a Jinja row-filter template; every {{ expr }} becomes a :bindparam so claim values never reach SQL."""
-    params: dict[str, Any] = {}
-
-    def _bind(value: Any) -> str:
-        name = f"{prefix}_{len(params)}"
-        params[name] = value
-        return f":{name}"
-
-    env = SandboxedEnvironment(finalize=_bind)
-    return env.from_string(template).render(jwt=ctx), params
+    # SQLAlchemy clause to AND into the SELECT's WHERE. None = no row filter.
+    row_filter_clause: ColumnElement | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +199,7 @@ class PolicyEngine:
 
         if not matching:
             raise TableAccessDenied(table_name)
-        return self._merge(matching, ctx)
+        return self._merge(table_name, matching, ctx)
 
     def _eval_when(self, expr: str, ctx: JWTPayload) -> bool:
         """Evaluate a when-clause safely via simpleeval."""
@@ -163,7 +209,9 @@ class PolicyEngine:
             logger.warning("policy when-clause failed: {!r}: {}", expr, exc)
             return False
 
-    def _merge(self, policies: list[TablePolicy], ctx: JWTPayload) -> ResolvedPolicy:
+    def _merge(
+        self, table_name: str, policies: list[TablePolicy], ctx: JWTPayload
+    ) -> ResolvedPolicy:
         col_policies = [p.column_level for p in policies if p.column_level is not None]
 
         allowed: frozenset[str] | None = None
@@ -190,26 +238,25 @@ class PolicyEngine:
             for col in common:
                 exprs = {cp.mask[col] for cp in col_policies}
                 if len(exprs) > 1:
-                    raise ValueError(
-                        f"conflicting masks for column {col!r}: {sorted(exprs, key=lambda x: x or '')}"
-                    )
+                    raise MaskConflictError(table_name, col, list(exprs))
                 masks[col] = next(iter(exprs))
 
-        row_parts: list[str] = []
-        row_params: dict[str, Any] = {}
+        clauses: list[ColumnElement] = []
         for idx, p in enumerate(policies):
-            if not p.row_level:
+            if p.row_filter is None:
                 continue
-            sql, params = render_row_filter(p.row_level, ctx, prefix=f"p{idx}")
-            sql = sql.strip()
-            if sql:
-                row_parts.append(f"({sql})")
-                row_params.update(params)
+            clauses.append(compile_row_filter(p.row_filter, ctx, prefix=f"p{idx}"))
+
+        if not clauses:
+            row_filter_clause: ColumnElement | None = None
+        elif len(clauses) == 1:
+            row_filter_clause = clauses[0]
+        else:
+            row_filter_clause = or_(*clauses)
 
         return ResolvedPolicy(
             allowed_columns=allowed,
             blocked_columns=blocked,
             masks=masks,
-            row_filter_sql=" OR ".join(row_parts) if row_parts else None,
-            row_filter_params=row_params,
+            row_filter_clause=row_filter_clause,
         )

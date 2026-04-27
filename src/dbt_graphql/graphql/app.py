@@ -1,29 +1,21 @@
-from __future__ import annotations
+"""Ariadne GraphQL ASGI sub-app.
 
-import contextlib
-from contextlib import asynccontextmanager
+Builds only the GraphQL endpoint — no Starlette, no lifespan, no auth
+middleware, no MCP mounting. Composition (Starlette, lifespan, auth, MCP
+co-mount, OTel) lives in ``dbt_graphql.serve.app``.
+"""
+
+from __future__ import annotations
 
 from ariadne import make_executable_schema
 from ariadne.asgi import GraphQL
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.middleware.authentication import AuthenticationMiddleware
-from starlette.routing import Mount
 
-from ..cache import CacheConfig, close_cache, setup_cache
+from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
-from ..config import DbConfig, JWTConfig
 from ..formatter.schema import TableRegistry
-from .auth import auth_on_error, build_auth_backend
-from .monitoring import (
-    build_graphql_http_handler,
-    instrument_sqlalchemy,
-    instrument_starlette,
-)
+from .monitoring import build_graphql_http_handler
 from .policy import AccessPolicy, PolicyEngine
 from .resolvers import create_query_type
-
-from loguru import logger
 
 _STANDARD_GQL_SCALARS = {"String", "Int", "Float", "Boolean", "ID"}
 
@@ -69,29 +61,25 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def create_app(
+def create_graphql_subapp(
     *,
     registry: TableRegistry,
-    db_url: str | None = None,
-    config: DbConfig | None = None,
+    db: DatabaseManager,
     access_policy: AccessPolicy | None = None,
     cache_config: CacheConfig | None = None,
-    jwt_config: JWTConfig,
-    mcp_http_app=None,
-) -> Starlette:
-    """Build a Starlette app with GraphQL at ``/graphql`` and optionally MCP at ``/mcp``.
+    introspection: bool = False,
+) -> GraphQL:
+    """Build the Ariadne GraphQL ASGI sub-app.
 
-    ``cache_config=None`` disables the result cache entirely — every
-    request goes through to the warehouse. Pass an explicit
-    ``CacheConfig()`` to opt into the default result cache + singleflight.
+    The returned object is mountable under any Starlette path. The caller
+    owns the Starlette app, lifespan, auth middleware, and any co-mounted
+    sub-apps (e.g. MCP). See ``dbt_graphql.serve.app.create_app``.
     """
-    db = DatabaseManager(db_url=db_url, config=config)
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
-
     query_type = create_query_type(registry)
     gql_schema = make_executable_schema(_build_ariadne_sdl(registry), query_type)
 
-    graphql_app = GraphQL(
+    return GraphQL(
         gql_schema,
         context_value=lambda req, _data=None: {
             "request": req,
@@ -102,44 +90,5 @@ def create_app(
             "cache_config": cache_config,
         },
         http_handler=build_graphql_http_handler(),
+        introspection=introspection,
     )
-
-    auth_backend, owned_http = build_auth_backend(jwt_config)
-
-    @asynccontextmanager
-    async def lifespan(_app: Starlette):
-        async with contextlib.AsyncExitStack() as stack:
-            if mcp_http_app is not None:
-                await stack.enter_async_context(mcp_http_app.lifespan(_app))
-            logger.info("connecting to database")
-            await db.connect()
-            instrument_sqlalchemy(db._engine)
-            if cache_config is not None:
-                setup_cache(cache_config)
-            endpoints = "/graphql" + (" + /mcp" if mcp_http_app is not None else "")
-            logger.info("app ready — serving {}", endpoints)
-            yield
-            if cache_config is not None:
-                await close_cache()
-            if owned_http is not None:
-                await owned_http.aclose()
-            await db.close()
-            logger.info("database connection closed")
-
-    routes = [Mount("/graphql", graphql_app)]
-    if mcp_http_app is not None:
-        routes.append(Mount("/mcp", mcp_http_app))
-
-    app = Starlette(
-        lifespan=lifespan,
-        routes=routes,
-        middleware=[
-            Middleware(
-                AuthenticationMiddleware,
-                backend=auth_backend,
-                on_error=auth_on_error,
-            )
-        ],
-    )
-    instrument_starlette(app)
-    return app

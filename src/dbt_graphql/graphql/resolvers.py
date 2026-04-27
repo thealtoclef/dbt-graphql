@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from typing import Any
 
 from ariadne import QueryType
@@ -46,7 +47,7 @@ def _make_resolver(table_name: str):
 
         resolve_policy = None
         if policy_engine is not None:
-            resolve_policy = lambda t: policy_engine.evaluate(t, jwt_payload)  # noqa: E731
+            resolve_policy = functools.partial(policy_engine.evaluate, ctx=jwt_payload)
 
         try:
             stmt = compile_query(
@@ -96,10 +97,8 @@ def _to_graphql_error(exc: PolicyError) -> GraphQLError:
     ``extensions`` so they can programmatically detect denials.
     """
     extensions: dict[str, Any] = {"code": exc.code}
-    table = getattr(exc, "table", None)
-    if table is not None:
-        extensions["table"] = table
-    columns = getattr(exc, "columns", None)
-    if columns is not None:
-        extensions["columns"] = columns
+    for attr in ("table", "column", "columns"):
+        value = getattr(exc, attr, None)
+        if value is not None:
+            extensions[attr] = value
     return GraphQLError(str(exc), extensions=extensions)

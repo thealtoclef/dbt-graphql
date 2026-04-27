@@ -17,7 +17,7 @@ dbt-graphql --config config.yml [--output DIR]
 
 **Generate mode** (`--output` present): parse dbt artifacts, write schema files, exit. No database connection required.
 
-**Serve mode** (no `--output`): parse dbt artifacts, then serve based on `serve.graphql` / `serve.mcp` flags.
+**Serve mode** (no `--output`): parse dbt artifacts, then serve based on `serve.graphql.enabled` / `serve.mcp.enabled` flags.
 
 ---
 
@@ -35,7 +35,7 @@ Paths to dbt artifact files produced by `dbt docs generate`.
 
 ## `db` (optional)
 
-Database connection — required when `serve.graphql: true` or `serve.mcp: true`.
+Database connection — required when `serve.graphql.enabled: true` or `serve.mcp.enabled: true`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -73,10 +73,23 @@ HTTP server bind config. Required when running in serve mode.
 |---|---|---|---|
 | `host` | string | — | Bind address (e.g. `0.0.0.0`) |
 | `port` | int | — | TCP port |
-| `graphql` | bool | `false` | Serve the GraphQL API at `/graphql`. Requires `db:` section. |
-| `mcp` | bool | `false` | Serve the MCP server at `/mcp` (Streamable HTTP). Requires `db:` section. |
+| `graphql.enabled` | bool | `false` | Mount the GraphQL API at `/graphql`. Requires `db:` section. |
+| `graphql.introspection` | bool | `false` | Allow GraphQL schema introspection queries. **Off by default** — production should keep it off so the schema isn't enumerable. Enable in dev for tooling like GraphQL Playground / Apollo Studio. |
+| `mcp.enabled` | bool | `false` | Mount the MCP server at `/mcp` (Streamable HTTP). Requires `db:` section. |
 
-Both `graphql` and `mcp` can be `true` at the same time — they are mounted on the same Granian process as `/graphql` and `/mcp` respectively.
+Both can be enabled at the same time — they are mounted on the same Granian process as `/graphql` and `/mcp` respectively. At least one must be enabled or the CLI refuses to start.
+
+### Operating the pool admission 503
+
+When the warehouse is overloaded, the connection pool reaches capacity (`size + max_overflow`). New requests then wait up to `db.pool.timeout` seconds and, if no connection becomes available, fail with **HTTP 503** plus a `Retry-After: <db.pool.retry_after>` header. The LB sees this as clean admission denial and can retry without holding the upstream socket open.
+
+| Operator concern | Where to look |
+|---|---|
+| **"Are we hitting the pool ceiling?"** | OTel histogram `db.client.connections.wait_time` — p95/p99 climbing toward `db.pool.timeout` is the leading indicator. |
+| **"How often are we returning 503?"** | Resolver emits a GraphQL error with `extensions.code = "POOL_TIMEOUT"`; the HTTP layer elevates that to 503. Track 5xx rate per route. |
+| **When to widen the pool** | Sustained `wait_time` p95 > 1s with available warehouse headroom → bump `db.pool.size` (steady) or `db.pool.max_overflow` (burst). Sizing rule above caps the total. |
+| **When `Retry-After` is too short / long** | Aim for the warehouse's p50 query time. Too short and the LB hammers a saturated backend; too long and the client experiences a stall. |
+| **When 503 is *not* the right answer** | If the warehouse itself is healthy and we're 503-ing on stuck connections, raise `db.pool.recycle` complaints — connections are being recycled mid-flight or held by hung queries. |
 
 ---
 
@@ -201,4 +214,26 @@ DBT_GRAPHQL__MONITORING__TRACES__ENDPOINT=http://collector:4317
 DBT_GRAPHQL__MONITORING__TRACES__PROTOCOL=grpc
 ```
 
-Env vars take precedence over values in `config.yml`.
+### Precedence
+
+Sources are layered in this order (later wins):
+
+1. **Defaults** — values declared on `AppConfig` / its sub-models in [`src/dbt_graphql/config.py`](../src/dbt_graphql/config.py).
+2. **Config file** — values in `config.yml` passed via `--config`.
+3. **Environment variables** — `DBT_GRAPHQL__*` overrides.
+
+So **env > file > defaults**. The order is enforced by `AppConfig.settings_customise_sources` in `config.py` (Pydantic-Settings).
+
+#### Worked example
+
+```yaml
+# config.yml
+enrichment:
+  budget: 100
+```
+
+```bash
+DBT_GRAPHQL__ENRICHMENT__BUDGET=7 dbt-graphql --config config.yml
+```
+
+Effective `enrichment.budget` is `7`. The env var wins; the file value is shadowed; the in-code default (`20`) is shadowed by the file value before that.

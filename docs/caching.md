@@ -2,7 +2,7 @@
 
 A result cache with singleflight, sitting between the GraphQL HTTP handler and the warehouse. Serves repeat queries without re-executing them, and coalesces concurrent identical queries into a single warehouse roundtrip.
 
-**Entry points:** [`src/dbt_graphql/cache/`](../src/dbt_graphql/cache/) — wired into the API by [`api/app.py`](../src/dbt_graphql/api/app.py) and [`api/resolvers.py`](../src/dbt_graphql/api/resolvers.py).
+**Entry points:** [`src/dbt_graphql/cache/`](../src/dbt_graphql/cache/) — wired into the GraphQL sub-app by [`graphql/app.py`](../src/dbt_graphql/graphql/app.py) and [`graphql/resolvers.py`](../src/dbt_graphql/graphql/resolvers.py).
 
 See [architecture.md](architecture.md) for where the cache sits in the overall pipeline and [configuration.md § cache](configuration.md#cache-optional) for the operator-facing config surface.
 
@@ -123,12 +123,12 @@ If `dialect_name` is one SQLAlchemy cannot load, `hash_sql` raises `ValueError` 
 
 > **Two users with different effective permissions can never share a cache entry, by construction.**
 
-The argument is short. The policy engine renders row-level filters into Jinja templates whose `{{ jwt.claims.x }}` placeholders are turned into SQLAlchemy bind parameters before the statement is compiled. Bound values land in `compiled.params`, which is part of the cache key. Therefore:
+The argument is short. The policy engine compiles `row_filter` DSL trees to SQLAlchemy `ColumnElement` clauses; JWT claim values bind as named parameters before the statement is compiled. Bound values land in `compiled.params`, which is part of the cache key. Therefore:
 
-- **Tenant A (`cust_id=1`) vs Tenant B (`cust_id=2`)**: the row filter renders with different bind values → different `params` dict → different keys. Cache cannot leak.
-- **Two admins with no row filter, totally different JWTs**: the rendered SQL is byte-identical and there are no row-filter binds → same key → they share. This is correct: they would receive the same data either way.
+- **Tenant A (`cust_id=1`) vs Tenant B (`cust_id=2`)**: the row filter compiles with different bind values → different `params` dict → different keys. Cache cannot leak.
+- **Two admins with no row filter, totally different JWTs**: the compiled SQL is byte-identical and there are no row-filter binds → same key → they share. This is correct: they would receive the same data either way.
 - **Same tenant, same query, repeated**: same SQL, same binds → same key → second request is served from cache. This is the intended hit case.
-- **Same tenant, same query, fresh JWT (new `iat`/`exp`)**: as long as the *relevant* claims are unchanged, the rendered SQL is unchanged → same key → cache hits. Token refresh does not invalidate the cache.
+- **Same tenant, same query, fresh JWT (new `iat`/`exp`)**: as long as the *relevant* claims are unchanged, the compiled SQL is unchanged → same key → cache hits. Token refresh does not invalidate the cache.
 
 What does **not** automatically share an entry, even when the user might intuitively expect it:
 

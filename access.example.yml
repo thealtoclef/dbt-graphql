@@ -8,7 +8,7 @@
 # Top-level key: `policies` (list). Each entry:
 #   name   - human-readable label (used in logs)
 #   when   - expression evaluated by simpleeval against `jwt`
-#   tables - per-table column_level and row_level rules
+#   tables - per-table column_level and row_filter rules
 #
 # `when` operators: and, or, not, in, not in, ==, !=, >=, <=, >, <
 # jwt fields: jwt.sub, jwt.email, jwt.groups (list), jwt.claims.<key>
@@ -20,10 +20,13 @@
 #   mask (dict)         - col: "SQL expression" referencing the column directly
 #                         write "NULL" to emit SQL NULL
 #
-# row_level (string)    - SQL template. Placeholders `{{ jwt.X }}` are
-#                         rendered as SQL bind parameters — DO NOT quote them.
-#                         Example (correct):   user_id = {{ jwt.sub }}
-#                         Example (wrong):     user_id = '{{ jwt.sub }}'
+# row_filter (mapping)  - structured boolean-expression DSL.
+#                         Logical operators: _and, _or, _not.
+#                         Comparison operators: _eq, _ne, _lt, _lte, _gt,
+#                         _gte, _in, _is_null. RHS values are literals or
+#                         { jwt: "<dotted.path>" } references. Column names
+#                         are validated against the table schema at
+#                         policy-load time, so typos fail fast.
 #
 # Multi-policy match: OR semantics (most permissive wins for columns/rows;
 # masks apply only when every matching policy agrees on the expression).
@@ -57,7 +60,8 @@ policies:
         column_level:
           include_all: true
           excludes: [internal_notes]
-        row_level: "org_id = {{ jwt.claims.org_id }}"
+        row_filter:
+          org_id: { _eq: { jwt: claims.org_id } }
 
       customers:
         column_level:
@@ -67,7 +71,10 @@ policies:
             email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
             phone: "CONCAT('***-***-', RIGHT(phone, 4))"
             ssn: ~
-        row_level: "org_id = {{ jwt.claims.org_id }}"
+        row_filter:
+          _and:
+            - org_id: { _eq: { jwt: claims.org_id } }
+            - status: { _in: [active, pending] }
 
   # Finance team sees salary and revenue; row-restricted to their region.
   - name: finance
@@ -76,7 +83,8 @@ policies:
       orders:
         column_level:
           include_all: true
-        row_level: "region = {{ jwt.claims.region }}"
+        row_filter:
+          region: { _eq: { jwt: claims.region } }
 
   # Unauthenticated users see only the public product catalogue.
   - name: anon
@@ -85,4 +93,5 @@ policies:
       products:
         column_level:
           includes: [product_id, name, category, price]
-        row_level: "published = TRUE"
+        row_filter:
+          published: { _eq: true }

@@ -21,7 +21,7 @@ class PoolConfig(BaseModel):
 
     size: int = defaults.DB_POOL_SIZE
     max_overflow: int = defaults.DB_POOL_MAX_OVERFLOW
-    timeout: int = defaults.DB_POOL_TIMEOUT
+    timeout: float = defaults.DB_POOL_TIMEOUT
     recycle: int = defaults.DB_POOL_RECYCLE
     # Emitted as ``Retry-After: <value>`` on 503 responses (seconds, per
     # RFC 9110 §10.2.3). See ``DB_POOL_RETRY_AFTER`` in defaults.py.
@@ -38,51 +38,48 @@ class DbConfig(BaseModel):
     pool: PoolConfig = PoolConfig()
 
 
+class GraphQLServeConfig(BaseModel):
+    enabled: bool = False
+    introspection: bool = False  # off by default; opt-in for non-prod environments
+
+
+class MCPServeConfig(BaseModel):
+    enabled: bool = False
+
+
 class ServeConfig(BaseModel):
     host: str
     port: int
-    graphql: bool = False
-    mcp: bool = False
+    graphql: GraphQLServeConfig = GraphQLServeConfig()
+    mcp: MCPServeConfig = MCPServeConfig()
 
 
-class TracesConfig(BaseModel):
+class _OTLPSignalConfig(BaseModel):
+    """Shared OTLP exporter shape — endpoint requires protocol when set."""
+
     endpoint: str | None = None
     protocol: str | None = None  # "grpc" or "http"; required when endpoint is set
 
     @model_validator(mode="after")
-    def _require_protocol_with_endpoint(self) -> "TracesConfig":
+    def _require_protocol_with_endpoint(self):
         if self.endpoint and not self.protocol:
+            signal = type(self).__name__.removesuffix("Config").lower()
             raise ValueError(
-                "monitoring.traces.protocol is required when endpoint is set"
+                f"monitoring.{signal}.protocol is required when endpoint is set"
             )
         return self
 
 
-class MetricsConfig(BaseModel):
-    endpoint: str | None = None
-    protocol: str | None = None
-
-    @model_validator(mode="after")
-    def _require_protocol_with_endpoint(self) -> "MetricsConfig":
-        if self.endpoint and not self.protocol:
-            raise ValueError(
-                "monitoring.metrics.protocol is required when endpoint is set"
-            )
-        return self
+class TracesConfig(_OTLPSignalConfig):
+    pass
 
 
-class LogsConfig(BaseModel):
-    endpoint: str | None = None
-    protocol: str | None = None
+class MetricsConfig(_OTLPSignalConfig):
+    pass
+
+
+class LogsConfig(_OTLPSignalConfig):
     level: str = defaults.MONITORING_LOG_LEVEL
-
-    @model_validator(mode="after")
-    def _require_protocol_with_endpoint(self) -> "LogsConfig":
-        if self.endpoint and not self.protocol:
-            raise ValueError(
-                "monitoring.logs.protocol is required when endpoint is set"
-            )
-        return self
 
 
 class MonitoringConfig(BaseModel):
@@ -127,12 +124,27 @@ class JWTConfig(BaseModel):
                 "security.jwt requires exactly one of: "
                 "jwks_url, key_url, key_env, key_file"
             )
+        if self.key_url is not None:
+            url_str = str(self.key_url).lower()
+            if "jwks" in url_str or url_str.endswith("/.well-known/jwks.json"):
+                raise ValueError(
+                    "security.jwt.key_url looks like a JWKS endpoint "
+                    f"({self.key_url!s}). Use jwks_url for rotating key sets — "
+                    "key_url is for a single static PEM/JWK and is fetched "
+                    "once with no refresh."
+                )
         return self
 
 
 class SecurityConfig(BaseModel):
     policy_path: Path | None = None
     jwt: JWTConfig = JWTConfig()
+    # Explicit opt-in required when jwt.enabled is false. Prevents the
+    # "forgot to enable JWT in prod" footgun: every request would otherwise
+    # be treated as anonymous and policy when-clauses against jwt claims
+    # would silently match permissive rules. Enforced at serve startup,
+    # not at config load, so generate-mode and unit tests don't trip it.
+    allow_anonymous: bool = False
 
 
 class DbtConfig(BaseModel):
@@ -158,12 +170,13 @@ class AppConfig(BaseSettings):
     @classmethod
     def settings_customise_sources(
         cls,
-        settings_cls,  # noqa: ARG003 — required for override signature
+        settings_cls,
         init_settings,
         env_settings,
         dotenv_settings,
         file_secret_settings,
     ):
+        del settings_cls  # required override param; unused
         # env vars take precedence over config file (init_settings)
         return env_settings, init_settings, dotenv_settings, file_secret_settings
 

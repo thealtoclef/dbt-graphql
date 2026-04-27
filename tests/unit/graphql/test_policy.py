@@ -7,12 +7,12 @@ import pytest
 from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
+    MaskConflictError,
     PolicyEngine,
     PolicyEntry,
     TableAccessDenied,
     TablePolicy,
     load_access_policy,
-    render_row_filter,
 )
 from dbt_graphql.graphql.auth import JWTPayload
 
@@ -99,6 +99,37 @@ def test_eval_when_cannot_call_builtins():
 def test_column_level_mutually_exclusive():
     with pytest.raises(ValueError, match="mutually exclusive"):
         ColumnLevelPolicy(include_all=True, includes=["col1"])
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "NULL; DROP TABLE users",
+        "'***'-- comment",
+        "/* hidden */ NULL",
+        "NULL */",
+    ],
+)
+def test_mask_rejects_forbidden_tokens(expr):
+    """Mask SQL fragments are operator-trusted but a statement terminator or
+    comment marker is almost always a typo that would produce malformed SQL.
+    Reject at policy load time."""
+    with pytest.raises(ValueError, match="forbidden token"):
+        ColumnLevelPolicy(includes=["email"], mask={"email": expr})
+
+
+def test_mask_allows_legitimate_expressions():
+    """Sanity: realistic mask expressions still load."""
+    p = ColumnLevelPolicy(
+        include_all=True,
+        mask={
+            "email": "CONCAT('***@', SPLIT_PART(email, '@', 2))",
+            "ssn": "NULL",
+            "phone": None,
+        },
+    )
+    assert p.mask["email"] is not None
+    assert p.mask["email"].startswith("CONCAT")
 
 
 def test_column_level_include_all_no_includes_ok():
@@ -314,113 +345,125 @@ def test_multi_policy_mask_conflict_raises():
             },
         ),
     )
-    with pytest.raises(ValueError, match="conflicting masks"):
+    with pytest.raises(MaskConflictError) as exc_info:
         engine.evaluate("customers", _ctx())
+    assert exc_info.value.code == "POLICY_MASK_CONFLICT"
+    assert exc_info.value.table == "customers"
+    assert exc_info.value.column == "email"
+
+
+def test_mask_conflict_surfaces_column_in_graphql_extensions():
+    """Resolvers must project ``MaskConflictError.column`` into the
+    GraphQL error's ``extensions`` block so clients can identify the
+    offending column without parsing the message string."""
+    from dbt_graphql.graphql.resolvers import _to_graphql_error
+
+    err = MaskConflictError("customers", "email", [None, "CONCAT('*', email)"])
+    gql_err = _to_graphql_error(err)
+    assert gql_err.extensions is not None
+    assert gql_err.extensions["code"] == "POLICY_MASK_CONFLICT"
+    assert gql_err.extensions["table"] == "customers"
+    assert gql_err.extensions["column"] == "email"
+
+
+def _render_clause(clause) -> tuple[str, dict]:
+    from sqlalchemy.dialects import postgresql
+
+    compiled = clause.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": False},
+    )
+    return str(compiled), dict(compiled.params)
+
+
+def test_engine_uses_dsl_row_filter():
+    """A policy using the DSL ``row_filter`` produces a SQLAlchemy clause the
+    compiler downstream drops directly into ``stmt.where(...)``."""
+    engine = _engine(
+        _policy(
+            "analyst",
+            "'analysts' in jwt.groups",
+            {
+                "orders": TablePolicy(
+                    column_level=ColumnLevelPolicy(include_all=True),
+                    row_filter={"org_id": {"_eq": {"jwt": "claims.org_id"}}},
+                )
+            },
+        )
+    )
+    resolved = engine.evaluate("orders", _ctx(groups=["analysts"], claims={"org_id": 7}))
+    assert resolved.row_filter_clause is not None
+    sql, params = _render_clause(resolved.row_filter_clause)
+    assert "org_id =" in sql
+    assert params == {"p0_0": 7}
 
 
 def test_multi_policy_row_filter_or():
+    """Two policies that both match must OR-merge their row filters."""
     engine = _engine(
         _policy(
             "a",
             "True",
-            {"orders": TablePolicy(row_level="user_id = {{ jwt.sub }}")},
+            {
+                "orders": TablePolicy(
+                    row_filter={"user_id": {"_eq": {"jwt": "sub"}}}
+                )
+            },
         ),
         _policy(
             "b",
             "True",
-            {"orders": TablePolicy(row_level="is_public = TRUE")},
+            {
+                "orders": TablePolicy(
+                    row_filter={"is_public": {"_eq": True}}
+                )
+            },
         ),
     )
     result = engine.evaluate("orders", _ctx(sub="u1"))
-    assert result.row_filter_sql == "(user_id = :p0_0) OR (is_public = TRUE)"
-    assert result.row_filter_params == {"p0_0": "u1"}
+    assert result.row_filter_clause is not None
+    sql, params = _render_clause(result.row_filter_clause)
+    assert " OR " in sql
+    assert "user_id =" in sql
+    assert "is_public =" in sql
+    assert set(params.values()) == {"u1", True}
 
 
-# ---------------------------------------------------------------------------
-# row_level parameterized rendering
-# ---------------------------------------------------------------------------
-
-
-def test_render_row_filter_sub():
-    sql, params = render_row_filter("user_id = {{ jwt.sub }}", _ctx(sub="user_42"))
-    assert sql == "user_id = :p_0"
-    assert params == {"p_0": "user_42"}
-
-
-def test_render_row_filter_claims():
-    sql, params = render_row_filter(
-        "region = {{ jwt.claims.region }}", _ctx(claims={"region": "eu-west"})
+def test_validate_against_registry_catches_unknown_column():
+    """Sec-H's load-time validation must catch column typos before any
+    request hits the policy."""
+    from dbt_graphql.graphql.policy import (
+        AccessPolicy,
+        validate_access_policy_against_registry,
     )
-    assert sql == "region = :p_0"
-    assert params == {"p_0": "eu-west"}
 
+    class _Col:
+        def __init__(self, name):
+            self.name = name
 
-def test_render_row_filter_static():
-    sql, params = render_row_filter("published = TRUE", _ctx())
-    assert sql == "published = TRUE"
-    assert params == {}
+    class _TDef:
+        columns = [_Col("id"), _Col("org_id")]
 
+    class _Registry:
+        def get(self, _name):
+            return _TDef()
 
-def test_render_row_filter_missing_claim_is_none():
-    """Missing jwt paths resolve to None so the bind param is SQL NULL."""
-    sql, params = render_row_filter("user_id = {{ jwt.sub }}", _ctx())
-    assert sql == "user_id = :p_0"
-    assert params == {"p_0": None}
-
-
-def test_render_row_filter_injection_safe():
-    """A malicious claim value cannot escape the bind param."""
-    sql, params = render_row_filter(
-        "user_id = {{ jwt.sub }}",
-        _ctx(sub="x'; DROP TABLE orders; --"),
+    policy = AccessPolicy(
+        policies=[
+            _policy(
+                "analyst",
+                "True",
+                {
+                    "orders": TablePolicy(
+                        column_level=ColumnLevelPolicy(include_all=True),
+                        row_filter={"orgg_id": {"_eq": 1}},
+                    )
+                },
+            )
+        ]
     )
-    # The placeholder is a named bind param, not interpolated SQL.
-    assert sql == "user_id = :p_0"
-    assert "DROP TABLE" not in sql
-    # The dangerous payload is carried only as a parameter value.
-    assert params == {"p_0": "x'; DROP TABLE orders; --"}
-
-
-def test_render_row_filter_multiple_placeholders():
-    sql, params = render_row_filter(
-        "org_id = {{ jwt.claims.org_id }} AND region = {{ jwt.claims.region }}",
-        _ctx(claims={"org_id": 7, "region": "us"}),
-    )
-    assert sql == "org_id = :p_0 AND region = :p_1"
-    assert params == {"p_0": 7, "p_1": "us"}
-
-
-def test_render_row_filter_with_jinja_filter():
-    """Jinja filters (| upper, | default, ...) run before finalize."""
-    sql, params = render_row_filter(
-        "region = {{ jwt.claims.region | upper }}",
-        _ctx(claims={"region": "eu"}),
-    )
-    assert sql == "region = :p_0"
-    assert params == {"p_0": "EU"}
-
-
-def test_render_row_filter_with_if_block():
-    """Conditional templates: the condition is raw-evaluated, outputs bind."""
-    tmpl = (
-        "{% if jwt.claims.region %}region = {{ jwt.claims.region }}"
-        "{% else %}FALSE{% endif %}"
-    )
-    sql, params = render_row_filter(tmpl, _ctx(claims={"region": "us"}))
-    assert sql == "region = :p_0"
-    assert params == {"p_0": "us"}
-
-    sql, params = render_row_filter(tmpl, _ctx())
-    assert sql == "FALSE"
-    assert params == {}
-
-
-def test_render_row_filter_sandbox_blocks_dunder():
-    """SandboxedEnvironment must reject __class__-style escapes."""
-    from jinja2.exceptions import SecurityError
-
-    with pytest.raises(SecurityError):
-        render_row_filter("x = {{ jwt.__class__.__name__ }}", _ctx())
+    with pytest.raises(ValueError, match="unknown column 'orgg_id'"):
+        validate_access_policy_against_registry(policy, _Registry())
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +485,8 @@ policies:
           excludes: [internal_notes]
           mask:
             email: ~
-        row_level: "user_id = {{ jwt.sub }}"
+        row_filter:
+          user_id: { _eq: { jwt: sub } }
 """
     )
     policy = load_access_policy(yml)
@@ -454,7 +498,7 @@ policies:
     assert tbl.column_level.include_all is True
     assert tbl.column_level.excludes == ["internal_notes"]
     assert tbl.column_level.mask["email"] is None
-    assert tbl.row_level == "user_id = {{ jwt.sub }}"
+    assert tbl.row_filter == {"user_id": {"_eq": {"jwt": "sub"}}}
 
 
 def test_load_access_policy_invalid_yaml(tmp_path):

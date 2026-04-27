@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> None:
 
     from .config import load_config
 
+    # Operator-input parsing — surface any error as a clean exit, no traceback.
     try:
         config = load_config(args.config)
     except Exception as exc:
@@ -50,7 +51,7 @@ def main(argv: list[str] | None = None) -> None:
             manifest_path=config.dbt.manifest,
             exclude_patterns=config.dbt.exclude or None,
         )
-    except (FileNotFoundError, ValueError, KeyError) as exc:
+    except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -102,46 +103,61 @@ def _run_serve(project, config) -> None:
         )
         sys.exit(1)
 
-    serve_graphql = config.serve.graphql
-    serve_mcp = config.serve.mcp
+    serve_graphql = config.serve.graphql.enabled
+    serve_mcp = config.serve.mcp.enabled
 
     if not serve_graphql and not serve_mcp:
         print(
-            "Error: at least one of serve.graphql or serve.mcp must be true in config.yml.",
+            "Error: at least one of serve.graphql.enabled or serve.mcp.enabled "
+            "must be true in config.yml.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    mcp_http_app = None
-    if serve_mcp:
-        from .compiler.connection import DatabaseManager
-        from .mcp.server import create_mcp_http_app
+    if not config.security.jwt.enabled and not config.security.allow_anonymous:
+        print(
+            "Error: security.jwt.enabled is false and security.allow_anonymous is "
+            "not set. Refusing to start: every request would be treated as "
+            "anonymous. Set security.allow_anonymous: true to confirm (dev mode "
+            "or behind a trusted proxy that authenticates upstream), or enable "
+            "JWT verification.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-        db = DatabaseManager(config=config.db)
-        mcp_http_app = create_mcp_http_app(project, db=db, enrichment=config.enrichment)
+    if not config.security.jwt.enabled:
+        from loguru import logger
 
+        logger.warning(
+            "starting with security.jwt.enabled=false and "
+            "security.allow_anonymous=true — every request will be treated as "
+            "anonymous. Do not run this configuration in production unless an "
+            "upstream proxy authenticates requests."
+        )
+
+    from .serve import run as _run
+
+    registry = None
+    access_policy = None
     if serve_graphql:
-        from .graphql.policy import load_access_policy
         from .formatter.graphql import build_registry
-        from .serve import serve_graphql as _serve_graphql
+        from .graphql.policy import (
+            load_access_policy,
+            validate_access_policy_against_registry,
+        )
 
         registry = build_registry(project)
-
-        access_policy = None
         if config.security.policy_path:
             try:
                 access_policy = load_access_policy(config.security.policy_path)
+                validate_access_policy_against_registry(access_policy, registry)
             except Exception as exc:
                 print(f"Error loading policy: {exc}", file=sys.stderr)
                 sys.exit(1)
 
-        _serve_graphql(
-            registry=registry,
-            config=config,
-            access_policy=access_policy,
-            mcp_http_app=mcp_http_app,
-        )
-    else:
-        from .serve import serve_mcp
-
-        serve_mcp(mcp_http_app=mcp_http_app, config=config)
+    _run(
+        registry=registry,
+        config=config,
+        project=project,
+        access_policy=access_policy,
+    )

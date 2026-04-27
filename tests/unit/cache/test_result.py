@@ -141,6 +141,55 @@ class TestSingleflight:
         assert stats.result.hit == 0
 
     @pytest.mark.asyncio
+    async def test_lock_safety_timeout_bounds_waiter_blocking(self, fresh_cache):
+        """``lock_safety_timeout`` puts a hard ceiling on waiter blocking.
+
+        Setup: ``lock_safety_timeout=1``, runner sleep=4.0. The first
+        caller holds the lock for ~4s; without the safety timeout the
+        second caller would have to wait the full 4s for the holder.
+        With it, the second caller is unblocked at ~1s, runs the runner,
+        and both return — total wall time must be well under 4s + 4s
+        (full serialization).
+
+        ``asyncio.wait_for`` enforces the ceiling so a regression to
+        unbounded waiting fails the test instead of just running slow.
+        """
+        runner = CountingRunner(result=[{"id": 99}], delay=4.0)
+        cfg = CacheConfig(ttl=60, lock_safety_timeout=1)
+        s = _stmt("lock_test")
+
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        # Ceiling: 7.5s gives generous slack over partially-overlapped
+        # runners (~5–6s observed) but trips full-serialize regression
+        # (~8s = 4s holder + 4s waiter sequentially).
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                execute_with_cache(
+                    s, dialect_name="postgresql", runner=runner, cfg=cfg
+                ),
+                execute_with_cache(
+                    s, dialect_name="postgresql", runner=runner, cfg=cfg
+                ),
+            ),
+            timeout=7.5,
+        )
+        elapsed = loop.time() - t0
+
+        assert all(r == [{"id": 99}] for r in results)
+        # Total wall time stayed under full serialization — the safety
+        # timeout actually unblocked the waiter while the holder was
+        # still running.
+        assert elapsed < 7.5, f"waiter not unblocked by safety timeout: {elapsed:.2f}s"
+        # Runner ran twice: the waiter was released into an empty cache
+        # (holder hadn't set yet) and ran its own runner. If the lock
+        # had blocked the waiter until the holder finished, the waiter
+        # would have hit the populated cache instead — calls would be 1.
+        assert runner.calls >= 2, (
+            f"lock auto-release did not unblock the waiter; runner.calls={runner.calls}"
+        )
+
+    @pytest.mark.asyncio
     async def test_distinct_queries_do_not_serialize(self, fresh_cache):
         """Different keys → independent locks → all run in parallel."""
         runner = CountingRunner(delay=0.05)

@@ -19,16 +19,16 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | — | Source Node Inclusion (`catalog.sources`) | 🔲 Pending |
 | Sec-A | Identity & JWT Auth | ✅ Done (joserfc verifier; JWKS + static sources) |
 | Sec-B | RBAC + Column-Level Security | ✅ Done |
-| Sec-C | Row-Level Security | 🟨 Core shipped |
-| Sec-D | Data Masking | 🟨 Core shipped |
+| Sec-C | Row-Level Security | ✅ Done (DSL-only, SA expression compile) |
+| Sec-D | Data Masking | ✅ Done (mask conflict structured GraphQL error; SQL-token rejection at load time) |
 | Sec-E | Query Allow-List | 🔲 Planned |
 | Sec-F | Audit Logging | 🔲 Planned |
 | Sec-G | ABAC match-clauses + deny rules | 🔲 Planned |
-| Sec-H | Structured row-filter DSL | 🔲 Planned |
+| Sec-H | Structured row-filter DSL | ✅ Done (Hasura-style; compiles to SA `ColumnElement`; load-time column validation) |
 | Sec-I | Column classifications | 🔲 Planned |
 | Sec-K | Hot reload of access.yml | 🔲 Planned |
 | Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
-| Sec-J | Caching & burst protection | ✅ Done (result cache + singleflight + OTel metrics + Redis multi-replica) |
+| Sec-J | Caching & burst protection | ✅ Done (result cache + singleflight + OTel metrics; Redis URI for shared backend) |
 | Sec-N | Pool admission control (503 + Retry-After) | ✅ Done |
 | Sec-M | Python extension hooks (Superset-style overrides file) | 🔲 Placeholder |
 
@@ -93,7 +93,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | `serve.graphql` / `serve.mcp` flags | ✅ |
 | `build_registry(project)` — direct `ProjectInfo → TableRegistry` (no SDL roundtrip) | ✅ |
 | `create_mcp_http_app` — Streamable HTTP transport via FastMCP | ✅ |
-| `serve_mcp_http` — standalone MCP-only Granian server | ✅ |
+| Single `serve.run()` Granian entry — mount-conditional GraphQL/MCP | ✅ |
 | Co-mounted GraphQL + MCP on single Granian process | ✅ |
 | `api`/`mcp` optional extras collapsed into core deps | ✅ |
 | `redis` optional extra for Redis cache backend | ✅ |
@@ -258,7 +258,7 @@ as anonymous — there is no trust-only / signature-skipping decode mode.
 | `JWKSResolver` (httpx async + monotonic TTL + asyncio.Lock coalescing) | ✅ |
 | Configurable `roles_claim` for scope extraction (defaults to `scope`) | ✅ |
 | OTel `auth.jwt` counter with outcome attribute | ✅ |
-| `JWTPayload` dot-access available in `when:` / `row_level:` | ✅ |
+| `JWTPayload` dot-access available in `when:` and `row_filter` `{ jwt: ... }` references | ✅ |
 | HTTP integration tests for policy + JWT (PostgreSQL + MySQL) | ✅ |
 
 ---
@@ -297,28 +297,30 @@ selection cannot bypass deny / strict / mask / row-filter.
 
 ---
 
-### Sec-C — Row-Level Security 🟨 Core shipped
+### Sec-C — Row-Level Security ✅ Done
 
-**Status:** Row filters are Jinja templates rendered through a
-`SandboxedEnvironment(finalize=...)` hook so every `{{ expression }}` becomes
-a SQL bind parameter. Values are bound via
-`text(sql).bindparams(**params)` — SQL injection via JWT claims is
+**Status:** Row filters are Hasura-style structured DSL trees (`row_filter`)
+compiled directly to SQLAlchemy `ColumnElement` clauses. Column names are
+validated against the table registry at policy-load time; JWT claim values
+bind as named parameters via `bindparam`. SQL injection via JWT claims is
 structurally impossible. OR semantics across matching policies.
 
 **Reference:** [`docs/access-policy.md`](docs/access-policy.md) §
-*`row_level` template reference*.
+*`row_filter` reference*.
 
 | Item | Status |
 |---|---|
-| Jinja template → `:bind_param` rendering with `finalize` | ✅ |
+| Hasura-style DSL (`_eq`, `_and`, `_or`, `_not`, `_in`, `_is_null`, …) | ✅ |
+| Compile to SQLAlchemy `ColumnElement` (no raw SQL strings) | ✅ |
+| Load-time column-reference validation against table registry | ✅ |
 | OR merge across matching policies (per-policy name prefix) | ✅ |
 | Merge with user `where:` in `compile_query` | ✅ |
 | SQL injection regression test | ✅ |
-| Static-predicate passthrough (`published = TRUE`) | ✅ |
+| `{ jwt: <dotted.path> }` references (missing claim → SQL NULL → default-deny) | ✅ |
 
 ---
 
-### Sec-D — Data Masking 🟨 Core shipped
+### Sec-D — Data Masking ✅ Done
 
 **Status:** Mask expressions are raw SQL fragments from `access.yml`
 (operator-controlled, trusted). `"NULL"` emits a bound SQL NULL; anything
@@ -332,8 +334,8 @@ expression; conflicting expressions raise at evaluate time.
 | SQL mask injection in `compile_query` (`_mask_column`) | ✅ |
 | `NULL` static mask | ✅ |
 | "Least-masked wins" — any unmasked matching policy drops the mask | ✅ |
-| Conflict detection (raise when policies disagree on mask SQL) | ✅ |
-| Dialect safety: reject `;` / `--` in mask strings at load time | 🔲 |
+| Conflict detection (structured `POLICY_MASK_CONFLICT` GraphQL error) | ✅ |
+| Dialect safety: reject `;`, `--`, `/*`, `*/` in mask strings at load time | ✅ |
 
 ---
 
@@ -451,37 +453,32 @@ releases, then `when:` is deprecated. Both compile to the same
 
 ---
 
-### Sec-H — Structured row-filter DSL
+### Sec-H — Structured row-filter DSL ✅ Done
 
-**Motivation:** Raw-SQL `row_level` templates are dialect-specific and
-impossible to validate statically (typos in column names surface as
-runtime errors). A Hasura-style boolean expression tree compiles to
-SQLAlchemy expressions and is validated against the `TableRegistry` at
-load time.
+**Status:** The DSL is the only row-filter language. Hasura convention
+(`_eq`, `_and`, `_or`, `_not`, `_in`, `_is_null`, …); RHS values are
+literals or `{ jwt: <dotted.path> }` references. The compiler emits
+SQLAlchemy `ColumnElement` clauses that drop directly into
+`stmt.where(...)`. There is no template engine in the data-access path.
 
-**Policy additions:**
+**Policy form:**
 ```yaml
 tables:
   customers:
     row_filter:
-      all:
-        - { col: org_id, eq: { jwt: claims.org_id } }
-        - any:
-            - { col: is_public, eq: true }
-            - { col: owner_id, eq: { jwt: sub } }
+      _and:
+        - org_id: { _eq: { jwt: claims.org_id } }
+        - _or:
+            - is_public: { _eq: true }
+            - owner_id: { _eq: { jwt: sub } }
 ```
-
-**Behavior:** The DSL is a direct replacement for `row_level:` (both
-supported during migration). Column names are resolved against the table
-registry at load time — unknown columns fail policy load, not the first
-request.
 
 | Item | Status |
 |---|---|
-| DSL Pydantic schema (`RowFilterExpr` discriminated union) | 🔲 |
-| Compiler → SQLAlchemy `BinaryExpression` / `BooleanClauseList` | 🔲 |
-| Load-time column validation against `TableRegistry` | 🔲 |
-| Coexistence with `row_level:` raw-SQL template | 🔲 |
+| DSL Pydantic schema and load-time structural validation | ✅ |
+| Compiler → SQLAlchemy `ColumnElement` (no raw SQL strings) | ✅ |
+| Load-time column validation against `TableRegistry` | ✅ |
+| OR-merge across matching policies | ✅ |
 
 ---
 
@@ -581,11 +578,12 @@ dbt-graphql policy test         # runs inline tests, CI-friendly exit code
 ### Sec-J — Caching & Burst Protection ✅ Done
 
 Result cache + singleflight via cashews protects the warehouse from
-bursts of **identical** concurrent queries. Single backend URI (in-mem
-default, Redis for multi-replica). The `cache.result` OTel counter
-emits per-outcome attributes (`hit` / `coalesced` / `miss`) and a
-multi-replica Redis integration test pins down cluster-wide
-singleflight. Reference: [`docs/caching.md`](docs/caching.md).
+bursts of **identical** concurrent queries. Single backend URI: in-mem
+by default, or any Redis URI (incl. Redis Cluster) for shared state
+across replicas — operators provide the URI; cluster stability is the
+backend's concern, not ours. The `cache.result` OTel counter emits
+per-outcome attributes (`hit` / `coalesced` / `miss`).
+Reference: [`docs/caching.md`](docs/caching.md).
 
 Operator-rejected escape hatches: the 203 short-circuit on lock-wait
 was deferred — clients time themselves out, and the lock-wait is

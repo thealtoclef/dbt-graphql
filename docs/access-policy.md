@@ -27,7 +27,7 @@ multiple applications, each with a different `access.yml`.
 
 > **Production prerequisite — JWT signature verification.** The JWT
 > auth backend uses PyJWT with `verify_signature=False`: it reads the
-> payload and exposes it to `when:` / `row_level:` templates, but does
+> payload and exposes it to `when:` clauses and `row_filter:` references, but does
 > not verify signatures, algorithms, or standard claims (`exp`, `aud`,
 > `iss`). Sec-A tracks the remaining verification work; see
 > [security.md](security.md) for the resource-server design the auth
@@ -51,7 +51,8 @@ policies:
           mask:
             email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
             ssn: ~
-        row_level: "org_id = {{ jwt.claims.org_id }}"
+        row_filter:
+          org_id: { _eq: { jwt: claims.org_id } }
 ```
 
 Top-level key is `policies` (a list). Each entry has:
@@ -67,7 +68,7 @@ Each table entry contains:
 | Field | Type | Description |
 |---|---|---|
 | `column_level` | object | Column allow/deny + masking. |
-| `row_level` | string | Jinja SQL template rendered with bind parameters. |
+| `row_filter` | object | Structured boolean-expression DSL (Hasura-style). |
 
 ### `column_level`
 
@@ -81,32 +82,29 @@ Each table entry contains:
 Mask values are raw SQL fragments. `access.yml` is operator-controlled and
 trusted; **do not populate it from untrusted sources.**
 
-### `row_level`
+### `row_filter`
 
-A Jinja2 template rendered into a SQL fragment. Every `{{ expression }}` in
-the template becomes a SQL bind parameter — the evaluated value is bound via
-SQLAlchemy, not interpolated into the SQL string. Write placeholders
-unquoted:
+A structured boolean-expression tree (Hasura convention). The engine
+compiles it to a SQLAlchemy `ColumnElement` — column references are
+validated at policy-load time, JWT values are bound as named parameters,
+and there is no template engine in the data-access path.
 
-```yaml
-# Correct
-row_level: "user_id = {{ jwt.sub }}"
-
-# Wrong — treats the template as a literal string
-row_level: "user_id = '{{ jwt.sub }}'"
-```
-
-Jinja conditionals and filters are supported because they run before the
-`finalize` hook:
+**Logical operators:** `_and`, `_or`, `_not`. **Comparison operators:**
+`_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`. RHS values
+are literals or `{ jwt: <dotted.path> }` references.
 
 ```yaml
-row_level: |
-  {% if jwt.claims.region %}
-  region = {{ jwt.claims.region | upper }}
-  {% else %}
-  FALSE
-  {% endif %}
+row_filter:
+  _and:
+    - org_id: { _eq: { jwt: claims.org_id } }
+    - _or:
+        - is_public: { _eq: true }
+        - owner_id: { _eq: { jwt: sub } }
+    - status: { _in: [active, pending] }
 ```
+
+A missing JWT path resolves to SQL `NULL` — the comparison then yields
+`UNKNOWN` and excludes the row, which is the safe default.
 
 ---
 
@@ -140,7 +138,8 @@ relation — the engine runs these steps:
 5. The compiler uses `ResolvedPolicy` to:
    - Emit the selected columns, replacing masked columns with the mask
      expression.
-   - Append `WHERE <row_filter_sql>` using `text(sql).bindparams(**params)`.
+   - Append the row filter as a SQLAlchemy `ColumnElement` directly into
+     `stmt.where(...)`.
 
 ### Default-deny
 
@@ -234,27 +233,27 @@ when: "'eu-west' in jwt.claims.allowed_regions"
 
 ---
 
-## `row_level` template reference
+## `row_filter` reference
 
-Templates are rendered in a `jinja2.sandbox.SandboxedEnvironment` with a
-`finalize` callback. The sandbox prevents dunder attribute access;
-`finalize` replaces every `{{ expression }}` output with a `:param_N`
-placeholder and captures the value for binding.
+Each tree node is either a logical-operator map (`_and`, `_or`, `_not`)
+or a column-comparison map. Logical operators take a list of sub-trees
+(except `_not`, which takes a single sub-tree). A column-comparison map
+has a single key (the column name) whose value is a single-key map naming
+the comparison operator.
 
-**Bind-param semantics:**
-
-| Template | Rendered SQL | Bind params |
+| DSL | Compiled SQL | Notes |
 |---|---|---|
-| `user_id = {{ jwt.sub }}` | `user_id = :p_0` | `{"p_0": "..."}` |
-| `org_id = {{ jwt.claims.org_id | int }}` | `org_id = :p_0` | `{"p_0": 42}` |
-| `published = TRUE` | `published = TRUE` | `{}` |
-| `{% if jwt.sub %}user = {{ jwt.sub }}{% else %}FALSE{% endif %}` | `user = :p_0` or `FALSE` | conditional |
+| `org_id: { _eq: 7 }` | `org_id = :p_0` (bound) | literal |
+| `org_id: { _eq: { jwt: claims.org_id } }` | `org_id = :p_0` (bound) | JWT ref |
+| `status: { _in: [active, pending] }` | `status IN (:p_0, :p_1)` | each element bound |
+| `owner_id: { _is_null: true }` | `owner_id IS NULL` | no bind |
+| `_not: { status: { _eq: deleted } }` | `status != :p_0` | SA collapses |
 
-Because values flow through `SQLAlchemy.text(...).bindparams(...)`, SQL
-injection via JWT claims is structurally impossible — even a claim
-containing `'; DROP TABLE orders; --` cannot escape its bind slot. This is
-covered by a regression test in
-[`tests/unit/api/test_policy_integration.py`](../tests/unit/api/test_policy_integration.py).
+Because values are bound via SQLAlchemy `bindparam`, SQL injection via
+JWT claims is structurally impossible — even a claim containing
+`'; DROP TABLE orders; --` cannot escape its bind slot. This is covered
+by a regression test in
+[`tests/unit/graphql/test_policy_integration.py`](../tests/unit/graphql/test_policy_integration.py).
 
 ---
 
@@ -279,14 +278,16 @@ policies:
           mask:
             email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
             ssn: ~
-        row_level: "org_id = {{ jwt.claims.org_id }}"
+        row_filter:
+          org_id: { _eq: { jwt: claims.org_id } }
 
   - name: anon
     when: "jwt.sub == None"
     tables:
       products:
         column_level: { includes: [product_id, name, price] }
-        row_level: "published = TRUE"
+        row_filter:
+          published: { _eq: true }
 ```
 
 A request `GET /graphql?...` with
@@ -363,25 +364,6 @@ attribute sets:
 Moving to structured `match:` blocks (instead of opaque string expressions)
 makes policies statically inspectable — you can answer *"which policies
 apply to this JWT?"* without actually evaluating a request.
-
-### Structured row-filter DSL (Sec-H)
-
-Replace raw-SQL `row_level` with a JSON/YAML boolean expression tree
-(Hasura-style):
-
-```yaml
-row_filter:
-  all:
-    - { col: org_id, eq: jwt.claims.org_id }
-    - any:
-        - { col: is_public, eq: true }
-        - { col: owner_id, eq: jwt.sub }
-```
-
-The engine compiles the tree to SQLAlchemy expressions. Column names are
-validated against the table registry at load time, so typos are caught
-before the first request. Policies become dialect-portable and visually
-renderable.
 
 ### Column classifications (Sec-I)
 
