@@ -7,12 +7,22 @@ this codebase entirely.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
+from opentelemetry import metrics
 from sqlalchemy import text
+from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from ..config import DbConfig
+from ..config import DbConfig, PoolConfig
+
+_meter = metrics.get_meter(__name__)
+_pool_wait_hist = _meter.create_histogram(
+    name="db.client.connections.wait_time",
+    description="Time spent waiting on pool checkout (ms)",
+    unit="ms",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -62,17 +72,28 @@ class DatabaseManager:
     """
 
     def __init__(
-        self, db_url: str | None = None, *, config: DbConfig | None = None
+        self,
+        db_url: str | None = None,
+        *,
+        config: DbConfig | None = None,
+        pool: PoolConfig | None = None,
     ) -> None:
         if config and not db_url:
             db_url = build_db_url(config)
         if not db_url:
             raise ValueError("Provide either db_url or config")
         self._url = db_url
+        self._pool = pool or (config.pool if config else PoolConfig())
         self._engine: AsyncEngine | None = None
 
     async def connect(self) -> None:
-        self._engine = create_async_engine(self._url)
+        self._engine = create_async_engine(
+            self._url,
+            pool_size=self._pool.size,
+            max_overflow=self._pool.max_overflow,
+            pool_timeout=self._pool.timeout,
+            pool_recycle=self._pool.recycle,
+        )
 
     async def close(self) -> None:
         if self._engine:
@@ -83,17 +104,37 @@ class DatabaseManager:
         """Execute a SQLAlchemy Core selectable and return rows as dicts."""
         if self._engine is None:
             raise RuntimeError("DatabaseManager is not connected")
-        async with self._engine.connect() as conn:
-            result = await conn.execute(query)
-            return [dict(row._mapping) for row in result]
+        start = time.perf_counter()
+        try:
+            async with self._engine.connect() as conn:
+                _pool_wait_hist.record(
+                    (time.perf_counter() - start) * 1000, {"outcome": "acquired"}
+                )
+                result = await conn.execute(query)
+                return [dict(row._mapping) for row in result]
+        except SAPoolTimeoutError:
+            _pool_wait_hist.record(
+                (time.perf_counter() - start) * 1000, {"outcome": "timeout"}
+            )
+            raise
 
     async def execute_text(self, sql: str) -> list[dict]:
         """Execute a raw SQL string and return rows as dicts."""
         if self._engine is None:
             raise RuntimeError("DatabaseManager is not connected")
-        async with self._engine.connect() as conn:
-            result = await conn.execute(text(sql))
-            return [dict(row._mapping) for row in result]
+        start = time.perf_counter()
+        try:
+            async with self._engine.connect() as conn:
+                _pool_wait_hist.record(
+                    (time.perf_counter() - start) * 1000, {"outcome": "acquired"}
+                )
+                result = await conn.execute(text(sql))
+                return [dict(row._mapping) for row in result]
+        except SAPoolTimeoutError:
+            _pool_wait_hist.record(
+                (time.perf_counter() - start) * 1000, {"outcome": "timeout"}
+            )
+            raise
 
     @property
     def dialect_name(self) -> str:

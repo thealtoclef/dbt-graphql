@@ -26,6 +26,10 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, select
 from dbt_graphql.cache import CacheConfig, stats
 from dbt_graphql.cache.result import execute_with_cache
 
+from opentelemetry import metrics
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
 
 def _stmt(value: str = "alice"):
     meta = MetaData()
@@ -210,6 +214,61 @@ class TestTtl:
 # ---------------------------------------------------------------------------
 # Failure handling
 # ---------------------------------------------------------------------------
+
+
+class TestOTelMetrics:
+    """The ``cache.result`` counter increments for hit/coalesced/miss."""
+
+    def _collect(self, reader: InMemoryMetricReader) -> dict[str, int]:
+        data = reader.get_metrics_data()
+        out: dict[str, int] = {}
+        if data is None:
+            return out
+        for rm in data.resource_metrics:
+            for sm in rm.scope_metrics:
+                for m in sm.metrics:
+                    if m.name != "cache.result":
+                        continue
+                    for dp in m.data.data_points:
+                        attrs = dp.attributes or {}
+                        outcome = str(attrs.get("outcome"))
+                        out[outcome] = out.get(outcome, 0) + int(
+                            getattr(dp, "value", 0)
+                        )
+        return out
+
+    @pytest.mark.asyncio
+    async def test_three_outcomes_emit(self, fresh_cache):
+        reader = InMemoryMetricReader()
+        provider = MeterProvider(metric_readers=[reader])
+        metrics.set_meter_provider(provider)
+
+        cfg = CacheConfig(ttl=60)
+        s = _stmt()
+
+        # miss
+        runner = CountingRunner(result=[{"id": 1}], delay=0.05)
+        await execute_with_cache(s, dialect_name="postgresql", runner=runner, cfg=cfg)
+
+        # hit (steady state)
+        await execute_with_cache(s, dialect_name="postgresql", runner=runner, cfg=cfg)
+
+        # Burst on a different statement: 1 wins the lock-holder path,
+        # the other 9 wake to a populated entry → 1 miss + 9 coalesced.
+        s2 = _stmt("burst")
+        runner2 = CountingRunner(result=[{"id": 2}], delay=0.05)
+
+        async def one():
+            await execute_with_cache(
+                s2, dialect_name="postgresql", runner=runner2, cfg=cfg
+            )
+
+        await asyncio.gather(*(one() for _ in range(10)))
+
+        counts = self._collect(reader)
+        assert counts.get("hit", 0) >= 1
+        assert counts.get("miss", 0) >= 2  # one per statement
+        assert counts.get("coalesced", 0) >= 1
 
 
 class TestFailures:

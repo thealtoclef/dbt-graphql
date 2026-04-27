@@ -4,13 +4,16 @@ from typing import Any
 
 from ariadne import QueryType
 from graphql import GraphQLError
+from loguru import logger
+from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from ..cache.result import execute_with_cache
 from ..compiler.query import compile_query
 from ..config import CacheConfig
 from .policy import PolicyError
 
-from loguru import logger
+# GraphQL extension code paired with the HTTP handler's 503 elevation.
+POOL_TIMEOUT_CODE = "POOL_TIMEOUT"
 
 
 def create_query_type(registry) -> QueryType:
@@ -61,15 +64,24 @@ def _make_resolver(table_name: str):
 
         logger.debug("query {}: {}", table_name, stmt)
 
-        if cache_cfg is not None and cache_cfg.enabled:
-            rows = await execute_with_cache(
-                stmt,
-                dialect_name=dialect,
-                runner=db.execute,
-                cfg=cache_cfg,
-            )
-        else:
-            rows = await db.execute(stmt)
+        try:
+            if cache_cfg is not None and cache_cfg.enabled:
+                rows = await execute_with_cache(
+                    stmt,
+                    dialect_name=dialect,
+                    runner=db.execute,
+                    cfg=cache_cfg,
+                )
+            else:
+                rows = await db.execute(stmt)
+        except SAPoolTimeoutError as exc:
+            raise GraphQLError(
+                "database connection pool exhausted",
+                extensions={
+                    "code": POOL_TIMEOUT_CODE,
+                    "retry_after": db._pool.retry_after,
+                },
+            ) from exc
 
         logger.debug("query {} returned {} rows", table_name, len(rows))
         return rows

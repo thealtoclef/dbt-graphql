@@ -22,7 +22,20 @@ MONITORING_LOG_LEVEL: Final[str] = "INFO"
 # to touch live here.
 CACHE_DEFAULT_URL: Final[str] = "mem://?size=10000"
 CACHE_TTL: Final[int] = 60
-CACHE_LOCK_SAFETY_TIMEOUT: Final[int] = 60
+CACHE_LOCK_SAFETY_TIMEOUT: Final[int] = 10
+
+# DB connection pool. Set ``pool_timeout`` below your upstream LB idle timeout
+# so the API can fast-fail with 503+Retry-After before the LB starts killing
+# connections. Defaults target a single replica behind a 30s LB; tune per
+# warehouse capacity and replica count.
+DB_POOL_SIZE: Final[int] = 20
+DB_POOL_MAX_OVERFLOW: Final[int] = 10
+DB_POOL_TIMEOUT: Final[int] = 10
+DB_POOL_RECYCLE: Final[int] = 1800
+# Hint emitted in the ``Retry-After`` header when a 503 is returned for pool
+# saturation. Should approximate "how long until capacity is likely free"
+# (~p50 warehouse query time), NOT the pool wait timeout.
+DB_POOL_RETRY_AFTER: Final[int] = 5
 
 # JWT — clock-skew tolerance and JWKS cache TTL.
 JWT_LEEWAY: Final[int] = 30

@@ -27,7 +27,8 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Sec-I | Column classifications | 🔲 Planned |
 | Sec-K | Hot reload of access.yml | 🔲 Planned |
 | Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
-| Sec-J | Caching & burst protection | 🟨 Result cache + singleflight shipped; OTel metrics + Redis multi-replica test pending — see [docs/plans/sec-j-caching.md](docs/plans/sec-j-caching.md) |
+| Sec-J | Caching & burst protection | ✅ Done (result cache + singleflight + OTel metrics + Redis multi-replica) |
+| Sec-N | Pool admission control (503 + Retry-After) | ✅ Done |
 | Sec-M | Python extension hooks (Superset-style overrides file) | 🔲 Placeholder |
 
 ---
@@ -558,16 +559,44 @@ dbt-graphql policy test         # runs inline tests, CI-friendly exit code
 
 ---
 
-### Sec-J — Caching & Burst Protection 🟨 Core shipped
+### Sec-J — Caching & Burst Protection ✅ Done
 
 Result cache + singleflight via cashews protects the warehouse from
-bursts of identical concurrent queries. Single backend URI (in-mem
-default, Redis for multi-replica). Reference:
-[`docs/caching.md`](docs/caching.md).
+bursts of **identical** concurrent queries. Single backend URI (in-mem
+default, Redis for multi-replica). The `cache.result` OTel counter
+emits per-outcome attributes (`hit` / `coalesced` / `miss`) and a
+multi-replica Redis integration test pins down cluster-wide
+singleflight. Reference: [`docs/caching.md`](docs/caching.md).
 
-Remaining work — OTel metric emission and a Redis multi-replica
-integration test — is tracked in
-[`docs/plans/sec-j-caching.md`](docs/plans/sec-j-caching.md).
+Operator-rejected escape hatches: the 203 short-circuit on lock-wait
+was deferred — clients time themselves out, and the lock-wait is
+already bounded by `cache.lock_safety_timeout`.
+
+---
+
+### Sec-N — Pool Admission Control ✅ Done
+
+Companion to Sec-J: Sec-J coalesces identical query bursts; Sec-N
+admits / fast-fails **distinct** query bursts at the pool boundary.
+
+The SQLAlchemy pool *is* the admission queue. `db.pool` config
+(`size`, `max_overflow`, `timeout`, `recycle`, `retry_after`) tunes
+it. On checkout timeout the resolver raises a structured
+`POOL_TIMEOUT` GraphQL error that a custom Ariadne HTTP handler
+elevates to **HTTP 503 + `Retry-After`** so generic LB clients can
+back off without parsing GraphQL bodies. Wait-time is observable via
+the `db.client.connections.wait_time` OTel histogram with `outcome`
+attribute (`acquired` / `timeout`). Pool depth comes for free from
+OTel SQLAlchemy auto-instrumentation. See
+[`docs/configuration.md#dbpool`](docs/configuration.md).
+
+| Item | Status |
+|---|---|
+| `db.pool` config block + defaults | ✅ |
+| Resolver-side `SAPoolTimeoutError` → `POOL_TIMEOUT` extension | ✅ |
+| Ariadne `PoolAwareHandler` → 503 + Retry-After | ✅ |
+| `db.client.connections.wait_time` histogram | ✅ |
+| Cross-replica pool admission (warehouse-side concern) | 🔲 Out of scope — see plan §rationale |
 
 ---
 

@@ -12,6 +12,15 @@ services:
       interval: 1s
       retries: 15
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      retries: 15
+
   mysql:
     image: mysql:9
     environment:

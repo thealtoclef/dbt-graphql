@@ -97,7 +97,7 @@ Behavior matrix:
 | Cold start, 100 concurrent identical | Lock coalesces — 1 warehouse hit, 99 wake to populated cache |
 | TTL boundary, 100 concurrent identical | Lock coalesces — 1 warehouse hit |
 | Distinct queries, different keys | Independent paths, no contention |
-| Lock-holder crashes mid-execution | `expire=lock_safety_timeout` (default `60`) auto-releases; next caller retries |
+| Lock-holder crashes mid-execution | `expire=lock_safety_timeout` (default `10`) auto-releases; next caller retries |
 
 The lock's `expire=` is the **safety timeout** — auto-release after a lock-holder crash. It is **not** the result TTL. Both are configurable independently.
 
@@ -162,11 +162,16 @@ Special value: **`ttl: 0` = realtime + minimal coalescing window.** The cache st
 | Burst of identical queries → warehouse stampede | **Lock coalesces to 1 warehouse call.** |
 | Burst of distinct queries → warehouse pool exhaustion | **Not mitigated.** SQLAlchemy pool sizing applies; the (N+1)th request blocks on pool checkout. Acceptable: clients see latency, server stays up. |
 | Slow client + long warehouse query → connection held | Asyncio handles thousands of idle waiters cheaply. Client timeout is the client's responsibility. |
-| Lock-holder crash mid-query | `lock_safety_timeout` (default `60`) auto-releases the lock. |
+| Lock-holder crash mid-query | `lock_safety_timeout` (default `10`) auto-releases the lock. |
 | Memory growth from queued waiters | Bounded by the HTTP server's max in-flight requests (Granian's worker concurrency). |
 | Cache poisoning via crafted JWT | Key embeds bound row-filter values directly (§ 4). |
 
-**Tuning the lock safety timeout.** Set it slightly above the slowest plausible warehouse query you expect. Too low → a legitimately slow query times out the lock and a second caller fires a duplicate execution. Too high → recovery from a crashed lock-holder is delayed. The default `60` works for typical analytics queries; bump it for heavy aggregations on TB tables.
+**Tuning the lock safety timeout.** Two constraints:
+
+- **Above your p99 warehouse query time.** When a *legitimately slow* query exceeds the timeout, Redis silently deletes the lock and a waiting caller becomes the new holder — running the same query a second time against the warehouse. Both responses still return 200; the cost is one wasted warehouse roundtrip per slow query. So set the timeout above your slowest expected legitimate query.
+- **Below your upstream LB idle timeout, with a few seconds of headroom.** A *crashed* holder (SIGKILL, OOM) leaves a stuck lock until the TTL fires; after that, a waiter takes over and runs the query. If the TTL is ≥ LB timeout, the LB resets every waiter before recovery completes.
+
+Default `10` targets fast warehouses (ClickHouse, Doris, Postgres on dbt-modeled tables, p99 ≤ 5s) behind a typical 30s LB. Bump to 25–60 for slow OLAP aggregations; bump the LB too if you go above its idle timeout.
 
 What the cache is **not**:
 

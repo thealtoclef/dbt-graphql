@@ -16,6 +16,23 @@ Database connection. The `type` field selects the adapter; remaining fields vary
 | `dbname` | string | `""` | Database / catalog name |
 | `user` | string | `""` | Login user |
 | `password` | string | `""` | Login password |
+| `pool` | object | (see below) | SQLAlchemy connection-pool tuning |
+
+### `db.pool`
+
+The pool is the admission queue: requests beyond `size + max_overflow` block on checkout, and are fast-failed with `sqlalchemy.exc.TimeoutError` after `timeout` seconds. The API translates that into an HTTP **503 Service Unavailable** with a `Retry-After` header — clean admission denial, not a mid-computation poll.
+
+Set `timeout` **below** your upstream LB idle timeout so the API responds before the LB resets connections.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `size` | int | `20` | Steady-state connections in the pool |
+| `max_overflow` | int | `10` | Burst capacity above `size` (hard cap = `size + max_overflow`) |
+| `timeout` | int | `10` | Seconds to wait on checkout before raising. Below LB idle timeout. |
+| `recycle` | int | `1800` | Recycle connections after N seconds (NAT/firewall hygiene). `-1` to disable. |
+| `retry_after` | int | `5` | Seconds emitted in the `Retry-After` header on 503 responses (per RFC 9110 §10.2.3). Should approximate **p50 warehouse query time** — i.e. how long until a connection is likely free again. Distinct from `timeout` (which is admission, not recovery). |
+
+**Sizing rule of thumb:** with `R` replicas and warehouse capacity `Q`, set `size + max_overflow ≤ Q / R`. dbt-graphql doesn't coordinate across replicas — total warehouse concurrency is the sum of per-replica pools.
 
 ---
 
@@ -95,7 +112,7 @@ Omit the block to use the default in-memory cache. Pass `cache_config=None` prog
 | `enabled` | bool | `true` | Disable to bypass the cache entirely (no caching, no coalescing). |
 | `url` | string | `"mem://?size=10000"` | [cashews](https://github.com/Krukov/cashews) URI. Examples: `mem://?size=N`, `redis://host:6379/0`, `redis://...?cluster=true`. Use a Redis URI for multi-replica deployments — both the cache and the singleflight lock then live on the shared backend, so coalescing crosses replicas. |
 | `ttl` | int | `60` | Freshness window in seconds. `0` = realtime + 1 s coalescing window; see caching.md. |
-| `lock_safety_timeout` | int | `60` | Singleflight lock auto-release, in seconds. Set above the slowest plausible warehouse query. **Not** the result TTL. |
+| `lock_safety_timeout` | int | `10` | Singleflight lock auto-release, in seconds. Set **above your p99 warehouse query time** (so legitimate slow queries don't trigger duplicate executions) and **below your LB idle timeout** (so dead-holder recovery completes before the LB resets connections). Default targets fast warehouses (ClickHouse, Doris, Postgres on dbt-modeled tables, p99 ≤ 5s) behind a 30s LB. Bump to 25–60 for slower workloads. **Not** the result TTL. |
 
 ---
 

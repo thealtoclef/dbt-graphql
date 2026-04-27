@@ -91,34 +91,45 @@ class TestInstrumentStarlette:
 
 
 class TestBuildGraphqlHttpHandler:
-    def test_returns_handler_when_available(self):
-        mock_extension = MagicMock(name="OpenTelemetryExtension")
-        mock_handler_class = MagicMock(name="GraphQLHTTPHandler")
-        mock_handler_instance = MagicMock()
-        mock_handler_class.return_value = mock_handler_instance
+    def test_handler_carries_metrics_and_otel_extensions(self):
+        """Handler is built and carries both extensions."""
+        import dbt_graphql.api.monitoring as tel
+        from ariadne.contrib.tracing.opentelemetry import OpenTelemetryExtension
 
-        with patch.dict(
-            "sys.modules",
-            {
-                "ariadne.asgi.handlers": MagicMock(
-                    GraphQLHTTPHandler=mock_handler_class
-                ),
-                "ariadne.contrib.tracing.opentelemetry": MagicMock(
-                    OpenTelemetryExtension=mock_extension
-                ),
-            },
-        ):
-            from importlib import reload
-            import dbt_graphql.api.monitoring as tel
+        handler = tel.build_graphql_http_handler()
 
-            reload(tel)
-            result = tel.build_graphql_http_handler()
+        exts = handler.extensions
+        if callable(exts) and not isinstance(exts, (list, tuple)):
+            exts = exts(None, None)  # type: ignore[misc]
+        assert OpenTelemetryExtension in exts
+        assert tel.GraphQLMetricsExtension in exts
 
-            extensions_arg = (
-                mock_handler_class.call_args.kwargs.get("extensions")
-                or mock_handler_class.call_args.args[0]
-            )
-            assert mock_extension in extensions_arg
-            assert tel.GraphQLMetricsExtension in extensions_arg
+    def test_pool_timeout_response_elevated_to_503(self):
+        """Result with a POOL_TIMEOUT error → HTTP 503 + Retry-After header."""
+        import asyncio
+        import dbt_graphql.api.monitoring as tel
+        from dbt_graphql.api.resolvers import POOL_TIMEOUT_CODE
 
-        assert result is mock_handler_instance
+        handler = tel.build_graphql_http_handler()
+        result = {
+            "errors": [
+                {
+                    "message": "database connection pool exhausted",
+                    "extensions": {"code": POOL_TIMEOUT_CODE, "retry_after": 7},
+                }
+            ]
+        }
+        resp = asyncio.run(handler.create_json_response(MagicMock(), result, False))
+        assert resp.status_code == 503
+        assert resp.headers["retry-after"] == "7"
+
+    def test_normal_response_unaffected(self):
+        """Result with no POOL_TIMEOUT error → unchanged 200/400 path."""
+        import asyncio
+        import dbt_graphql.api.monitoring as tel
+
+        handler = tel.build_graphql_http_handler()
+        result = {"data": {"customers": []}}
+        resp = asyncio.run(handler.create_json_response(MagicMock(), result, True))
+        assert resp.status_code == 200
+        assert "retry-after" not in {k.lower() for k in resp.headers}

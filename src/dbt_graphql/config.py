@@ -10,6 +10,24 @@ from . import defaults
 from .cache.config import CacheConfig
 
 
+class PoolConfig(BaseModel):
+    """SQLAlchemy connection-pool tuning.
+
+    The pool is the admission queue: requests beyond ``size + max_overflow``
+    block on checkout, and are fast-failed with ``TimeoutError`` after
+    ``timeout`` seconds. Set ``timeout`` below your upstream LB idle timeout
+    so the API returns 503+Retry-After before the LB resets the connection.
+    """
+
+    size: int = defaults.DB_POOL_SIZE
+    max_overflow: int = defaults.DB_POOL_MAX_OVERFLOW
+    timeout: int = defaults.DB_POOL_TIMEOUT
+    recycle: int = defaults.DB_POOL_RECYCLE
+    # Emitted as ``Retry-After: <value>`` on 503 responses (seconds, per
+    # RFC 9110 §10.2.3). See ``DB_POOL_RETRY_AFTER`` in defaults.py.
+    retry_after: int = defaults.DB_POOL_RETRY_AFTER
+
+
 class DbConfig(BaseModel):
     type: str
     host: str = ""
@@ -17,6 +35,7 @@ class DbConfig(BaseModel):
     dbname: str = ""
     user: str = ""
     password: str = ""
+    pool: PoolConfig = PoolConfig()
 
 
 class ServeConfig(BaseModel):

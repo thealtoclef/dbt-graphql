@@ -162,6 +162,14 @@ def postgres_service(docker_services):
 
 
 @pytest.fixture(scope="session")
+def redis_service(docker_services):
+    docker_services.wait_until_responsive(
+        timeout=30.0, pause=1.0, check=_tcp_check("localhost", 6380)
+    )
+    return "redis://localhost:6380/0"
+
+
+@pytest.fixture(scope="session")
 def mysql_service(docker_services):
     docker_services.wait_until_responsive(
         timeout=30.0, pause=1.0, check=_tcp_check("localhost", 3307)

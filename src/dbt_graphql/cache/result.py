@@ -24,12 +24,19 @@ from __future__ import annotations
 from typing import Awaitable, Callable
 
 from cashews import cache
+from cashews.wrapper import Cache
 from loguru import logger
+from opentelemetry import metrics
 from sqlalchemy.sql import ClauseElement
 
 from .config import CacheConfig
 from .keys import hash_sql
 from .stats import stats
+
+_meter = metrics.get_meter(__name__)
+_result_outcomes = _meter.create_counter(
+    "cache.result", description="Result-cache outcomes by attribute"
+)
 
 
 async def execute_with_cache(
@@ -45,32 +52,40 @@ async def execute_with_cache(
     it from inside the fast path; only on a miss, holding the singleflight
     lock.
     """
+    return await _execute_with(
+        cache, stmt, dialect_name=dialect_name, runner=runner, cfg=cfg
+    )
+
+
+async def _execute_with(
+    cache_obj: Cache,
+    stmt: ClauseElement,
+    *,
+    dialect_name: str,
+    runner: Callable[[ClauseElement], Awaitable[list[dict]]],
+    cfg: CacheConfig,
+) -> list[dict]:
+    """Singleflight + TTL-cache pipeline against an arbitrary cashews ``Cache``."""
     key = hash_sql(stmt, dialect_name)
     ttl = cfg.ttl
 
-    # Fast path — TTL hit. Steady state.
-    cached = await cache.get(key)
+    cached = await cache_obj.get(key)
     if cached is not None:
         stats.result.hit += 1
+        _result_outcomes.add(1, {"outcome": "hit"})
         return cached
 
-    # Slow path — coalesce concurrent misses through a lock. The lock's
-    # ``expire`` is the *safety timeout* (auto-release on lock-holder crash);
-    # it is unrelated to the result TTL.
-    async with cache.lock(f"{key}:lock", expire=cfg.lock_safety_timeout):
-        # Re-check inside the lock: another caller may have populated while
-        # we were waiting. Discriminate hit (TTL) from coalesced (singleflight)
-        # for operator-facing observability.
-        cached = await cache.get(key)
+    async with cache_obj.lock(f"{key}:lock", expire=cfg.lock_safety_timeout):
+        cached = await cache_obj.get(key)
         if cached is not None:
             stats.result.coalesced += 1
+            _result_outcomes.add(1, {"outcome": "coalesced"})
             return cached
 
         stats.result.miss += 1
+        _result_outcomes.add(1, {"outcome": "miss"})
         result = await runner(stmt)
-        # TTL=0 → micro-window so the lock-waiters wake to populated cache.
-        # TTL=N → operator-set freshness window.
         effective_ttl = 1 if ttl == 0 else ttl
-        await cache.set(key, result, expire=effective_ttl)
+        await cache_obj.set(key, result, expire=effective_ttl)
         logger.debug("cache.result MISS key={} stored ttl={}s", key, effective_ttl)
         return result
