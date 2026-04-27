@@ -138,10 +138,9 @@ dbt-graphql --config config.yml --output DIR   # export mode
 1. `load_config()` reads `config.yml`; dbt artifact paths resolved relative to the config file.
 2. `extract_project()` builds `ProjectInfo` from dbt artifacts.
 3. `build_registry()` builds `TableRegistry` from `ProjectInfo` — the Python object consumed by the serve layer.
-4. Depending on `serve.graphql` / `serve.mcp` flags in config:
-   - Both `true` — co-mounts GraphQL at `/graphql` and MCP at `/mcp` under one Granian process.
-   - Only `serve.graphql` — GraphQL-only.
-   - Only `serve.mcp` — MCP standalone.
+4. Mount transports under one Granian process:
+   - GraphQL at `/graphql` (always).
+   - MCP at `/mcp` when `serve.mcp_enabled: true`. The MCP server shares the GraphQL bundle so `run_graphql` runs through the same engine and policy.
 
 **Export mode** (`--output DIR`):
 Steps 1–2 only, then `_registry_to_sdl()` writes `db.graphql` and `build_lineage_schema()` writes `lineage.json` to `DIR`. No server is started.

@@ -38,20 +38,15 @@ class DbConfig(BaseModel):
     pool: PoolConfig = PoolConfig()
 
 
-class GraphQLServeConfig(BaseModel):
-    enabled: bool = False
-    introspection: bool = False  # off by default; opt-in for non-prod environments
-
-
-class MCPServeConfig(BaseModel):
-    enabled: bool = False
-
-
 class ServeConfig(BaseModel):
+    """HTTP serve config. GraphQL is always mounted at ``/graphql``; MCP
+    is opt-in via ``mcp_enabled`` and mounts at ``/mcp`` when on.
+    """
+
     host: str
     port: int
-    graphql: GraphQLServeConfig = GraphQLServeConfig()
-    mcp: MCPServeConfig = MCPServeConfig()
+    mcp_enabled: bool = False
+    graphql_introspection: bool = False  # off by default; opt-in for non-prod
 
 
 class _OTLPSignalConfig(BaseModel):

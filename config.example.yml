@@ -33,17 +33,19 @@ db:
   password: ""              # prefer DBT_GRAPHQL__DB__PASSWORD env var
 
 # -----------------------------------------------------------------------------
-# serve (required for serve mode) — HTTP server bind config
+# serve (required for serve mode) — HTTP server bind config.
+#
+# GraphQL is always mounted at /graphql when serving (see ``--output``-less
+# CLI invocation). MCP is opt-in via ``mcp_enabled`` and mounts at /mcp.
+# Both transports share the same Granian process, the same JWT auth
+# middleware, and the same access policy — so a caller authorized for
+# GraphQL is authorized for MCP, and policy filtering applies uniformly.
 # -----------------------------------------------------------------------------
 serve:
   host: 0.0.0.0
   port: 9876
-  graphql:
-    enabled: true           # mount GraphQL API at /graphql
-    introspection: false    # off by default; enable in dev only
-  mcp:
-    enabled: false          # mount MCP server at /mcp (Streamable HTTP)
-  # Both can be enabled — they share the same Granian process.
+  mcp_enabled: false             # opt-in; expose schema discovery + run_graphql to LLM agents
+  graphql_introspection: false   # opt-in; dev-only, never enable in prod
 
 # -----------------------------------------------------------------------------
 # enrichment (optional) — controls live DB queries fired by MCP describe_table.

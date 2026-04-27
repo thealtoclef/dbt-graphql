@@ -22,18 +22,13 @@ multiple applications, each with a different `access.yml`.
    security:
      policy_path: access.yml
    ```
-3. Start the API. Each GraphQL request is evaluated against the policy using
-   the `Authorization: Bearer <jwt>` header.
-
-> **Production prerequisite — JWT signature verification.** The JWT
-> auth backend uses PyJWT with `verify_signature=False`: it reads the
-> payload and exposes it to `when:` clauses and `row_filter:` references, but does
-> not verify signatures, algorithms, or standard claims (`exp`, `aud`,
-> `iss`). Sec-A tracks the remaining verification work; see
-> [security.md](security.md) for the resource-server design the auth
-> layer follows, and the [roadmap](../ROADMAP.md) for the verification
-> checklist. **Do not expose the API to untrusted networks until Sec-A
-> verification lands.**
+3. Start the API. Each GraphQL **and MCP** request is evaluated against
+   the policy using the `Authorization: Bearer <jwt>` header. Both
+   transports share the same `AuthenticationMiddleware` and the same
+   `AccessPolicy`, so a caller's column allow-list, masks, and row
+   filters apply identically to direct `/graphql` calls and to MCP
+   tools (`list_tables`, `describe_table`, `run_graphql`, …). See
+   [mcp.md § Authorization model](mcp.md#authorization-model).
 
 ---
 
@@ -91,20 +86,41 @@ and there is no template engine in the data-access path.
 
 **Logical operators:** `_and`, `_or`, `_not`. **Comparison operators:**
 `_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`. RHS values
-are literals or `{ jwt: <dotted.path> }` references.
+are either:
+
+- a literal scalar (`str`, `int`, `float`, `bool`),
+- a non-empty list of literals (for `_in`), or
+- a JWT reference: `{ jwt: <dotted.path> }`, resolved per request.
 
 ```yaml
 row_filter:
   _and:
-    - org_id: { _eq: { jwt: claims.org_id } }
+    - org_id: { _eq: { jwt: claims.org_id } }    # JWT-driven (per request)
     - _or:
-        - is_public: { _eq: true }
+        - is_public: { _eq: true }                # static literal
         - owner_id: { _eq: { jwt: sub } }
-    - status: { _in: [active, pending] }
+    - status: { _in: [active, pending] }          # static list
 ```
+
+> **YAML note.** The `{ key: value }` form above is YAML *flow style*,
+> not JSON — it parses to the same `dict` as the equivalent block style:
+>
+> ```yaml
+> org_id:
+>   _eq:
+>     jwt: claims.org_id
+> ```
+>
+> Flow style is shipped in the examples because row-filter trees nest
+> deeply and block style chews up vertical space. Either is valid.
 
 A missing JWT path resolves to SQL `NULL` — the comparison then yields
 `UNKNOWN` and excludes the row, which is the safe default.
+
+A node may not mix logical operators (`_and` / `_or` / `_not`) with
+column keys at the same level: the policy loader rejects shapes like
+`{ _and: [...], org_id: {...} }`. Wrap the column key inside the `_and`
+explicitly to keep the intended semantics visible.
 
 ---
 

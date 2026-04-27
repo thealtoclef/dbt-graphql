@@ -113,6 +113,33 @@ def test_validate_empty_root_rejected():
         validate_row_filter({}, allowed_columns=_TABLE_COLUMNS)
 
 
+def test_validate_mixed_logical_and_column_keys_rejected():
+    """A node mixing `_and` with a column key would silently drop the column
+    branch at compile time — reject at load time."""
+    with pytest.raises(RowFilterError, match="cannot mix logical operators"):
+        validate_row_filter(
+            {"_and": [{"id": {"_eq": 1}}], "org_id": {"_eq": 2}},
+            allowed_columns=_TABLE_COLUMNS,
+        )
+
+
+def test_validate_multiple_logical_operators_at_one_node_rejected():
+    with pytest.raises(RowFilterError, match="only one logical operator"):
+        validate_row_filter(
+            {"_and": [{"id": {"_eq": 1}}], "_or": [{"id": {"_eq": 2}}]},
+            allowed_columns=_TABLE_COLUMNS,
+        )
+
+
+def test_validate_in_rejects_null_element():
+    """SQL `IN (NULL)` never matches anything — reject at load time and tell
+    the operator to use `_is_null` instead."""
+    with pytest.raises(RowFilterError, match="NULL is not a valid"):
+        validate_row_filter(
+            {"status": {"_in": ["active", None]}}, allowed_columns=_TABLE_COLUMNS
+        )
+
+
 def test_validate_two_operators_in_one_comparison_rejected():
     with pytest.raises(RowFilterError, match="exactly one operator"):
         validate_row_filter(

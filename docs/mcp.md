@@ -22,14 +22,23 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 
 | Tool                                | Purpose                                                              |
 |-------------------------------------|----------------------------------------------------------------------|
-| `list_tables`                       | All tables with name, description, column count, relationship count. |
-| `describe_table(name)`              | Full column details, constraints, directly related tables.           |
+| `list_tables`                       | Tables the caller's policy authorizes — name, description, counts.   |
+| `describe_table(name)`              | Column details for an authorized table; blocked columns are hidden.  |
 | `find_path(from_table, to_table)`   | Shortest join path(s) via BFS on the relationship graph.             |
-| `explore_relationships(table_name)` | All directly related tables with direction (outgoing / incoming).    |
-| `build_query(table, fields)`        | Generate a boilerplate GraphQL query for a table and field list.     |
-| `execute_query(sql)`                | Run SQL against the warehouse (requires `--config`).                 |
+| `explore_relationships(table_name)` | Authorized tables related to the given one (outgoing / incoming).    |
+| `build_query(table, fields)`        | Generate a GraphQL query string; filters fields by policy.           |
+| `run_graphql(query, variables?)`    | Execute a GraphQL query through the same engine that backs `/graphql`. |
 
-Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_table` → `find_path` → `build_query` → `execute_query`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
+Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_table` → `find_path` → `build_query` → `run_graphql`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
+
+### Authorization model
+
+The MCP server sits behind the same Starlette `AuthenticationMiddleware` as `/graphql`, so every request carries a verified JWT (or the empty anonymous payload). All tools honour the same `AccessPolicy` that gates GraphQL:
+
+- Discovery tools (`list_tables`, `describe_table`, `explore_relationships`, `build_query`) **filter** their output to tables and columns the caller is authorized to see. There is no leak via "the schema lists a table I can't read."
+- `run_graphql` re-executes the query through the **same Ariadne schema** with the **same per-request context** the HTTP layer would have built. Column allow-lists, masks, and row filters all apply structurally — there is no second authorization path to drift from the GraphQL one.
+
+There is no raw-SQL tool. `run_graphql` is the only data-read tool, by design — raw SQL cannot be policy-enforced without parsing arbitrary statements, and "let the LLM execute SQL it wrote" is exactly the bypass the access policy exists to prevent.
 
 ---
 
@@ -45,14 +54,7 @@ Each response includes `_meta.next_steps` — a short list guiding the agent's n
 
 ## Transport
 
-The MCP server uses **Streamable HTTP transport** (FastMCP's default). It mounts at `/mcp` and is created via `create_mcp_http_app()`.
-
-Two deployment modes, controlled by `serve.graphql` / `serve.mcp` in `config.yml`:
-
-| Config | Result |
-|---|---|
-| `serve.graphql: true`, `serve.mcp: true` | GraphQL at `/graphql` and MCP at `/mcp` co-mount on the same Granian process, sharing one DB connection pool. |
-| `serve.graphql: false`, `serve.mcp: true` | MCP runs standalone — no GraphQL endpoint. |
+The MCP server uses **Streamable HTTP transport** (FastMCP's default). It mounts at `/mcp` when `serve.mcp_enabled: true` in `config.yml`, alongside the always-on GraphQL endpoint at `/graphql`. Both share one Granian process, one auth middleware, and one connection pool.
 
 MCP input arrives as `POST /mcp`; server-to-client events stream via `GET /mcp` (SSE).
 

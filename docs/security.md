@@ -8,6 +8,12 @@ How `dbt-graphql` authenticates callers and where the line sits between
 - **Authorization** is local, declarative, compile-time, and lives in
   [`access.yml`](access-policy.md). The policy engine reads claims
   from the JWT payload and shapes the SQL accordingly.
+- **One auth surface for both transports.** GraphQL (`/graphql`) and
+  MCP (`/mcp`) sit behind the same Starlette `AuthenticationMiddleware`
+  and share the same `AccessPolicy`. MCP discovery tools filter their
+  output by policy, and the MCP `run_graphql` tool re-executes through
+  the same engine — so column allow-lists, masks, and row filters apply
+  uniformly regardless of how the caller arrived.
 
 ---
 

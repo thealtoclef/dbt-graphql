@@ -1,6 +1,6 @@
 # GraphQL → SQL Compiler
 
-The core engine that translates a GraphQL selection into a single warehouse SQL statement. Used by both the [GraphQL HTTP layer](graphql.md) (via resolvers) and the MCP server (via `execute_query`).
+The core engine that translates a GraphQL selection into a single warehouse SQL statement. Used by both the [GraphQL HTTP layer](graphql.md) (via resolvers) and the MCP server (via `run_graphql`, which re-executes through the same Ariadne schema).
 
 **Source:** [`src/dbt_graphql/compiler/`](../src/dbt_graphql/compiler/)
 

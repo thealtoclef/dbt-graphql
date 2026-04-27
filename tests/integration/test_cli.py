@@ -136,9 +136,13 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
 
     captured = {}
 
-    def _fake_create_mcp_http_app(_project, *, enrichment=None, **_kwargs):
+    def _fake_build_mcp_factory(_project, *, enrichment=None, **_kwargs):
         captured["enrichment"] = enrichment
-        return object()
+
+        def _factory(_bundle):
+            return None
+
+        return _factory
 
     class _FakeGranian:
         def __init__(self, **_kw):
@@ -148,7 +152,7 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
             raise SystemExit(0)
 
     monkeypatch.setattr(
-        mcp_server_mod, "create_mcp_http_app", _fake_create_mcp_http_app
+        mcp_server_mod, "build_mcp_factory", _fake_build_mcp_factory
     )
     monkeypatch.setattr(granian_mod, "Granian", _FakeGranian)
     monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
@@ -159,7 +163,7 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
         f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
         "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
         "serve:\n  host: 0.0.0.0\n  port: 8080\n"
-        "  mcp:\n    enabled: true\n"
+        "  mcp_enabled: true\n"
         "security:\n  allow_anonymous: true\n"
         "enrichment:\n  budget: 100\n"
     )
@@ -181,7 +185,6 @@ def test_cli_refuses_serve_when_jwt_disabled_without_allow_anonymous(
         f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
         "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
         "serve:\n  host: 0.0.0.0\n  port: 8080\n"
-        "  graphql:\n    enabled: true\n"
     )
 
     with pytest.raises(SystemExit) as exc_info:

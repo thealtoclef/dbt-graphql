@@ -5,7 +5,8 @@ Column names are validated against the table registry at policy-load time;
 the runtime emit goes through SQLAlchemy's expression language so bind
 parameters, NULL handling, and dialect quirks are not our concern.
 
-Grammar (YAML / dict) — Hasura convention:
+Grammar (YAML / dict) — Hasura convention. The example below uses YAML
+flow style (``{ ... }``) for compactness; block style is equivalent.
 
     row_filter:
       _and:
@@ -17,12 +18,14 @@ Grammar (YAML / dict) — Hasura convention:
 
 Logical operators: ``_and``, ``_or``, ``_not``. Column-level operators:
 ``_eq``, ``_ne``, ``_lt``, ``_lte``, ``_gt``, ``_gte``, ``_in``,
-``_is_null``. RHS values are literals or ``{ jwt: <dotted.path> }``
-references that resolve from the request JWT at compile time.
+``_is_null``. RHS values are literals (str/int/float/bool) or
+``{ jwt: <dotted.path> }`` references that resolve from the request JWT
+at compile time.
 """
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 from sqlalchemy import and_, bindparam, column, not_, or_
@@ -42,7 +45,9 @@ _COMPARISON = _COMPARISON_OPS | {"_in", "_is_null"}
 
 def validate_row_filter(node: Any, *, allowed_columns: set[str], path: str = "") -> None:
     """Walk the filter tree at policy-load time. Reject unknown columns,
-    unknown operators, and shape errors.
+    unknown operators, mixed logical/column keys at one node, and shape
+    errors. Raising here means the policy fails to load — operators see
+    the typo at startup, not as a per-request runtime error.
     """
     if not isinstance(node, dict):
         raise RowFilterError(
@@ -50,6 +55,22 @@ def validate_row_filter(node: Any, *, allowed_columns: set[str], path: str = "")
         )
     if not node:
         raise RowFilterError(f"row_filter at {path or '<root>'} is empty")
+
+    keys: list[str] = [str(k) for k in node.keys()]
+    has_logical = any(k in _LOGICAL for k in keys)
+    has_column = any(not k.startswith("_") for k in keys)
+    if has_logical and has_column:
+        raise RowFilterError(
+            f"{path or '<root>'}: a node cannot mix logical operators "
+            f"({sorted(k for k in keys if k in _LOGICAL)}) with column keys "
+            f"({sorted(k for k in keys if not k.startswith('_'))}). "
+            "Wrap the column key in an explicit `_and`."
+        )
+    if has_logical and len(keys) > 1:
+        raise RowFilterError(
+            f"{path or '<root>'}: only one logical operator per node, "
+            f"got {sorted(keys)}. Nest them explicitly."
+        )
 
     for key, value in node.items():
         sub_path = f"{path}.{key}" if path else key
@@ -107,6 +128,12 @@ def _validate_comparison(node: Any, *, path: str) -> None:
                 f"{path}._in: expected a non-empty list, got {value!r}"
             )
         for i, v in enumerate(value):
+            if v is None:
+                raise RowFilterError(
+                    f"{path}._in[{i}]: NULL is not a valid `_in` element "
+                    "(SQL `IN (NULL)` never matches). Use `_is_null` for "
+                    "null checks."
+                )
             _validate_value(v, path=f"{path}._in[{i}]")
         return
     _validate_value(value, path=f"{path}.{op}")
@@ -140,12 +167,10 @@ def compile_row_filter(
     eagerly here and bound as named parameters; literal values are bound
     the same way so the caller never sees raw values in SQL text.
     """
-    counter = [0]
+    counter = itertools.count()
 
     def _bind(value: Any) -> ColumnElement:
-        i = counter[0]
-        counter[0] = i + 1
-        return bindparam(f"{prefix}_{i}", value)
+        return bindparam(f"{prefix}_{next(counter)}", value)
 
     def _resolve(value: Any) -> Any:
         if isinstance(value, dict) and set(value.keys()) == {"jwt"}:

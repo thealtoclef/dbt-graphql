@@ -164,46 +164,34 @@ class TestDbtConfig:
 
 
 class TestServeConfig:
-    def test_graphql_and_mcp_default_false(self, tmp_path):
+    def test_serve_defaults(self, tmp_path):
         yaml = _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.serve is not None
-        assert cfg.serve.graphql.enabled is False
-        assert cfg.serve.graphql.introspection is False
-        assert cfg.serve.mcp.enabled is False
+        assert cfg.serve.host == "0.0.0.0"
+        assert cfg.serve.port == 8080
+        assert cfg.serve.mcp_enabled is False
+        assert cfg.serve.graphql_introspection is False
 
-    def test_serve_graphql_enabled(self, tmp_path):
+    def test_graphql_introspection_opt_in(self, tmp_path):
         yaml = (
             _MINIMAL_YAML
             + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
-            + "  graphql:\n    enabled: true\n"
+            + "  graphql_introspection: true\n"
         )
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.serve is not None
-        assert cfg.serve.graphql.enabled is True
-        assert cfg.serve.graphql.introspection is False
-        assert cfg.serve.mcp.enabled is False
+        assert cfg.serve.graphql_introspection is True
 
-    def test_serve_graphql_introspection_opt_in(self, tmp_path):
+    def test_mcp_enabled_opt_in(self, tmp_path):
         yaml = (
             _MINIMAL_YAML
             + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
-            + "  graphql:\n    enabled: true\n    introspection: true\n"
+            + "  mcp_enabled: true\n"
         )
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.serve is not None
-        assert cfg.serve.graphql.introspection is True
-
-    def test_serve_mcp_enabled(self, tmp_path):
-        yaml = (
-            _MINIMAL_YAML
-            + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
-            + "  mcp:\n    enabled: true\n"
-        )
-        cfg = load_config(_write_config(tmp_path, yaml))
-        assert cfg.serve is not None
-        assert cfg.serve.mcp.enabled is True
-        assert cfg.serve.graphql.enabled is False
+        assert cfg.serve.mcp_enabled is True
 
     def test_db_optional(self, tmp_path):
         yaml = (

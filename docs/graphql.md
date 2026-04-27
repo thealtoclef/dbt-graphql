@@ -85,9 +85,6 @@ Configure via the `monitoring` block in `config.yml` (see [configuration.md](con
 
 ## 6. Co-mounting with MCP
 
-When both `serve.graphql.enabled: true` and `serve.mcp.enabled: true` in config, the MCP HTTP app is co-mounted under the same Starlette + Granian process:
+GraphQL is always mounted at `/graphql` in serve mode. When `serve.mcp_enabled: true` in config, the MCP HTTP app is co-mounted at `/mcp` under the same Starlette + Granian process. The MCP app's lifespan is composed into the Starlette lifespan via `AsyncExitStack`; the same `AuthenticationMiddleware` runs above both mounts and the same OTel instrumentation covers both endpoints.
 
-- `/graphql` — GraphQL endpoint (Ariadne)
-- `/mcp` — MCP endpoint (FastMCP Streamable HTTP)
-
-The MCP app's lifespan is composed into the Starlette lifespan via `AsyncExitStack`. Either transport can run alone; `create_app` mounts only what's enabled. The same auth middleware and OTel instrumentation cover both endpoints.
+`create_app` passes the `GraphQLBundle` into the MCP factory so the MCP `run_graphql` tool re-executes queries through the same Ariadne schema with the same per-request context — column allow-lists, masks, and row filters apply structurally to MCP traffic the same way they do to direct GraphQL. See [mcp.md § Authorization model](mcp.md#authorization-model).

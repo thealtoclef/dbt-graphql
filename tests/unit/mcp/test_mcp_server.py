@@ -3,6 +3,15 @@
 import asyncio
 from pathlib import Path
 
+from dbt_graphql.formatter.graphql import build_registry
+from dbt_graphql.graphql.app import create_graphql_subapp
+from dbt_graphql.graphql.policy import (
+    AccessPolicy,
+    ColumnLevelPolicy,
+    PolicyEngine,
+    PolicyEntry,
+    TablePolicy,
+)
 from dbt_graphql.pipeline import extract_project
 from dbt_graphql.mcp.server import McpTools
 
@@ -131,11 +140,11 @@ class TestBuildQuery:
         assert result["fields"] == fields
 
 
-class TestExecuteQuery:
-    def test_no_db_returns_error(self):
+class TestRunGraphqlNoBundle:
+    def test_returns_error_when_bundle_absent(self):
         tools = _make_tools()
-        result = asyncio.run(tools.execute_query("SELECT 1"))
-        assert "error" in result
+        result = asyncio.run(tools.run_graphql("query { customers { customer_id } }"))
+        assert "errors" in result
 
 
 class TestMcpServerRegistration:
@@ -145,3 +154,167 @@ class TestMcpServerRegistration:
         project = extract_project(CATALOG, MANIFEST)
         mcp = create_mcp_server(project)
         assert mcp is not None
+
+
+# ---------------------------------------------------------------------------
+# Policy filtering across discovery tools
+#
+# These exercise the integration between McpTools and a real PolicyEngine
+# built from real dbt-artifact fixtures — no hand-rolled registry, no
+# mocked engine. They cover the new "MCP shares the GraphQL access
+# policy" contract that landed alongside run_graphql.
+# ---------------------------------------------------------------------------
+
+
+def _customers_only_engine() -> PolicyEngine:
+    """An access policy that authorizes ``customers`` (with ``email``
+    blocked) and denies everything else. ``when: 'true'`` matches any
+    JWT, including the empty anonymous payload tests run under.
+    """
+    return PolicyEngine(
+        AccessPolicy(
+            policies=[
+                PolicyEntry(
+                    name="customers-only",
+                    when="True",
+                    tables={
+                        "customers": TablePolicy(
+                            column_level=ColumnLevelPolicy(
+                                include_all=True,
+                                excludes=["email"],
+                            ),
+                        ),
+                    },
+                ),
+            ]
+        )
+    )
+
+
+def _make_policy_tools() -> McpTools:
+    project = extract_project(CATALOG, MANIFEST)
+    return McpTools(project, policy_engine=_customers_only_engine())
+
+
+class TestPolicyFiltering:
+    def test_list_tables_hides_unauthorized(self):
+        tools = _make_policy_tools()
+        result = tools.list_tables()
+        names = {t["name"] for t in result["tables"]}
+        assert "customers" in names
+        assert "orders" not in names
+
+    def test_describe_table_filters_blocked_columns(self):
+        tools = _make_policy_tools()
+        result = asyncio.run(tools.describe_table("customers"))
+        cols = {c["name"] for c in result["columns"]}
+        assert "customer_id" in cols
+        assert "email" not in cols
+
+    def test_describe_table_denied_returns_error(self):
+        tools = _make_policy_tools()
+        result = asyncio.run(tools.describe_table("orders"))
+        assert "error" in result
+
+    def test_find_path_unauthorized_endpoint_returns_not_found(self):
+        tools = _make_policy_tools()
+        result = tools.find_path("orders", "customers")
+        assert result["found"] is False
+        assert "not authorized" in result["_meta"]["next_steps"][0]
+
+    def test_explore_relationships_hides_unauthorized_neighbors(self):
+        tools = _make_policy_tools()
+        # customers links to orders in the fixtures; orders is denied so
+        # the neighbor list must come back empty rather than leaking the name.
+        result = tools.explore_relationships("customers")
+        names = {r["name"] for r in result["related_tables"]}
+        assert "orders" not in names
+
+    def test_explore_relationships_denied_table_returns_empty(self):
+        tools = _make_policy_tools()
+        result = tools.explore_relationships("orders")
+        assert result["related_tables"] == []
+
+    def test_build_query_strips_blocked_fields(self):
+        tools = _make_policy_tools()
+        result = tools.build_query("customers", ["customer_id", "email"])
+        assert result["fields"] == ["customer_id"]
+        assert "email" not in result["query"]
+
+
+# ---------------------------------------------------------------------------
+# run_graphql plumbing — bundle wired, real Ariadne schema, fake DB
+# ---------------------------------------------------------------------------
+
+
+class _FakeDB:
+    """Minimal stand-in for DatabaseManager: records compiled SQL and
+    returns canned rows. Lets us exercise the full GraphQL → SQL build
+    path without spinning up a Postgres pool for a unit test.
+    """
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.executed = []
+
+    @property
+    def dialect_name(self) -> str:
+        return "postgresql"
+
+    async def execute(self, stmt):
+        self.executed.append(stmt)
+        return list(self._rows)
+
+
+def _bundle_with(rows, *, access_policy: AccessPolicy | None = None):
+    project = extract_project(CATALOG, MANIFEST)
+    registry = build_registry(project)
+    return create_graphql_subapp(
+        registry=registry,
+        db=_FakeDB(rows),  # ty: ignore[invalid-argument-type]
+        access_policy=access_policy,
+    )
+
+
+class TestRunGraphqlWithBundle:
+    def test_executes_query_through_bundle(self):
+        bundle = _bundle_with([{"customer_id": 1}, {"customer_id": 2}])
+        project = extract_project(CATALOG, MANIFEST)
+        tools = McpTools(project, bundle=bundle)
+        result = asyncio.run(
+            tools.run_graphql("query { customers { customer_id } }")
+        )
+        assert "errors" not in result
+        assert result["data"] == {"customers": [{"customer_id": 1}, {"customer_id": 2}]}
+
+    def test_parse_error_returned_as_errors(self):
+        bundle = _bundle_with([])
+        project = extract_project(CATALOG, MANIFEST)
+        tools = McpTools(project, bundle=bundle)
+        result = asyncio.run(tools.run_graphql("query { nonexistent_table }"))
+        assert "errors" in result
+
+    def test_policy_denial_propagates_as_graphql_error(self):
+        access_policy = AccessPolicy(
+            policies=[
+                PolicyEntry(
+                    name="customers-only",
+                    when="True",
+                    tables={
+                        "customers": TablePolicy(
+                            column_level=ColumnLevelPolicy(include_all=True),
+                        ),
+                    },
+                ),
+            ]
+        )
+        bundle = _bundle_with([], access_policy=access_policy)
+        project = extract_project(CATALOG, MANIFEST)
+        tools = McpTools(
+            project, bundle=bundle, policy_engine=bundle.policy_engine
+        )
+        # ``orders`` is not in the policy → resolver raises TableAccessDenied,
+        # which surfaces as a structured GraphQL error.
+        result = asyncio.run(tools.run_graphql("query { orders { order_id } }"))
+        assert "errors" in result
+        assert any("orders" in e["message"] for e in result["errors"])

@@ -15,16 +15,15 @@ _asgi_app: Starlette | None = None
 
 def run(
     *,
-    registry: TableRegistry | None,
+    registry: TableRegistry,
     config: AppConfig,
     project,
     access_policy: AccessPolicy | None = None,
 ) -> None:
     """Build the ASGI app and run it under Granian.
 
-    Reads ``config.serve.graphql.enabled`` and ``config.serve.mcp.enabled``
-    to decide which transports to mount. The CLI is responsible for
-    validating that at least one is enabled before calling this.
+    GraphQL always mounts at ``/graphql``. MCP additionally mounts at
+    ``/mcp`` when ``config.serve.mcp_enabled`` is true.
     """
     from granian import Granian
     from granian.constants import Interfaces
@@ -33,15 +32,11 @@ def run(
     if config.serve is None:
         raise ValueError("config.serve is required to run the serve layer")
 
-    mcp_http_app = None
-    if config.serve.mcp.enabled:
-        from ..compiler.connection import DatabaseManager
-        from ..mcp.server import create_mcp_http_app
+    mcp_factory = None
+    if config.serve.mcp_enabled:
+        from ..mcp.server import build_mcp_factory
 
-        mcp_db = DatabaseManager(config=config.db)
-        mcp_http_app = create_mcp_http_app(
-            project, db=mcp_db, enrichment=config.enrichment
-        )
+        mcp_factory = build_mcp_factory(project, enrichment=config.enrichment)
 
     global _asgi_app
     _asgi_app = create_app(
@@ -50,21 +45,15 @@ def run(
         access_policy=access_policy,
         cache_config=config.cache,
         jwt_config=config.security.jwt,
-        mcp_http_app=mcp_http_app,
-        introspection=config.serve.graphql.introspection,
-        graphql_enabled=config.serve.graphql.enabled,
+        introspection=config.serve.graphql_introspection,
+        mcp_factory=mcp_factory,
     )
 
     host = config.serve.host
     port = config.serve.port
     log_level = LogLevels(config.monitoring.logs.level.lower())
 
-    endpoints = " + ".join(
-        p for p in (
-            "/graphql" if config.serve.graphql.enabled else "",
-            "/mcp" if config.serve.mcp.enabled else "",
-        ) if p
-    )
+    endpoints = "/graphql" + (" + /mcp" if config.serve.mcp_enabled else "")
     logger.info("listening on http://{}:{} — serving {}", host, port, endpoints)
 
     Granian(

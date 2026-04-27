@@ -17,7 +17,7 @@ dbt-graphql --config config.yml [--output DIR]
 
 **Generate mode** (`--output` present): parse dbt artifacts, write schema files, exit. No database connection required.
 
-**Serve mode** (no `--output`): parse dbt artifacts, then serve based on `serve.graphql.enabled` / `serve.mcp.enabled` flags.
+**Serve mode** (no `--output`): parse dbt artifacts, then start the server. GraphQL is always mounted at `/graphql`. MCP additionally mounts at `/mcp` when `serve.mcp_enabled: true`. Both share one Granian process, one JWT auth middleware, and one access policy.
 
 ---
 
@@ -35,7 +35,7 @@ Paths to dbt artifact files produced by `dbt docs generate`.
 
 ## `db` (optional)
 
-Database connection — required when `serve.graphql.enabled: true` or `serve.mcp.enabled: true`.
+Database connection — required for serve mode (any time the CLI is invoked without `--output`).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -73,11 +73,10 @@ HTTP server bind config. Required when running in serve mode.
 |---|---|---|---|
 | `host` | string | — | Bind address (e.g. `0.0.0.0`) |
 | `port` | int | — | TCP port |
-| `graphql.enabled` | bool | `false` | Mount the GraphQL API at `/graphql`. Requires `db:` section. |
-| `graphql.introspection` | bool | `false` | Allow GraphQL schema introspection queries. **Off by default** — production should keep it off so the schema isn't enumerable. Enable in dev for tooling like GraphQL Playground / Apollo Studio. |
-| `mcp.enabled` | bool | `false` | Mount the MCP server at `/mcp` (Streamable HTTP). Requires `db:` section. |
+| `mcp_enabled` | bool | `false` | Mount the MCP server at `/mcp` (Streamable HTTP) in addition to GraphQL. Off by default — opt in to expose schema discovery + `run_graphql` to LLM agents. |
+| `graphql_introspection` | bool | `false` | Allow GraphQL schema introspection queries. **Off by default** — production should keep it off so the schema isn't enumerable. Enable in dev for tooling like GraphQL Playground / Apollo Studio. |
 
-Both can be enabled at the same time — they are mounted on the same Granian process as `/graphql` and `/mcp` respectively. At least one must be enabled or the CLI refuses to start.
+GraphQL is always mounted at `/graphql` in serve mode. When `mcp_enabled: true`, the MCP server co-mounts at `/mcp` under the same Granian process — sharing the JWT auth middleware, the connection pool, and the access policy. The MCP `run_graphql` tool re-executes queries through the same engine, so column allow-lists, masks, and row filters apply uniformly to both transports.
 
 ### Operating the pool admission 503
 

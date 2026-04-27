@@ -7,12 +7,17 @@ co-mount, OTel) lives in ``dbt_graphql.serve.app``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 from ariadne import make_executable_schema
 from ariadne.asgi import GraphQL
+from graphql import GraphQLSchema
 
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
 from ..formatter.schema import TableRegistry
+from .auth import JWTPayload
 from .monitoring import build_graphql_http_handler
 from .policy import AccessPolicy, PolicyEngine
 from .resolvers import create_query_type
@@ -61,6 +66,25 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     return "\n\n".join(parts) + "\n"
 
 
+@dataclass
+class GraphQLBundle:
+    """Everything the serve layer needs to mount GraphQL and let other
+    sub-apps (MCP) re-execute queries through the same engine + context.
+
+    ``asgi`` mounts under ``/graphql``. The remaining attributes are
+    exposed so the MCP ``run_graphql`` tool runs queries through the
+    same executable schema with the same per-request context the HTTP
+    layer would have built, and so MCP discovery tools share the one
+    ``PolicyEngine`` instance that gates GraphQL.
+    """
+
+    asgi: GraphQL
+    schema: GraphQLSchema
+    build_context: Any  # callable: (jwt_payload, request|None) -> dict
+    db: DatabaseManager
+    policy_engine: PolicyEngine | None
+
+
 def create_graphql_subapp(
     *,
     registry: TableRegistry,
@@ -68,10 +92,10 @@ def create_graphql_subapp(
     access_policy: AccessPolicy | None = None,
     cache_config: CacheConfig | None = None,
     introspection: bool = False,
-) -> GraphQL:
+) -> GraphQLBundle:
     """Build the Ariadne GraphQL ASGI sub-app.
 
-    The returned object is mountable under any Starlette path. The caller
+    The returned bundle is mountable under any Starlette path. The caller
     owns the Starlette app, lifespan, auth middleware, and any co-mounted
     sub-apps (e.g. MCP). See ``dbt_graphql.serve.app.create_app``.
     """
@@ -79,16 +103,26 @@ def create_graphql_subapp(
     query_type = create_query_type(registry)
     gql_schema = make_executable_schema(_build_ariadne_sdl(registry), query_type)
 
-    return GraphQL(
-        gql_schema,
-        context_value=lambda req, _data=None: {
-            "request": req,
+    def build_context(jwt_payload: JWTPayload, request: Any = None) -> dict[str, Any]:
+        return {
+            "request": request,
             "registry": registry,
             "db": db,
-            "jwt_payload": req.user.payload,
+            "jwt_payload": jwt_payload,
             "policy_engine": policy_engine,
             "cache_config": cache_config,
-        },
+        }
+
+    asgi = GraphQL(
+        gql_schema,
+        context_value=lambda req, _data=None: build_context(req.user.payload, req),
         http_handler=build_graphql_http_handler(),
         introspection=introspection,
+    )
+    return GraphQLBundle(
+        asgi=asgi,
+        schema=gql_schema,
+        build_context=build_context,
+        db=db,
+        policy_engine=policy_engine,
     )

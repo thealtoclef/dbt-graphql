@@ -23,26 +23,26 @@ dbt-graphql --config config.yml --output ./out
 # → out/db.graphql, out/lineage.json
 ```
 
-**2. Serve based on `serve.graphql.enabled` / `serve.mcp.enabled` in `config.yml`**
+**2. Serve the API**
 
 ```bash
 dbt-graphql --config config.yml
 ```
 
-Both transports share one Granian process, one auth middleware, one
-lifespan. Either or both can be enabled. With GraphQL on, the API
-mounts at `/graphql`; with MCP on, Streamable HTTP mounts at `/mcp`.
+GraphQL is always mounted at `/graphql` in serve mode. Set
+`serve.mcp_enabled: true` in `config.yml` to additionally co-mount the
+MCP server at `/mcp`. Both transports share one Granian process, one
+JWT auth middleware, one connection pool, and one access policy — the
+MCP `run_graphql` tool runs through the same engine, so column
+allow-lists, masks, and row filters apply uniformly to both.
 
 ```yaml
 # config.yml (excerpt)
 serve:
   host: 0.0.0.0
   port: 9876
-  graphql:
-    enabled: true
-    introspection: false      # off in prod; on for dev tooling
-  mcp:
-    enabled: false
+  mcp_enabled: false             # opt-in; expose MCP tools to LLM agents
+  graphql_introspection: false   # off in prod; on for dev tooling
 ```
 
 ## Access policy

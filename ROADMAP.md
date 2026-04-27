@@ -18,13 +18,13 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | — | dbt Selector Support (`--select`) | 🔲 Pending |
 | — | Source Node Inclusion (`catalog.sources`) | 🔲 Pending |
 | Sec-A | Identity & JWT Auth | ✅ Done (joserfc verifier; JWKS + static sources) |
-| Sec-B | RBAC + Column-Level Security | ✅ Done |
+| Sec-B | RBAC + Column-Level Security | ✅ Done (uniform across GraphQL + MCP) |
 | Sec-C | Row-Level Security | ✅ Done (DSL-only, SA expression compile) |
 | Sec-D | Data Masking | ✅ Done (mask conflict structured GraphQL error; SQL-token rejection at load time) |
 | Sec-E | Query Allow-List | 🔲 Planned |
 | Sec-F | Audit Logging | 🔲 Planned |
 | Sec-G | ABAC match-clauses + deny rules | 🔲 Planned |
-| Sec-H | Structured row-filter DSL | ✅ Done (Hasura-style; compiles to SA `ColumnElement`; load-time column validation) |
+| Sec-H | Structured row-filter DSL | ✅ Done (Hasura-style; compiles to SA `ColumnElement`; load-time column + shape validation: rejects mixed logical/column nodes, rejects `NULL` in `_in`) |
 | Sec-I | Column classifications | 🔲 Planned |
 | Sec-K | Hot reload of access.yml | 🔲 Planned |
 | Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
@@ -90,11 +90,12 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | `DbtConfig` (`catalog`, `manifest`, `exclude`) in `AppConfig` | ✅ |
 | Flat CLI: `--config` + `--output` (no subcommands) | ✅ |
 | Relative path resolution for `catalog`/`manifest` from config dir | ✅ |
-| `serve.graphql` / `serve.mcp` flags | ✅ |
+| Flat `serve` config: `mcp_enabled` + `graphql_introspection`; GraphQL always-on in serve mode | ✅ |
 | `build_registry(project)` — direct `ProjectInfo → TableRegistry` (no SDL roundtrip) | ✅ |
-| `create_mcp_http_app` — Streamable HTTP transport via FastMCP | ✅ |
-| Single `serve.run()` Granian entry — mount-conditional GraphQL/MCP | ✅ |
-| Co-mounted GraphQL + MCP on single Granian process | ✅ |
+| `GraphQLBundle` shared with MCP (same schema, same per-request context) | ✅ |
+| Streamable HTTP MCP transport via FastMCP | ✅ |
+| Single `serve.run()` Granian entry — GraphQL always, MCP opt-in | ✅ |
+| Unified auth + policy for GraphQL and MCP (`run_graphql` tool replaces raw SQL) | ✅ |
 | `api`/`mcp` optional extras collapsed into core deps | ✅ |
 | `redis` optional extra for Redis cache backend | ✅ |
 | `timed` async context manager in `monitoring.py` (shared OTel recording) | ✅ |
@@ -460,6 +461,9 @@ releases, then `when:` is deprecated. Both compile to the same
 literals or `{ jwt: <dotted.path> }` references. The compiler emits
 SQLAlchemy `ColumnElement` clauses that drop directly into
 `stmt.where(...)`. There is no template engine in the data-access path.
+Load-time validation rejects mixed logical/column keys at one node
+(would silently drop a branch at compile time) and `NULL` in `_in`
+lists (`SQL IN (NULL)` never matches — operator must use `_is_null`).
 
 **Policy form:**
 ```yaml
