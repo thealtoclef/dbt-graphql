@@ -13,6 +13,8 @@ import pytest
 from graphql import GraphQLError
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
+from dbt_graphql.cache import CacheConfig
+
 from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE, _make_resolver
 from dbt_graphql.config import PoolConfig
 
@@ -32,7 +34,7 @@ def _make_info(db, registry):
         "db": db,
         "jwt_payload": {},
         "policy_engine": None,
-        "cache_config": None,
+        "cache_config": CacheConfig(),
     }
     info.field_nodes = []
     return info

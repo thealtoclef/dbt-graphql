@@ -47,7 +47,6 @@ class ServeConfig(BaseModel):
     host: str
     port: int
     mcp_enabled: bool = False
-    graphql_introspection: bool = False  # off by default; opt-in for non-prod
 
 
 class _OTLPSignalConfig(BaseModel):
@@ -103,8 +102,8 @@ class GraphQLConfig(BaseModel):
 
 
 class JWTConfig(BaseModel):
-    """JWT verification settings. Only consulted when ``security.enabled``
-    is true — when security is disabled this block is ignored entirely.
+    """JWT verification settings. Ignored when the app is started in
+    ``dev_mode`` — every request is then treated as anonymous.
     """
 
     algorithms: list[str] = []
@@ -137,43 +136,15 @@ class JWTConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
-    """Single master switch for authn (JWT) and authz (access policies).
-
-    ``enabled=False`` (the default) accepts every request as anonymous — no
-    bearer token required, no policy evaluation. ``enabled=True`` requires
-    a fully-configured ``jwt`` block and (optionally) ``policies``. Tying
-    authn and authz to one flag prevents the "JWT off but policies armed
-    against jwt claims" misconfiguration where every request matches the
-    most-permissive rule.
+    """Authn (JWT) and authz (access policies). Both are enforced unless
+    the app is started with ``dev_mode: true`` at the root of the config.
     """
 
-    enabled: bool = False
     jwt: JWTConfig = JWTConfig()
     # Access policies declared inline under ``security.policies`` —
     # centralized config, no separate access.yml roundtrip. Empty list means
-    # authn-only (no row/column enforcement) when security is enabled.
+    # authn-only (no row/column enforcement).
     policies: list[PolicyEntry] = []
-
-    @model_validator(mode="after")
-    def _validate(self) -> SecurityConfig:
-        if not self.enabled:
-            return self
-        if not self.jwt.algorithms:
-            raise ValueError(
-                "security.jwt.algorithms is required when security.enabled is true"
-            )
-        sources = [
-            self.jwt.jwks_url,
-            self.jwt.key_url,
-            self.jwt.key_env,
-            self.jwt.key_file,
-        ]
-        if sum(s is not None for s in sources) != 1:
-            raise ValueError(
-                "security.jwt requires exactly one of: "
-                "jwks_url, key_url, key_env, key_file"
-            )
-        return self
 
 
 class DbtConfig(BaseModel):
@@ -188,6 +159,11 @@ class AppConfig(BaseSettings):
         env_nested_delimiter="__",
     )
 
+    # ``dev_mode`` is the single profile switch. When true: authn/authz are
+    # bypassed (every request is anonymous, no policy evaluation) and GraphQL
+    # introspection is enabled. Default false → secure-by-default; forgetting
+    # to configure ``security.jwt`` then fails at startup, not silently.
+    dev_mode: bool = False
     dbt: DbtConfig
     db: DbConfig | None = None
     serve: ServeConfig | None = None
@@ -196,6 +172,26 @@ class AppConfig(BaseSettings):
     graphql: GraphQLConfig = GraphQLConfig()
     security: SecurityConfig = SecurityConfig()
     cache: CacheConfig = CacheConfig()
+
+    @model_validator(mode="after")
+    def _validate_security(self) -> AppConfig:
+        # Security only matters when actually serving traffic. Generate-mode
+        # invocations (``--output``) load the config without ``serve:`` set
+        # and shouldn't be forced to declare a JWT block.
+        if self.dev_mode or self.serve is None:
+            return self
+        jwt = self.security.jwt
+        if not jwt.algorithms:
+            raise ValueError(
+                "security.jwt.algorithms is required when dev_mode is false"
+            )
+        sources = [jwt.jwks_url, jwt.key_url, jwt.key_env, jwt.key_file]
+        if sum(s is not None for s in sources) != 1:
+            raise ValueError(
+                "security.jwt requires exactly one of: "
+                "jwks_url, key_url, key_env, key_file"
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

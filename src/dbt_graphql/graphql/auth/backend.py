@@ -157,11 +157,11 @@ def build_auth_backend(
 ) -> tuple[JWTAuthBackend, httpx.AsyncClient | None]:
     """Construct the backend (and the http client it owns, for lifespan close).
 
-    ``enabled`` is the single ``security.enabled`` master switch. When it is
-    false the JWT block is ignored entirely — every request is treated as
-    anonymous and the policy engine never runs. Returns the backend plus
-    the http client created for it (or None if the caller passed one in or
-    no HTTP transport is needed).
+    ``enabled`` toggles JWT verification. When false the JWT block is
+    ignored entirely — every request is treated as anonymous and the
+    policy engine never runs. Returns the backend plus the http client
+    created for it (or None if the caller passed one in or no HTTP
+    transport is needed).
     """
     if not enabled:
         return JWTAuthBackend(None), None

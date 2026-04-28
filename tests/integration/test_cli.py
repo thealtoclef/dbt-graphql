@@ -155,6 +155,7 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
     config_file = tmp_path / "config.yml"
     config_file.write_text(
         f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
+        "dev_mode: true\n"
         "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
         "serve:\n  host: 0.0.0.0\n  port: 8080\n"
         "  mcp_enabled: true\n"
@@ -167,11 +168,8 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
     assert captured["enrichment"].budget == 7
 
 
-def test_cli_warns_when_security_disabled(tmp_path, monkeypatch, capsys):
-    """When ``security.enabled`` is false (the default), the server starts
-    but logs a warning that authn and authz are off — every request is
-    anonymous and policies are not enforced.
-    """
+def test_cli_warns_in_dev_mode(tmp_path, monkeypatch, capsys):
+    """``dev_mode: true`` bypasses authn/authz; the server logs a warning."""
     from dbt_graphql import cli as cli_mod
     from dbt_graphql.compiler import connection as conn_mod
     import uvicorn
@@ -185,6 +183,7 @@ def test_cli_warns_when_security_disabled(tmp_path, monkeypatch, capsys):
     config_file = tmp_path / "config.yml"
     config_file.write_text(
         f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
+        "dev_mode: true\n"
         "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
         "serve:\n  host: 0.0.0.0\n  port: 8080\n"
     )
@@ -192,4 +191,4 @@ def test_cli_warns_when_security_disabled(tmp_path, monkeypatch, capsys):
         cli_mod.main(["--config", str(config_file)])
 
     err = capsys.readouterr().err
-    assert "security.enabled=false" in err
+    assert "dev_mode=true" in err

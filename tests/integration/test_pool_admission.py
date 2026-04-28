@@ -16,8 +16,6 @@ import asyncio
 
 import httpx
 import pytest
-from starlette.testclient import TestClient
-
 from dbt_graphql.compiler.connection import DatabaseManager
 from dbt_graphql.config import PoolConfig
 from dbt_graphql.serve.app import create_app
@@ -54,25 +52,32 @@ async def test_pool_exhaustion_returns_503_with_retry_after(
 
     monkeypatch.setattr(DatabaseManager, "execute", slow_execute)
 
-    # TestClient enters the Starlette lifespan, connecting the engine.
-    # Inside the same `with` block we fire concurrent requests via httpx
-    # sharing the same app — lifespan stays open while TestClient holds it.
-    with TestClient(app):
+    # Drive the lifespan on the same event loop as the requests — TestClient
+    # uses a separate portal loop, which conflicts with the cashews memory
+    # backend's expired-entry sweeper task on shutdown.
+    async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
             timeout=10.0,
             follow_redirects=True,
         ) as ac:
-            query_body = {"query": "{ customers { customer_id } }"}
+            # Distinct ``offset`` per request → distinct rendered SQL →
+            # distinct cache keys, so the always-on result cache + singleflight
+            # can't coalesce these three calls into one DB checkout.
+            async def one(offset: int):
+                return await ac.post(
+                    "/graphql",
+                    json={
+                        "query": (
+                            "{ customers(offset: "
+                            f"{offset}"
+                            ") { customer_id } }"
+                        )
+                    },
+                )
 
-            async def one():
-                return await ac.post("/graphql", json=query_body)
-
-            # 3 concurrent requests. Pool size=1 + no overflow: the first
-            # holds the slot ~1s, the other two race checkout, hit the
-            # 0.1s timeout, and the resolver/HTTP layers elevate to 503.
-            responses = await asyncio.gather(*(one() for _ in range(3)))
+            responses = await asyncio.gather(*(one(i) for i in range(3)))
 
     statuses = sorted(r.status_code for r in responses)
     # At least one 503 — exact count depends on scheduling, but the

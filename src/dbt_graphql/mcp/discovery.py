@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Any
 
 from dbt_graphql.config import EnrichmentConfig
 from dbt_graphql.formatter.schema import TableDef, TableRegistry
@@ -126,14 +127,7 @@ class SchemaDiscovery:
         self._db = db
         self._enrichment = enrichment or EnrichmentConfig()
         self._cache: dict[str, TableDetail] = {}
-
-        from sqlalchemy.dialects import registry as _dialect_reg
-
-        self._preparer = (
-            _dialect_reg.load(db.dialect_name)().identifier_preparer
-            if db is not None
-            else None
-        )
+        self._preparer_cached: Any = None
 
         # Build adjacency from registry — outgoing edges live on each
         # column's ``relation``; incoming edges are the reverse.
@@ -298,10 +292,20 @@ class SchemaDiscovery:
 
     # ---- live enrichment (only called when db is set) ----
 
+    @property
+    def _preparer(self) -> Any:
+        if self._preparer_cached is None:
+            assert self._db is not None
+            from sqlalchemy.dialects import registry as _dialect_reg
+
+            self._preparer_cached = _dialect_reg.load(
+                self._db.dialect_name
+            )().identifier_preparer
+        return self._preparer_cached
+
     async def _enrich(self, detail: TableDetail) -> None:
         """Populate live fields on ``detail`` in-place."""
         assert self._db is not None
-        assert self._preparer is not None
 
         cfg = self._enrichment
         qi = self._preparer.quote_identifier

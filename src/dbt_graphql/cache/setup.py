@@ -16,15 +16,11 @@ _CONFIGURED: bool = False
 
 
 def setup_cache(cfg: CacheConfig) -> None:
-    """Bind cashews to ``cfg.url``. Idempotent. No-op when ``enabled=False``."""
+    """Bind cashews to ``cfg.url``. Idempotent."""
     global _CONFIGURED
     if _CONFIGURED:
         cache._backends.clear()  # type: ignore[attr-defined]
         _CONFIGURED = False
-
-    if not cfg.enabled:
-        logger.info("cache: disabled (cfg.enabled=False)")
-        return
 
     cache.setup(cfg.url)
     logger.info("cache backend: {}", cfg.url)

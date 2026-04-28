@@ -12,6 +12,19 @@
 # `src/dbt_graphql/defaults.py`.
 
 # -----------------------------------------------------------------------------
+# dev_mode (optional, default false) — single profile switch.
+#
+# `dev_mode: true` bypasses authn/authz (every request is anonymous, no
+#   policy evaluation) and enables GraphQL introspection. Local development
+#   only.
+#
+# `dev_mode: false` (default) — secure-by-default. `security.jwt` must be
+#   fully configured below or the server fails to start, and introspection
+#   is off.
+# -----------------------------------------------------------------------------
+dev_mode: true   # this example is dev-friendly; set to false (or remove) in prod
+
+# -----------------------------------------------------------------------------
 # dbt (required) — paths to dbt artifacts
 # -----------------------------------------------------------------------------
 dbt:
@@ -45,7 +58,6 @@ serve:
   host: 0.0.0.0
   port: 9876
   mcp_enabled: false             # opt-in; expose schema discovery + run_graphql to LLM agents
-  graphql_introspection: false   # opt-in; dev-only, never enable in prod
 
 # -----------------------------------------------------------------------------
 # enrichment (optional) — controls live DB queries fired by MCP describe_table.
@@ -84,23 +96,14 @@ serve:
 #     # protocol: http
 
 # -----------------------------------------------------------------------------
-# security (optional) — single master switch for authn (JWT) + authz (policies).
-#
-# `enabled: false` (default): every request is anonymous, no policies are
-#   evaluated. Suitable for dev or behind a trusted proxy that handles both
-#   authn and authz upstream. The server warns at startup.
-#
-# `enabled: true`: JWT verification is required (configure `jwt:` below) and
-#   policies (if any) are enforced. Tying authn and authz to one switch
-#   prevents the "JWT off, policies armed against jwt claims" misconfiguration.
+# security — authn (JWT) + authz (policies). Required unless ``dev_mode: true``
+# is set at the root of this file.
 #
 # Order: authn (jwt) first, then authz (policies). Policies are declared
 # inline here — no separate access.yml file. See docs/access-policy.md.
 # -----------------------------------------------------------------------------
 # security:
-#   enabled: true
-#
-#   # JWT verification — only consulted when security.enabled is true.
+#   # JWT verification — required when dev_mode is false.
 #   jwt:
 #     algorithms: [RS256]            # required when enabled. Allow-list pinned.
 #     audience: dbt-graphql          # optional, str | list[str]
@@ -229,7 +232,6 @@ serve:
 # docs/caching.md for the key-derivation argument.
 # -----------------------------------------------------------------------------
 # cache:
-#   enabled: true
 #   url: "mem://?size=10000"           # default — in-memory LRU
 #   # url: "redis://localhost:6379/0"  # multi-replica: shares cache + locks across pods
 #   ttl: 60                            # freshness window in seconds; 0 = realtime

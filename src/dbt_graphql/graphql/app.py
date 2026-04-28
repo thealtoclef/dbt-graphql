@@ -14,7 +14,6 @@ from ariadne import make_executable_schema
 from ariadne.asgi import GraphQL
 from graphql import GraphQLSchema
 
-from .. import defaults
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
 from ..config import GraphQLConfig
@@ -97,33 +96,26 @@ def create_graphql_subapp(
     registry: TableRegistry,
     db: DatabaseManager,
     access_policy: AccessPolicy | None = None,
-    cache_config: CacheConfig | None = None,
-    graphql_config: GraphQLConfig | None = None,
+    cache_config: CacheConfig = CacheConfig(),
+    graphql_config: GraphQLConfig = GraphQLConfig(),
     introspection: bool = False,
 ) -> GraphQLBundle:
     """Build the Ariadne GraphQL ASGI sub-app.
 
     The returned bundle is mountable under any Starlette path. The caller
-    owns the Starlette app, lifespan, auth middleware, and any co-mounted
-    sub-apps (e.g. MCP). See ``dbt_graphql.serve.app.create_app``.
+    owns the Starlette app, lifespan (which must call
+    ``dbt_graphql.cache.setup_cache(cache_config)``), auth middleware, and
+    any co-mounted sub-apps (e.g. MCP). See
+    ``dbt_graphql.serve.app.create_app``.
     """
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
     query_type = create_query_type(registry)
     gql_schema = make_executable_schema(_build_ariadne_sdl(registry), query_type)
 
-    cfg = (
-        graphql_config
-        if graphql_config is not None
-        else GraphQLConfig(
-            query_max_depth=defaults.QUERY_MAX_DEPTH,
-            query_max_fields=defaults.QUERY_MAX_FIELDS,
-            query_max_limit=defaults.QUERY_MAX_LIMIT,
-        )
-    )
     validation_rules = make_query_guard_rules(
-        max_depth=cfg.query_max_depth,
-        max_fields=cfg.query_max_fields,
-        max_limit=cfg.query_max_limit,
+        max_depth=graphql_config.query_max_depth,
+        max_fields=graphql_config.query_max_fields,
+        max_limit=graphql_config.query_max_limit,
     )
 
     def build_context(jwt_payload: JWTPayload, request: Any = None) -> dict[str, Any]:

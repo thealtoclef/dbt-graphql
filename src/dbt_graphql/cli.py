@@ -105,12 +105,11 @@ def _run_serve(project, config) -> None:
 
     from loguru import logger
 
-    if not config.security.enabled:
+    if config.dev_mode:
         logger.warning(
-            "starting with security.enabled=false — every request is treated "
-            "as anonymous and access policies are NOT enforced. Do not run "
-            "this configuration in production unless an upstream proxy "
-            "authenticates and authorizes requests."
+            "starting with dev_mode=true — authn/authz are bypassed, every "
+            "request is treated as anonymous, and GraphQL introspection is "
+            "enabled. Do not run this configuration in production."
         )
 
     from .formatter.graphql import build_registry
@@ -122,7 +121,7 @@ def _run_serve(project, config) -> None:
 
     registry = build_registry(project)
     access_policy: AccessPolicy | None = None
-    if config.security.enabled and config.security.policies:
+    if not config.dev_mode and config.security.policies:
         access_policy = AccessPolicy(policies=config.security.policies)
         try:
             validate_access_policy_against_registry(access_policy, registry)

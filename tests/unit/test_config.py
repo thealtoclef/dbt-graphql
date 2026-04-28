@@ -165,27 +165,21 @@ class TestDbtConfig:
 
 class TestServeConfig:
     def test_serve_defaults(self, tmp_path):
-        yaml = _MINIMAL_YAML + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+        yaml = (
+            _MINIMAL_YAML
+            + "dev_mode: true\n"
+            + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
+        )
         cfg = load_config(_write_config(tmp_path, yaml))
         assert cfg.serve is not None
         assert cfg.serve.host == "0.0.0.0"
         assert cfg.serve.port == 8080
         assert cfg.serve.mcp_enabled is False
-        assert cfg.serve.graphql_introspection is False
-
-    def test_graphql_introspection_opt_in(self, tmp_path):
-        yaml = (
-            _MINIMAL_YAML
-            + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
-            + "  graphql_introspection: true\n"
-        )
-        cfg = load_config(_write_config(tmp_path, yaml))
-        assert cfg.serve is not None
-        assert cfg.serve.graphql_introspection is True
 
     def test_mcp_enabled_opt_in(self, tmp_path):
         yaml = (
             _MINIMAL_YAML
+            + "dev_mode: true\n"
             + "serve:\n  host: 0.0.0.0\n  port: 8080\n"
             + "  mcp_enabled: true\n"
         )
@@ -211,7 +205,6 @@ class TestJWTConfigKeyURLValidation:
     def test_key_url_jwks_path_rejected(self, tmp_path):
         yaml = _MINIMAL_YAML + (
             "security:\n"
-            "  enabled: true\n"
             "  jwt:\n"
             "    algorithms: [RS256]\n"
             "    key_url: https://issuer.example/.well-known/jwks.json\n"
@@ -222,7 +215,6 @@ class TestJWTConfigKeyURLValidation:
     def test_key_url_with_jwks_substring_rejected(self, tmp_path):
         yaml = _MINIMAL_YAML + (
             "security:\n"
-            "  enabled: true\n"
             "  jwt:\n"
             "    algorithms: [RS256]\n"
             "    key_url: https://internal/jwks/v1\n"
@@ -233,7 +225,6 @@ class TestJWTConfigKeyURLValidation:
     def test_key_url_pem_path_accepted(self, tmp_path):
         yaml = _MINIMAL_YAML + (
             "security:\n"
-            "  enabled: true\n"
             "  jwt:\n"
             "    algorithms: [RS256]\n"
             "    key_url: https://internal/keys/dbt-graphql.pem\n"

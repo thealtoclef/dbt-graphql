@@ -221,6 +221,18 @@ def mcp_client(project_registry, fake_db):
         jwt_config = make_test_jwt_config()
         auth_backend, _ = build_auth_backend(jwt_config, enabled=True)
 
+        from contextlib import asynccontextmanager
+        from dbt_graphql.cache import CacheConfig, close_cache, setup_cache
+
+        @asynccontextmanager
+        async def lifespan(app):
+            async with mcp_http_app.lifespan(app):
+                setup_cache(CacheConfig())
+                try:
+                    yield
+                finally:
+                    await close_cache()
+
         # Mount at root and pass lifespan so the MCP session manager initializes.
         # The MCP app's internal route is /mcp, so the full endpoint path is /mcp.
         app = Starlette(
@@ -232,7 +244,7 @@ def mcp_client(project_registry, fake_db):
                     on_error=auth_on_error,
                 )
             ],
-            lifespan=mcp_http_app.lifespan,
+            lifespan=lifespan,
         )
         return TestClient(app, raise_server_exceptions=True)
 

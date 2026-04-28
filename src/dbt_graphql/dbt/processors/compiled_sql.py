@@ -64,7 +64,12 @@ def build_table_lookup(manifest: DbtManifest) -> dict[str, str]:
 
         database = node.database
         schema = node.schema_
-        alias = node.alias or node.name
+        # Sources expose ``identifier``; models/seeds/snapshots expose ``alias``.
+        alias = (
+            getattr(node, "alias", None)
+            or getattr(node, "identifier", None)
+            or node.name
+        )
         if database and schema and alias:
             lookup[normalize_table_relation_name(f"{database}.{schema}.{alias}")] = (
                 model_name

@@ -25,16 +25,6 @@ async def test_default_config_boots_and_serves():
 
 
 @pytest.mark.asyncio
-async def test_disabled_skipped():
-    setup_cache(CacheConfig(enabled=False))
-    # ``enabled=False`` is the only operator-facing way to disable
-    # caching from YAML; ``is_configured`` stays False so the resolver
-    # never reaches into a half-initialized cashews backend.
-    assert not is_configured()
-    await close_cache()
-
-
-@pytest.mark.asyncio
 async def test_setup_idempotent_repeated_calls():
     """Calling setup_cache twice must not raise or double-register backends."""
     cfg = CacheConfig()

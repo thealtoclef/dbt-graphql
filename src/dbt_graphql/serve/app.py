@@ -36,8 +36,8 @@ def create_app(
     db_url: str | None = None,
     config: DbConfig | None = None,
     access_policy: AccessPolicy | None = None,
-    cache_config: CacheConfig | None = None,
-    graphql_config: GraphQLConfig | None = None,
+    cache_config: CacheConfig = CacheConfig(),
+    graphql_config: GraphQLConfig = GraphQLConfig(),
     jwt_config: JWTConfig,
     security_enabled: bool = False,
     introspection: bool = False,
@@ -54,8 +54,9 @@ def create_app(
     same per-request context-builder, the same DB pool, and the same
     ``PolicyEngine`` — so policy enforcement is structurally shared.
 
-    ``cache_config=None`` disables the result cache entirely. Pass
-    ``CacheConfig()`` to opt into the default result cache + singleflight.
+    ``cache_config`` defaults to an in-memory cache (see
+    ``defaults.CACHE_DEFAULT_URL``). The cache always runs; there is no
+    off switch.
     """
     db = DatabaseManager(db_url=db_url, config=config, pool=pool_config)
     bundle: GraphQLBundle = create_graphql_subapp(
@@ -77,13 +78,11 @@ def create_app(
             logger.info("connecting to database")
             await db.connect()
             instrument_sqlalchemy(db._engine)
-            if cache_config is not None:
-                setup_cache(cache_config)
+            setup_cache(cache_config)
             endpoints = "/graphql" + (" + /mcp" if mcp_http_app is not None else "")
             logger.info("app ready — serving {}", endpoints)
             yield
-            if cache_config is not None:
-                await close_cache()
+            await close_cache()
             if owned_http is not None:
                 await owned_http.aclose()
             await db.close()

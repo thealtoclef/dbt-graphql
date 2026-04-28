@@ -21,7 +21,7 @@ def create_query_type(registry) -> QueryType:
     """Build the GraphQL ``Query`` resolver set.
 
     Cache config is threaded to resolvers via ``info.context["cache_config"]``
-    (set by ``create_app``); resolvers handle ``None`` as "caching disabled".
+    — always present; the cache cannot be disabled.
     """
     query_type = QueryType()
     for table_def in registry:
@@ -41,7 +41,7 @@ def _make_resolver(table_name: str):
 
         db = ctx["db"]
         dialect = db.dialect_name
-        cache_cfg: CacheConfig | None = ctx.get("cache_config")
+        cache_cfg: CacheConfig = ctx["cache_config"]
         jwt_payload = ctx.get("jwt_payload")
         policy_engine = ctx.get("policy_engine")
 
@@ -66,15 +66,12 @@ def _make_resolver(table_name: str):
         logger.debug("query {}: {}", table_name, stmt)
 
         try:
-            if cache_cfg is not None and cache_cfg.enabled:
-                rows = await execute_with_cache(
-                    stmt,
-                    dialect_name=dialect,
-                    runner=db.execute,
-                    cfg=cache_cfg,
-                )
-            else:
-                rows = await db.execute(stmt)
+            rows = await execute_with_cache(
+                stmt,
+                dialect_name=dialect,
+                runner=db.execute,
+                cfg=cache_cfg,
+            )
         except SAPoolTimeoutError as exc:
             raise GraphQLError(
                 "database connection pool exhausted",

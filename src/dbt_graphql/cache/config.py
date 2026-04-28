@@ -13,7 +13,6 @@ from .. import defaults
 
 
 class CacheConfig(BaseModel):
-    enabled: bool = True
     url: str = defaults.CACHE_DEFAULT_URL
     ttl: int = defaults.CACHE_TTL
     lock_safety_timeout: int = defaults.CACHE_LOCK_SAFETY_TIMEOUT
