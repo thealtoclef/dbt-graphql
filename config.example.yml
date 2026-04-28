@@ -83,22 +83,24 @@ serve:
 #     # protocol: http
 
 # -----------------------------------------------------------------------------
-# security (optional) — access policy + JWT verification.
+# security (optional) — single master switch for authn (JWT) + authz (policies).
+#
+# `enabled: false` (default): every request is anonymous, no policies are
+#   evaluated. Suitable for dev or behind a trusted proxy that handles both
+#   authn and authz upstream. The server warns at startup.
+#
+# `enabled: true`: JWT verification is required (configure `jwt:` below) and
+#   policies (if any) are enforced. Tying authn and authz to one switch
+#   prevents the "JWT off, policies armed against jwt claims" misconfiguration.
+#
+# Order: authn (jwt) first, then authz (policies). Policies are declared
+# inline here — no separate access.yml file. See docs/access-policy.md.
 # -----------------------------------------------------------------------------
 # security:
-#   policy_path: access.yml          # see docs/access-policy.md
+#   enabled: true
 #
-#   # When jwt.enabled is false, allow_anonymous MUST be set to true to
-#   # confirm that every request should be treated as anonymous (dev only,
-#   # or behind a trusted proxy that authenticates upstream). Otherwise the
-#   # server refuses to start — protects against the "forgot to enable JWT
-#   # in prod" footgun.
-#   allow_anonymous: false
-#
-#   # JWT verification — disabled by default. When disabled every request is
-#   # treated as anonymous (the policy engine sees an empty payload).
+#   # JWT verification — only consulted when security.enabled is true.
 #   jwt:
-#     enabled: true
 #     algorithms: [RS256]            # required when enabled. Allow-list pinned.
 #     audience: dbt-graphql          # optional, str | list[str]
 #     issuer: https://issuer.example/
@@ -111,6 +113,81 @@ serve:
 #     # key_url: https://internal/keys/dbt-graphql.pem
 #     # key_env: JWT_SECRET          # name of env var (NOT the secret)
 #     # key_file: /etc/dbt-graphql/jwt.pem
+#
+#   # Access policies - Each entry's `when` is a simpleeval expression
+#   # against `jwt`; `tables` declares per-table column/row rules. Multiple
+#   # entries are merged OR-style (most-permissive wins for columns/rows;
+#   # masks must agree across matching policies). Default-deny: any table
+#   # not listed under a matching policy raises FORBIDDEN_TABLE.
+#   #
+#   # `when` operators: and, or, not, in, not in, ==, !=, >=, <=, >, <
+#   # jwt fields: jwt.sub, jwt.email, jwt.groups (list), jwt.claims.<key>
+#   #
+#   # column_level:
+#   #   include_all (bool)  - allow all columns; mutually exclusive with includes
+#   #   includes (list)     - explicit column allow-list
+#   #   excludes (list)     - columns to strip from results
+#   #   mask (dict)         - col: "SQL expression" referencing the column directly;
+#   #                         use ~ (YAML null) to emit SQL NULL
+#   #
+#   # row_filter (mapping)  - structured boolean DSL.
+#   #   Logical ops: _and, _or, _not.
+#   #   Comparison: _eq, _ne, _lt, _lte, _gt, _gte, _in, _is_null.
+#   #   RHS values are literals or { jwt: "<dotted.path>" } references.
+#   policies:
+#     # Full access — data admins see everything with no row restrictions.
+#     # Table wildcards aren't supported; list each table explicitly.
+#     - name: admin
+#       when: "'data-admins' in jwt.groups"
+#       tables:
+#         orders:
+#           column_level: { include_all: true }
+#         customers:
+#           column_level: { include_all: true }
+#         products:
+#           column_level: { include_all: true }
+#
+#     # Analysts see their org's data; PII columns are masked.
+#     - name: analyst
+#       when: "'analysts' in jwt.groups"
+#       tables:
+#         orders:
+#           column_level:
+#             include_all: true
+#             excludes: [internal_notes]
+#           row_filter:
+#             org_id: { _eq: { jwt: claims.org_id } }
+#         customers:
+#           column_level:
+#             include_all: true
+#             excludes: [raw_source_id]
+#             mask:
+#               email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
+#               phone: "CONCAT('***-***-', RIGHT(phone, 4))"
+#               ssn: ~
+#           row_filter:
+#             _and:
+#               - org_id: { _eq: { jwt: claims.org_id } }
+#               - status: { _in: [active, pending] }
+#
+#     # Finance team — row-restricted to their region; level gate.
+#     - name: finance
+#       when: "'finance' in jwt.groups and jwt.claims.level >= 3"
+#       tables:
+#         orders:
+#           column_level: { include_all: true }
+#           row_filter:
+#             region: { _eq: { jwt: claims.region } }
+#
+#     # Unauthenticated users see only the public product catalogue.
+#     - name: anon
+#       when: "jwt.sub == None"
+#       tables:
+#         products:
+#           column_level:
+#             includes: [product_id, name, category, price]
+#           row_filter:
+#             published: { _eq: true }
 
 # -----------------------------------------------------------------------------
 # cache (optional) — result cache + singleflight between HTTP and the warehouse.

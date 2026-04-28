@@ -143,15 +143,9 @@ class SchemaDiscovery:
                 rel = col.relation
                 if rel is None or not rel.target_model:
                     continue
-                from_col = (
-                    rel.from_columns[0]
-                    if rel.from_columns
-                    else col.name
-                )
+                from_col = rel.from_columns[0] if rel.from_columns else col.name
                 to_col = (
-                    rel.to_columns[0]
-                    if rel.to_columns
-                    else rel.target_column or ""
+                    rel.to_columns[0] if rel.to_columns else rel.target_column or ""
                 )
                 self._adj.setdefault(tdef.name, []).append(
                     (from_col, rel.target_model, to_col)
@@ -168,9 +162,7 @@ class SchemaDiscovery:
                 name=t.name,
                 description=self._meta.table_descriptions.get(t.name, ""),
                 column_count=len(t.columns),
-                relationship_count=sum(
-                    1 for c in t.columns if c.relation is not None
-                ),
+                relationship_count=sum(1 for c in t.columns if c.relation is not None),
             )
             for t in self._registry
         ]
@@ -227,9 +219,7 @@ class SchemaDiscovery:
             if rel is None or not rel.target_model:
                 continue
             from_col = rel.from_columns[0] if rel.from_columns else col.name
-            to_col = (
-                rel.to_columns[0] if rel.to_columns else rel.target_column or ""
-            )
+            to_col = rel.to_columns[0] if rel.to_columns else rel.target_column or ""
             out.append(f"{tdef.name}.{from_col} → {rel.target_model}.{to_col}")
         return out
 
@@ -295,9 +285,7 @@ class SchemaDiscovery:
                 if rel is None or rel.target_model != table_name:
                     continue
                 to_col = (
-                    rel.to_columns[0]
-                    if rel.to_columns
-                    else rel.target_column or ""
+                    rel.to_columns[0] if rel.to_columns else rel.target_column or ""
                 )
                 result.append(
                     RelatedTable(

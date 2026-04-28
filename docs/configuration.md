@@ -114,6 +114,7 @@ Query guard limits applied to all incoming GraphQL operations — both HTTP `/gr
 |---|---|---|---|
 | `query_max_depth` | int | `5` | Maximum selection-set nesting depth. Introspection-only queries (`__schema { ... }`) are excluded from this limit. |
 | `query_max_fields` | int | `50` | Maximum total leaf fields across the entire query. |
+| `query_max_list_limit` | int \| null | `1000` | Caps integer literals on `limit:` / `first:` arguments. `null` disables the cap. Variables are not checked at validation time — resolvers must apply runtime caps when accepting variables for pagination. Emits `MAX_LIST_LIMIT_EXCEEDED` on violation. |
 
 The default values (5 levels of nesting, 50 leaf fields) follow Hasura's defaults and cover typical analytics queries (5–10 tables × 5–10 fields each). Apollo Router defaults to 100/200 but is geared toward enterprise multi-tenant APIs.
 
@@ -194,30 +195,31 @@ Omit the block to use the default in-memory cache. Pass `cache_config=None` prog
 
 ## `security` (optional)
 
-Access-policy file plus JWT verification. See
-[access-policy.md](access-policy.md) for the policy language and
-[security.md](security.md) for the auth model.
+Single master switch for JWT verification (authn) and access policies
+(authz). See [access-policy.md](access-policy.md) for the policy
+language and [security.md](security.md) for the auth model.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `policy_path` | Path | `null` | Path to `access.yml`. Omit to serve the API with no access policy (all columns/rows visible). |
-| `jwt` | object | `{enabled: false}` | JWT verification settings (see below). |
+| `enabled` | bool | `false` | Master switch. `false` ⇒ no JWT verification, no policy evaluation; every request is anonymous (the server warns at startup). `true` ⇒ JWT block must be configured and policies (if any) are enforced. |
+| `jwt` | object | `{}` | JWT verification settings (see below). Only consulted when `enabled: true`. |
+| `policies` | list | `[]` | Inline access policies — same shape as the [access-policy.md](access-policy.md) DSL. Empty list = no row/column enforcement (authn-only) when security is enabled. |
+
+Tying authn and authz to one switch prevents the "JWT off but policies
+armed against `jwt.*` claims" misconfiguration where every request would
+silently match the most-permissive rule.
 
 ### `security.jwt`
 
-When `enabled: false` (the default), the auth backend skips verification
-entirely and treats every request as anonymous — even ones carrying a
-forged token. Use this only for local development.
-
-When `enabled: true`, every request must present a valid `Bearer` token
-or it is rejected with HTTP 401 + `WWW-Authenticate: Bearer
+Consulted only when `security.enabled: true`. When the master switch is
+true, every request must present a valid `Bearer` token or it is
+rejected with HTTP 401 + `WWW-Authenticate: Bearer
 error="invalid_token"`. Exactly one of `jwks_url`, `key_url`, `key_env`,
 or `key_file` must be set.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Master switch. `false` ⇒ verification skipped, every request anonymous. |
-| `algorithms` | list | `[]` | Required when enabled. Allow-list of accepted JWS algorithms (e.g. `[RS256]`, `[HS256]`). Pinned — `none` and unlisted algorithms are rejected before signature checks run. |
+| `algorithms` | list | `[]` | Required when `security.enabled: true`. Allow-list of accepted JWS algorithms (e.g. `[RS256]`, `[HS256]`). Pinned — `none` and unlisted algorithms are rejected before signature checks run. |
 | `audience` | str \| list | `null` | If set, token's `aud` claim must equal (str) or be a member of (list) this value. |
 | `issuer` | str | `null` | If set, token's `iss` claim must equal this value. |
 | `leeway` | int | `30` | Clock-skew tolerance in seconds for `exp` / `nbf` / `iat`. |

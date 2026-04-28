@@ -6,7 +6,7 @@ How `dbt-graphql` authenticates callers and where the line sits between
 - **Authentication** is delegated to an external Authorization Server.
   We trust a signed JWT.
 - **Authorization** is local, declarative, compile-time, and lives in
-  [`access.yml`](access-policy.md). The policy engine reads claims
+  [`security.policies`](access-policy.md). The policy engine reads claims
   from the JWT payload and shapes the SQL accordingly.
 - **One auth surface for both transports.** GraphQL (`/graphql`) and
   MCP (`/mcp`) sit behind the same Starlette `AuthenticationMiddleware`
@@ -33,7 +33,7 @@ dbt-graphql is a **Resource Server**, not an Authorization Server.
            ▼
  ┌────────────────────┐
  │ dbt-graphql        │   4. verify JWT signature + standard claims
- │ (Resource Server)  │   5. evaluate access.yml against payload
+ │ (Resource Server)  │   5. evaluate security.policies against payload
  │                    │   6. compile GraphQL + policy into SQL
  └─────────┬──────────┘
            │
@@ -65,7 +65,7 @@ reasons repeat:
    problem.** Rotate the IdP's signing key, JWKS endpoint updates,
    we pick up the new `kid` automatically.
 4. **Clean separation from policy.** The IdP stamps claims (`groups`,
-   `org_id`, `role`, …); `access.yml` interprets them. Changing policy
+   `org_id`, `role`, …); `security.policies` interprets them. Changing policy
    never means changing the auth system.
 5. **Pluggable front-end.** Translation, exchange, mTLS, cookies, API
    keys — all of it belongs in a proxy or sidecar (see next section).
@@ -122,12 +122,12 @@ broken IdP surfaces as 401, not as silently-degraded auth.
 
 Everything else in the payload — `sub`, `email`, `groups`,
 `claims.org_id`, `claims.region`, … — is **trusted** once the above
-checks pass. Interpretation lives in `access.yml`.
+checks pass. Interpretation lives in `security.policies`.
 
 ### Claim conventions
 
 No claims are required by dbt-graphql itself. The policy engine reads
-whatever `access.yml` asks it to. Common conventions:
+whatever `security.policies` asks it to. Common conventions:
 
 | Claim | Typical use |
 |---|---|
@@ -170,16 +170,18 @@ issuer) is rejected with HTTP 401 — it does not fall through to the
 anonymous policy. Anonymous is "no token sent"; invalid is "something
 tried to lie."
 
-When `security.jwt.enabled` is `false` (the default), verification is
+When `security.enabled` is `false` (the default), verification is
 **skipped entirely** — every request is anonymous, even one carrying a
-forged token.
+forged token, and no access policies are evaluated. The server logs a
+warning at startup. This is the single master switch for both authn and
+authz, deliberately fused so the "JWT off, policies armed against jwt
+claims" misconfiguration is structurally impossible.
 
-> ⚠️ **Dev-only mode.** To start the server with `jwt.enabled: false`
-> you **must** also set `security.allow_anonymous: true`. Otherwise
-> startup refuses with an error that explains the footgun. The opt-in
-> exists so a missing/typo'd JWT block in production cannot silently
-> become open-to-the-world. Use this only for local development or
-> behind a trusted proxy that authenticates upstream.
+> ⚠️ **Dev-only mode.** Use `security.enabled: false` only for local
+> development or behind a trusted proxy that handles authn and authz
+> upstream. Setting it true requires a fully-configured `security.jwt`
+> block (algorithms + exactly one key source) — config validation
+> rejects partial JWT setup at load time.
 
 > ⚠️ **`key_url` vs `jwks_url`.** `key_url` is for a single static
 > PEM/JWK and is fetched once with no refresh. JWKS endpoints (which
@@ -198,7 +200,7 @@ forged token.
 | `Verifier` | joserfc-backed signature + claims validation; emits OTel `auth.jwt` outcomes. | [`src/dbt_graphql/graphql/auth/verifier.py`](../src/dbt_graphql/graphql/auth/verifier.py) |
 | `JWKSResolver` / `StaticKeyResolver` | Key sources: rotating JWKS or a single static key (env / file / URL). | [`src/dbt_graphql/graphql/auth/keys.py`](../src/dbt_graphql/graphql/auth/keys.py) |
 | `AuthenticationMiddleware` | Starlette middleware that runs `JWTAuthBackend` per request. | [`src/dbt_graphql/serve/app.py`](../src/dbt_graphql/serve/app.py) |
-| `PolicyEngine` | Evaluates `access.yml` against the payload, returns a `ResolvedPolicy`. | [`src/dbt_graphql/graphql/policy.py`](../src/dbt_graphql/graphql/policy.py) |
+| `PolicyEngine` | Evaluates `security.policies` against the payload, returns a `ResolvedPolicy`. | [`src/dbt_graphql/graphql/policy.py`](../src/dbt_graphql/graphql/policy.py) |
 | `compile_query` | Applies the `ResolvedPolicy` — strips blocked columns, rewrites masks, appends `WHERE`. | [`src/dbt_graphql/compiler/query.py`](../src/dbt_graphql/compiler/query.py) |
 
 ---
@@ -207,7 +209,7 @@ forged token.
 
 - [access-policy.md](access-policy.md) — policy language, `when:` /
   `row_filter:` reference, evaluation model.
-- [configuration.md](configuration.md) — `security.policy_path` and
+- [configuration.md](configuration.md) — `security.enabled`, `security.policies`, and
   the `security.jwt` block (algorithms, audience, issuer, key source).
 - [../ROADMAP.md](../ROADMAP.md) — Sec-A through Sec-L security
   roadmap.

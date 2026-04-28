@@ -151,9 +151,7 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
         def serve(self):
             raise SystemExit(0)
 
-    monkeypatch.setattr(
-        mcp_server_mod, "build_mcp_factory", _fake_build_mcp_factory
-    )
+    monkeypatch.setattr(mcp_server_mod, "build_mcp_factory", _fake_build_mcp_factory)
     monkeypatch.setattr(granian_mod, "Granian", _FakeGranian)
     monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
     monkeypatch.setenv("DBT_GRAPHQL__ENRICHMENT__BUDGET", "7")
@@ -164,7 +162,6 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
         "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
         "serve:\n  host: 0.0.0.0\n  port: 8080\n"
         "  mcp_enabled: true\n"
-        "security:\n  allow_anonymous: true\n"
         "enrichment:\n  budget: 100\n"
     )
 
@@ -174,21 +171,33 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
     assert captured["enrichment"].budget == 7
 
 
-def test_cli_refuses_serve_when_jwt_disabled_without_allow_anonymous(
-    tmp_path, capsys
-):
-    """The serve command must refuse to start when JWT verification is off
-    and the operator has not explicitly opted into anonymous access. This
-    closes the "forgot to enable JWT in prod" footgun."""
+def test_cli_warns_when_security_disabled(tmp_path, monkeypatch, capsys):
+    """When ``security.enabled`` is false (the default), the server starts
+    but logs a warning that authn and authz are off — every request is
+    anonymous and policies are not enforced.
+    """
+    from dbt_graphql import cli as cli_mod
+    from dbt_graphql.compiler import connection as conn_mod
+    import granian as granian_mod
+
+    class _FakeGranian:
+        def __init__(self, **_kw):
+            pass
+
+        def serve(self):
+            raise SystemExit(0)
+
+    monkeypatch.setattr(granian_mod, "Granian", _FakeGranian)
+    monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
+
     config_file = tmp_path / "config.yml"
     config_file.write_text(
         f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
         "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
         "serve:\n  host: 0.0.0.0\n  port: 8080\n"
     )
+    with pytest.raises(SystemExit):
+        cli_mod.main(["--config", str(config_file)])
 
-    with pytest.raises(SystemExit) as exc_info:
-        main(["--config", str(config_file)])
-    assert exc_info.value.code == 1
     err = capsys.readouterr().err
-    assert "allow_anonymous" in err
+    assert "security.enabled=false" in err

@@ -28,8 +28,13 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 | `explore_relationships(table_name)` | Authorized tables related to the given one (outgoing / incoming).    |
 | `trace_column_lineage(table, column)` | Upstream sources and downstream consumers for a column, derived from dbt's column-level lineage. Edges to unauthorized tables are stripped. |
 | `build_query(table, fields)`        | Generate a GraphQL query string; filters fields by policy.           |
-| `run_graphql(query, variables?)`    | Execute a GraphQL query through the same engine that backs `/graphql`. Subject to the same `graphql.query_max_depth` / `query_max_fields` guards as the HTTP endpoint. |
-| `get_usage_guide()`                 | Returns a prose workflow guide for LLM agents — recommended call order, `where`-arg semantics, and policy invariants. |
+| `run_graphql(query, variables?)`    | Execute a GraphQL query through the same engine that backs `/graphql`. Subject to the same query guards (depth, field count, list-pagination cap) as the HTTP endpoint. |
+
+### Resources
+
+| URI | Purpose |
+|---|---|
+| `dbt-graphql://usage-guide` | Markdown workflow guide for LLM agents — recommended call order, query-guard limits, `where`-arg semantics, and policy invariants. Exposed as an MCP **resource** (not a tool) so clients can stream it into agent context without burning a tool call. |
 
 Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_table` → `find_path` → `build_query` → `run_graphql`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
 

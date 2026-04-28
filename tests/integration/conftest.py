@@ -20,9 +20,12 @@ os.environ.setdefault("JWT_TEST_SECRET", JWT_TEST_SECRET)
 
 
 def make_test_jwt_config() -> JWTConfig:
-    """JWTConfig used by integration tests: HS256, key sourced from env."""
+    """JWTConfig used by integration tests: HS256, key sourced from env.
+
+    Pair this with ``security_enabled=True`` when calling ``create_app`` —
+    the JWT block on its own does nothing without the master switch.
+    """
     return JWTConfig(
-        enabled=True,
         algorithms=["HS256"],
         key_env="JWT_TEST_SECRET",
         required_claims=[],  # tests sign tokens without `exp`

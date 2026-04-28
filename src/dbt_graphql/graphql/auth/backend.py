@@ -7,7 +7,6 @@ from typing import Any, Protocol
 
 import httpx
 from joserfc.jwk import KeySet
-from loguru import logger
 from starlette.authentication import (
     AuthCredentials,
     AuthenticationBackend,
@@ -151,18 +150,20 @@ class _LazyURLResolver:
 
 
 def build_auth_backend(
-    cfg: JWTConfig, *, http_client: httpx.AsyncClient | None = None
+    cfg: JWTConfig,
+    *,
+    enabled: bool,
+    http_client: httpx.AsyncClient | None = None,
 ) -> tuple[JWTAuthBackend, httpx.AsyncClient | None]:
     """Construct the backend (and the http client it owns, for lifespan close).
 
-    Returns the backend plus the http client created for it (or None if the
-    caller passed one in or no HTTP transport is needed).
+    ``enabled`` is the single ``security.enabled`` master switch. When it is
+    false the JWT block is ignored entirely — every request is treated as
+    anonymous and the policy engine never runs. Returns the backend plus
+    the http client created for it (or None if the caller passed one in or
+    no HTTP transport is needed).
     """
-    if not cfg.enabled:
-        logger.warning(
-            "JWT verification disabled (security.jwt.enabled=false); every "
-            "request will be treated as anonymous"
-        )
+    if not enabled:
         return JWTAuthBackend(None), None
 
     owned: httpx.AsyncClient | None = None

@@ -64,6 +64,7 @@ def client(serve_adapter_env):
         registry=serve_adapter_env["registry"],
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
+            security_enabled=True,
         introspection=True,
     )
     with TestClient(app, raise_server_exceptions=True) as c:
@@ -76,6 +77,7 @@ def client_no_introspection(serve_adapter_env):
         registry=serve_adapter_env["registry"],
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
+            security_enabled=True,
     )
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -88,6 +90,7 @@ def client_with_tiny_limits(serve_adapter_env):
         registry=serve_adapter_env["registry"],
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
+            security_enabled=True,
         graphql_config=GraphQLConfig(query_max_depth=2, query_max_fields=3),
         introspection=True,
     )
@@ -247,9 +250,7 @@ class TestQueryGuardsHTTP:
         # 5 fields exceeds limit of 3
         resp = client_with_tiny_limits.post(
             "/graphql",
-            json={
-                "query": "{ customers { c1 c2 c3 c4 c5 } }"
-            },
+            json={"query": "{ customers { c1 c2 c3 c4 c5 } }"},
         )
         assert resp.status_code == 400
         body = resp.json()
@@ -325,6 +326,7 @@ def policy_client(serve_adapter_env):
             db_url=serve_adapter_env["db_url"],
             access_policy=policy,
             jwt_config=make_test_jwt_config(),
+            security_enabled=True,
         )
         return TestClient(app, raise_server_exceptions=True)
 

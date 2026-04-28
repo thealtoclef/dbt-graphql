@@ -211,9 +211,8 @@ class TestJWTConfigKeyURLValidation:
     def test_key_url_jwks_path_rejected(self, tmp_path):
         yaml = _MINIMAL_YAML + (
             "security:\n"
-            "  allow_anonymous: false\n"
+            "  enabled: true\n"
             "  jwt:\n"
-            "    enabled: true\n"
             "    algorithms: [RS256]\n"
             "    key_url: https://issuer.example/.well-known/jwks.json\n"
         )
@@ -223,9 +222,8 @@ class TestJWTConfigKeyURLValidation:
     def test_key_url_with_jwks_substring_rejected(self, tmp_path):
         yaml = _MINIMAL_YAML + (
             "security:\n"
-            "  allow_anonymous: false\n"
+            "  enabled: true\n"
             "  jwt:\n"
-            "    enabled: true\n"
             "    algorithms: [RS256]\n"
             "    key_url: https://internal/jwks/v1\n"
         )
@@ -235,9 +233,8 @@ class TestJWTConfigKeyURLValidation:
     def test_key_url_pem_path_accepted(self, tmp_path):
         yaml = _MINIMAL_YAML + (
             "security:\n"
-            "  allow_anonymous: false\n"
+            "  enabled: true\n"
             "  jwt:\n"
-            "    enabled: true\n"
             "    algorithms: [RS256]\n"
             "    key_url: https://internal/keys/dbt-graphql.pem\n"
         )

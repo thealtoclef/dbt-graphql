@@ -103,7 +103,7 @@ def _table_from_def(tdef: TableDef):
 
 
 def _mask_column(mask_sql: str | None, col_name: str) -> ClauseElement:
-    """Trusted SQL fragment from access.yml; None produces SQL NULL."""
+    """Trusted SQL fragment from security.policies; None produces SQL NULL."""
     if mask_sql is None:
         return null().label(col_name)
     return literal_column(mask_sql).label(col_name)
@@ -274,7 +274,7 @@ def compile_query(
     ``ResolvedPolicy`` (or raises ``TableAccessDenied``). When provided,
     policy is enforced at every table visited by the query — including
     nested relations. When ``None``, no policy is applied (used in
-    development / tests when ``access.yml`` is not configured).
+    development / tests when ``security.policies`` is not configured).
     """
     selection = field_nodes[0] if field_nodes else None
     if selection is None:

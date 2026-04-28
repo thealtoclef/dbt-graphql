@@ -26,12 +26,13 @@ at compile time.
 from __future__ import annotations
 
 import itertools
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, bindparam, column, not_, or_
 from sqlalchemy.sql.elements import ColumnElement
 
-from .auth import JWTPayload
+if TYPE_CHECKING:
+    from .auth import JWTPayload
 
 
 class RowFilterError(ValueError):
@@ -43,7 +44,9 @@ _COMPARISON_OPS = {"_eq", "_ne", "_lt", "_lte", "_gt", "_gte"}
 _COMPARISON = _COMPARISON_OPS | {"_in", "_is_null"}
 
 
-def validate_row_filter(node: Any, *, allowed_columns: set[str], path: str = "") -> None:
+def validate_row_filter(
+    node: Any, *, allowed_columns: set[str], path: str = ""
+) -> None:
     """Walk the filter tree at policy-load time. Reject unknown columns,
     unknown operators, mixed logical/column keys at one node, and shape
     errors. Raising here means the policy fails to load — operators see
@@ -76,7 +79,9 @@ def validate_row_filter(node: Any, *, allowed_columns: set[str], path: str = "")
         sub_path = f"{path}.{key}" if path else key
         if key in _LOGICAL:
             if key == "_not":
-                validate_row_filter(value, allowed_columns=allowed_columns, path=sub_path)
+                validate_row_filter(
+                    value, allowed_columns=allowed_columns, path=sub_path
+                )
                 continue
             if not isinstance(value, list) or not value:
                 raise RowFilterError(

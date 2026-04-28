@@ -129,7 +129,7 @@ def test_on_error_unknown_code_raises():
 
 
 def test_build_disabled_yields_no_verifier():
-    backend, owned_http = build_auth_backend(JWTConfig(enabled=False))
+    backend, owned_http = build_auth_backend(JWTConfig(), enabled=False)
     assert isinstance(backend, JWTAuthBackend)
     assert backend._verifier is None
     assert owned_http is None
@@ -138,7 +138,8 @@ def test_build_disabled_yields_no_verifier():
 def test_build_env_source(monkeypatch):
     monkeypatch.setenv("X_SECRET", "x" * 32)
     backend, owned = build_auth_backend(
-        JWTConfig(enabled=True, algorithms=["HS256"], key_env="X_SECRET")
+        JWTConfig(algorithms=["HS256"], key_env="X_SECRET"),
+        enabled=True,
     )
     assert backend._verifier is not None
     assert owned is None  # no HTTP client needed

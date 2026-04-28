@@ -44,3 +44,8 @@ JWT_JWKS_CACHE_TTL: Final[int] = 3600
 # Query guards — pre-execution limits on incoming GraphQL queries.
 QUERY_MAX_DEPTH: Final[int] = 5
 QUERY_MAX_FIELDS: Final[int] = 50
+# Caps integer literals on ``limit:`` / ``first:`` resolver arguments so a
+# trivial query can't ask for an unbounded warehouse scan. Variables bypass
+# this rule by design (validation runs before binding); resolvers must
+# apply runtime caps when accepting variables for pagination.
+QUERY_MAX_LIST_LIMIT: Final[int] = 1000

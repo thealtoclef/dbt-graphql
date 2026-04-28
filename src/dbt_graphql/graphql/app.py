@@ -7,18 +7,20 @@ co-mount, OTel) lives in ``dbt_graphql.serve.app``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ariadne import make_executable_schema
 from ariadne.asgi import GraphQL
 from graphql import GraphQLSchema
 
+from .. import defaults
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
 from ..config import GraphQLConfig
 from ..formatter.schema import TableRegistry
 from .auth import JWTPayload
+from .guards import make_query_guard_rules
 from .monitoring import build_graphql_http_handler
 from .policy import AccessPolicy, PolicyEngine
 from .resolvers import create_query_type
@@ -85,7 +87,9 @@ class GraphQLBundle:
     build_context: Any  # callable: (jwt_payload, request|None) -> dict
     db: DatabaseManager
     policy_engine: PolicyEngine | None
-    graphql_config: GraphQLConfig | None = None
+    # Validation rules applied to every operation — the same instance is
+    # reused by ``MCP run_graphql`` so the two transports cannot drift.
+    validation_rules: list = field(default_factory=list)
 
 
 def create_graphql_subapp(
@@ -107,6 +111,21 @@ def create_graphql_subapp(
     query_type = create_query_type(registry)
     gql_schema = make_executable_schema(_build_ariadne_sdl(registry), query_type)
 
+    cfg = (
+        graphql_config
+        if graphql_config is not None
+        else GraphQLConfig(
+            query_max_depth=defaults.QUERY_MAX_DEPTH,
+            query_max_fields=defaults.QUERY_MAX_FIELDS,
+            query_max_list_limit=defaults.QUERY_MAX_LIST_LIMIT,
+        )
+    )
+    validation_rules = make_query_guard_rules(
+        max_depth=cfg.query_max_depth,
+        max_fields=cfg.query_max_fields,
+        max_list_limit=cfg.query_max_list_limit,
+    )
+
     def build_context(jwt_payload: JWTPayload, request: Any = None) -> dict[str, Any]:
         return {
             "request": request,
@@ -120,7 +139,8 @@ def create_graphql_subapp(
     asgi = GraphQL(
         gql_schema,
         context_value=lambda req, _data=None: build_context(req.user.payload, req),
-        http_handler=build_graphql_http_handler(graphql_config),
+        validation_rules=validation_rules,
+        http_handler=build_graphql_http_handler(),
         introspection=introspection,
     )
     return GraphQLBundle(
@@ -130,5 +150,5 @@ def create_graphql_subapp(
         build_context=build_context,
         db=db,
         policy_engine=policy_engine,
-        graphql_config=graphql_config,
+        validation_rules=validation_rules,
     )

@@ -105,36 +105,21 @@ def instrument_starlette(app) -> None:
     StarletteInstrumentor().instrument_app(app)
 
 
-# Error codes used in GraphQL error extensions.
-MAX_DEPTH_CODE = "MAX_DEPTH_EXCEEDED"
-MAX_FIELDS_CODE = "MAX_FIELDS_EXCEEDED"
-
-
-def build_graphql_http_handler(graphql_config=None):
+def build_graphql_http_handler():
     """Return GraphQLHTTPHandler with OpenTelemetryExtension and GraphQLMetricsExtension.
 
-    Also elevates ``POOL_TIMEOUT`` GraphQL errors to HTTP 503 + Retry-After
-    so generic HTTP clients/LBs can back off without parsing GraphQL bodies,
-    and checks query depth/field limits before execution.
+    Elevates ``POOL_TIMEOUT`` GraphQL errors to HTTP 503 + Retry-After so
+    generic HTTP clients/LBs can back off without parsing GraphQL bodies.
+    Query-shape guards (depth, field count, list-pagination cap) live as
+    graphql-core validation rules wired into ``GraphQL(validation_rules=)``
+    in ``app.py`` — they emit standard GraphQL errors with stable
+    ``extensions.code`` values and are returned by Ariadne as 400.
     """
     from ariadne.asgi.handlers import GraphQLHTTPHandler
     from ariadne.contrib.tracing.opentelemetry import OpenTelemetryExtension
     from starlette.responses import JSONResponse
 
-    from .. import defaults
-    from .guards import check_query_limits
     from .resolvers import POOL_TIMEOUT_CODE
-
-    max_depth = (
-        graphql_config.query_max_depth
-        if graphql_config is not None
-        else defaults.QUERY_MAX_DEPTH
-    )
-    max_fields = (
-        graphql_config.query_max_fields
-        if graphql_config is not None
-        else defaults.QUERY_MAX_FIELDS
-    )
 
     def _pool_timeout_retry_after(result: dict) -> int | None:
         for err in result.get("errors") or ():
@@ -143,40 +128,7 @@ def build_graphql_http_handler(graphql_config=None):
                 return int(ext["retry_after"])
         return None
 
-    def _guard_error_code(message: str) -> str:
-        if "depth" in message.lower():
-            return MAX_DEPTH_CODE
-        return MAX_FIELDS_CODE
-
     class PoolAwareHandler(GraphQLHTTPHandler):
-        async def handle_request_override(self, request):
-            """Check query limits before delegating to the parent handler."""
-            if request.method == "POST":
-                try:
-                    data = await self.extract_data_from_request(request)
-                except Exception:
-                    # Let the parent handler deal with extraction errors
-                    return None
-
-                query = data.get("query", "") if isinstance(data, dict) else ""
-                if query:
-                    errors = check_query_limits(query, max_depth, max_fields)
-                    if errors:
-                        return JSONResponse(
-                            {
-                                "data": {},
-                                "errors": [
-                                    {
-                                        "message": m,
-                                        "extensions": {"code": _guard_error_code(m)},
-                                    }
-                                    for m in errors
-                                ],
-                            },
-                            status_code=400,
-                        )
-            return None  # fall through to default handler
-
         async def create_json_response(self, request, result, success):
             retry_after = _pool_timeout_retry_after(result)
             if retry_after is not None:

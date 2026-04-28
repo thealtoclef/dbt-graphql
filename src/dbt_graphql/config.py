@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from . import defaults
 from .cache.config import CacheConfig
+from .graphql.policy import PolicyEntry
 
 
 class PoolConfig(BaseModel):
@@ -97,10 +98,15 @@ class GraphQLConfig(BaseModel):
 
     query_max_depth: int = defaults.QUERY_MAX_DEPTH
     query_max_fields: int = defaults.QUERY_MAX_FIELDS
+    # ``None`` disables the list-limit cap entirely.
+    query_max_list_limit: int | None = defaults.QUERY_MAX_LIST_LIMIT
 
 
 class JWTConfig(BaseModel):
-    enabled: bool = False
+    """JWT verification settings. Only consulted when ``security.enabled``
+    is true — when security is disabled this block is ignored entirely.
+    """
+
     algorithms: list[str] = []
     audience: str | list[str] | None = None
     issuer: str | None = None
@@ -115,17 +121,9 @@ class JWTConfig(BaseModel):
     key_file: Path | None = None
 
     @model_validator(mode="after")
-    def _validate(self) -> "JWTConfig":
-        if not self.enabled:
-            return self
-        if not self.algorithms:
-            raise ValueError("security.jwt.algorithms is required when enabled")
-        sources = [self.jwks_url, self.key_url, self.key_env, self.key_file]
-        if sum(s is not None for s in sources) != 1:
-            raise ValueError(
-                "security.jwt requires exactly one of: "
-                "jwks_url, key_url, key_env, key_file"
-            )
+    def _validate(self) -> JWTConfig:
+        # Reject obviously-mistyped key_url's (JWKS endpoints) regardless of
+        # whether security is enabled — a typo here always indicates a bug.
         if self.key_url is not None:
             url_str = str(self.key_url).lower()
             if "jwks" in url_str or url_str.endswith("/.well-known/jwks.json"):
@@ -139,14 +137,43 @@ class JWTConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
-    policy_path: Path | None = None
+    """Single master switch for authn (JWT) and authz (access policies).
+
+    ``enabled=False`` (the default) accepts every request as anonymous — no
+    bearer token required, no policy evaluation. ``enabled=True`` requires
+    a fully-configured ``jwt`` block and (optionally) ``policies``. Tying
+    authn and authz to one flag prevents the "JWT off but policies armed
+    against jwt claims" misconfiguration where every request matches the
+    most-permissive rule.
+    """
+
+    enabled: bool = False
     jwt: JWTConfig = JWTConfig()
-    # Explicit opt-in required when jwt.enabled is false. Prevents the
-    # "forgot to enable JWT in prod" footgun: every request would otherwise
-    # be treated as anonymous and policy when-clauses against jwt claims
-    # would silently match permissive rules. Enforced at serve startup,
-    # not at config load, so generate-mode and unit tests don't trip it.
-    allow_anonymous: bool = False
+    # Access policies declared inline under ``security.policies`` —
+    # centralized config, no separate access.yml roundtrip. Empty list means
+    # authn-only (no row/column enforcement) when security is enabled.
+    policies: list[PolicyEntry] = []
+
+    @model_validator(mode="after")
+    def _validate(self) -> SecurityConfig:
+        if not self.enabled:
+            return self
+        if not self.jwt.algorithms:
+            raise ValueError(
+                "security.jwt.algorithms is required when security.enabled is true"
+            )
+        sources = [
+            self.jwt.jwks_url,
+            self.jwt.key_url,
+            self.jwt.key_env,
+            self.jwt.key_file,
+        ]
+        if sum(s is not None for s in sources) != 1:
+            raise ValueError(
+                "security.jwt requires exactly one of: "
+                "jwks_url, key_url, key_env, key_file"
+            )
+        return self
 
 
 class DbtConfig(BaseModel):

@@ -47,25 +47,32 @@ serve:
 
 ## Access policy
 
-Per-request RBAC, row filters (Hasura-style structured DSL), and
-column masking — all evaluated at SQL compile time:
+Per-request RBAC, row filters (Hasura-style structured DSL), and column
+masking — declared inline under `security.policies` in `config.yml` and
+evaluated at SQL compile time. The single `security.enabled` flag gates
+both JWT verification (authn) and policy evaluation (authz):
 
 ```yaml
-# access.yml
-policies:
-  - name: analyst
-    when: "'analysts' in jwt.groups"
-    tables:
-      customers:
-        column_level:
-          include_all: true
-          mask:
-            email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
-        row_filter:
-          org_id: { _eq: { jwt: claims.org_id } }
+# config.yml — security block
+security:
+  enabled: true
+  jwt:
+    algorithms: [RS256]
+    jwks_url: https://issuer.example/.well-known/jwks.json
+  policies:
+    - name: analyst
+      when: "'analysts' in jwt.groups"
+      tables:
+        customers:
+          column_level:
+            include_all: true
+            mask:
+              email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
+          row_filter:
+            org_id: { _eq: { jwt: claims.org_id } }
 ```
 
-See [`access.example.yml`](access.example.yml) and
+See [`config.example.yml`](config.example.yml) and
 [docs/access-policy.md](docs/access-policy.md).
 
 ## Documentation

@@ -63,7 +63,7 @@ No N+1 — nested relations are resolved inside the same query via correlated su
 
 ## 4. Auth
 
-JWT verification is handled by the `AuthenticationMiddleware` layer. When `security.jwt.enabled: true` in config, every request is verified against the configured key source (JWKS URL, key file, or env var). Verification uses `joserfc` with an explicit algorithm allow-list and configurable `audience`, `issuer`, `leeway`, and `required_claims`. The decoded payload is attached as `request.user.payload` and forwarded to `info.context["jwt_payload"]` for the policy engine.
+JWT verification is handled by the `AuthenticationMiddleware` layer. When `security.enabled: true` in config, every request is verified against the configured key source (JWKS URL, key file, or env var). Verification uses `joserfc` with an explicit algorithm allow-list and configurable `audience`, `issuer`, `leeway`, and `required_claims`. The decoded payload is attached as `request.user.payload` and forwarded to `info.context["jwt_payload"]` for the policy engine.
 
 When JWT is disabled (the default), every request is treated as anonymous — the policy engine sees an empty payload.
 

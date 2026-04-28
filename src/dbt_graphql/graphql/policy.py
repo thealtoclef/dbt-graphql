@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import yaml
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 from simpleeval import EvalWithCompoundTypes
 from sqlalchemy import or_
 from sqlalchemy.sql.elements import ColumnElement
 
-from .auth import JWTPayload
 from .row_filter import compile_row_filter, validate_row_filter
+
+if TYPE_CHECKING:
+    from .auth import JWTPayload
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,8 @@ class MaskConflictError(PolicyError):
 
 
 # ---------------------------------------------------------------------------
-# Pydantic config models (parsed from access.yml)
+# Pydantic config models (defined inline under ``security.policies`` in
+# ``config.yml``; centralized config — no separate access.yml file).
 # ---------------------------------------------------------------------------
 
 
@@ -124,14 +125,6 @@ class PolicyEntry(BaseModel):
 
 class AccessPolicy(BaseModel):
     policies: list[PolicyEntry] = Field(default_factory=list)
-
-
-def load_access_policy(path: str | Path) -> AccessPolicy:
-    """Parse access.yml into an AccessPolicy model."""
-    data = yaml.safe_load(Path(path).read_text())
-    if not isinstance(data, dict):
-        raise ValueError("access.yml must be a YAML mapping")
-    return AccessPolicy(**data)
 
 
 def validate_access_policy_against_registry(

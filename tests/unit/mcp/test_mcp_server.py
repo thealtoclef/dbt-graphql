@@ -77,29 +77,49 @@ class TestListTables:
         assert "customers" in names
 
 
-class TestGetUsageGuide:
-    def test_returns_non_empty_string(self):
-        tools = _make_tools()
-        result = tools.get_usage_guide()
-        assert "guide" in result
-        assert isinstance(result["guide"], str)
-        assert len(result["guide"]) > 0
+class TestUsageGuide:
+    """The usage guide is exposed as an MCP **resource** (not a tool).
+
+    The static prose lives in ``mcp/usage_guide.md`` and is loaded by
+    ``McpTools.usage_guide_text()``. The resource is registered on the
+    FastMCP server in ``create_mcp_server`` — these tests cover the
+    backing function.
+    """
+
+    def test_returns_non_empty_markdown(self):
+        text = McpTools.usage_guide_text()
+        assert isinstance(text, str)
+        assert text.lstrip().startswith("# ")
 
     def test_contains_workflow_sections(self):
-        tools = _make_tools()
-        result = tools.get_usage_guide()
-        guide = result["guide"]
-        assert "list_tables" in guide
-        assert "describe_table" in guide
-        assert "build_query" in guide
-        assert "run_graphql" in guide
+        text = McpTools.usage_guide_text()
+        assert "list_tables" in text
+        assert "describe_table" in text
+        assert "build_query" in text
+        assert "run_graphql" in text
 
     def test_contains_policy_semantics_sections(self):
-        tools = _make_tools()
-        result = tools.get_usage_guide()
-        guide = result["guide"]
-        assert "row filters" in guide.lower() or "row-level" in guide.lower()
-        assert "JWT" in guide or "column" in guide
+        text = McpTools.usage_guide_text()
+        assert "row filters" in text.lower() or "row-level" in text.lower()
+        assert "JWT" in text or "column" in text
+
+    def test_registered_as_resource_not_tool(self):
+        """``get_usage_guide`` must NOT be registered as a tool."""
+        from dbt_graphql.mcp.server import create_mcp_server
+
+        project = extract_project(CATALOG, MANIFEST)
+        registry = build_registry(project)
+        mcp = create_mcp_server(registry, project=project)
+        # FastMCP's tool registry is keyed by name; resources sit in a
+        # separate map. Walk both via the public introspection API.
+        import asyncio
+
+        tools = asyncio.run(mcp.list_tools())
+        resources = asyncio.run(mcp.list_resources())
+        tool_names = {getattr(t, "name", None) for t in tools}
+        assert "get_usage_guide" not in tool_names
+        resource_uris = [str(getattr(r, "uri", "")) for r in resources]
+        assert any("usage-guide" in u for u in resource_uris)
 
 
 class TestDescribeTable:
@@ -247,9 +267,7 @@ def _customers_only_engine() -> PolicyEngine:
 def _make_policy_tools() -> McpTools:
     project = extract_project(CATALOG, MANIFEST)
     registry = build_registry(project)
-    return McpTools(
-        registry, project=project, policy_engine=_customers_only_engine()
-    )
+    return McpTools(registry, project=project, policy_engine=_customers_only_engine())
 
 
 class TestPolicyFiltering:
@@ -336,9 +354,7 @@ class TestRunGraphqlWithBundle:
     def test_executes_query_through_bundle(self):
         bundle = _bundle_with([{"customer_id": 1}, {"customer_id": 2}])
         tools = McpTools(bundle.registry, bundle=bundle)
-        result = asyncio.run(
-            tools.run_graphql("query { customers { customer_id } }")
-        )
+        result = asyncio.run(tools.run_graphql("query { customers { customer_id } }"))
         assert "errors" not in result
         assert result["data"] == {"customers": [{"customer_id": 1}, {"customer_id": 2}]}
 

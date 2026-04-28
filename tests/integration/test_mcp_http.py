@@ -86,7 +86,9 @@ def _bearer(payload: dict) -> dict:
     return {"Authorization": f"Bearer {_jwt(payload)}"}
 
 
-def _mcp_json_request(method: str, params: dict | None = None, req_id: int | str = 1) -> dict:
+def _mcp_json_request(
+    method: str, params: dict | None = None, req_id: int | str = 1
+) -> dict:
     """Build a JSON-RPC 2.0 request dict."""
     return {
         "jsonrpc": "2.0",
@@ -113,7 +115,6 @@ def _mcp_post(client: TestClient, request: dict, headers: dict | None = None) ->
     pytest.fail(f"No 'data:' line in SSE response: {body}")
 
 
-
 def _mcp_list_tools(client: TestClient, headers: dict | None = None) -> list[dict]:
     """Call tools/list and return the list of tool descriptors."""
     result = _mcp_post(client, _mcp_json_request("tools/list"), headers=headers)
@@ -123,7 +124,10 @@ def _mcp_list_tools(client: TestClient, headers: dict | None = None) -> list[dic
 
 
 def _mcp_call_tool(
-    client: TestClient, tool_name: str, arguments: dict | None = None, headers: dict | None = None
+    client: TestClient,
+    tool_name: str,
+    arguments: dict | None = None,
+    headers: dict | None = None,
 ) -> dict:
     """Call a named MCP tool and return the result dict.
 
@@ -172,8 +176,10 @@ def project_registry():
 @pytest.fixture
 def fake_db():
     """Factory for _FakeDB with canned customer rows."""
+
     def _make(rows, dialect_name="postgresql"):
         return _FakeDB(rows, dialect_name=dialect_name)
+
     return _make
 
 
@@ -212,7 +218,7 @@ def mcp_client(project_registry, fake_db):
         from dbt_graphql.graphql.auth import auth_on_error, build_auth_backend
 
         jwt_config = make_test_jwt_config()
-        auth_backend, _ = build_auth_backend(jwt_config)
+        auth_backend, _ = build_auth_backend(jwt_config, enabled=True)
 
         # Mount at root and pass lifespan so the MCP session manager initializes.
         # The MCP app's internal route is /mcp, so the full endpoint path is /mcp.
@@ -252,9 +258,10 @@ class TestMCPHTTPtoolsList:
             "trace_column_lineage",
             "build_query",
             "run_graphql",
-            "get_usage_guide",
         }
         assert expected.issubset(names), f"Missing tools: {expected - names}"
+        # Usage guide is exposed as an MCP resource, not a tool.
+        assert "get_usage_guide" not in names
 
 
 class TestMCPlistTablesHTTP:
@@ -313,7 +320,9 @@ class TestMCPbuildQueryHTTP:
     def test_build_query_produces_graphql(self, mcp_client):
         with mcp_client() as client:
             result = _mcp_call_tool(
-                client, "build_query", {"table": "customers", "fields": ["customer_id", "first_name"]}
+                client,
+                "build_query",
+                {"table": "customers", "fields": ["customer_id", "first_name"]},
             )
         assert "query" in result
         assert "customers" in result["query"]
@@ -325,7 +334,10 @@ class TestMCPrunGraphqlHTTP:
     """Exercise run_graphql through the HTTP transport."""
 
     def test_run_graphql_executes_query(self, mcp_client):
-        rows = [{"customer_id": 1, "first_name": "Alice"}, {"customer_id": 2, "first_name": "Bob"}]
+        rows = [
+            {"customer_id": 1, "first_name": "Alice"},
+            {"customer_id": 2, "first_name": "Bob"},
+        ]
         with mcp_client(rows=rows) as client:
             result = _mcp_call_tool(
                 client,
@@ -353,7 +365,9 @@ class TestMCPexploreRelationshipsHTTP:
 
     def test_explore_relationships(self, mcp_client):
         with mcp_client() as client:
-            result = _mcp_call_tool(client, "explore_relationships", {"table_name": "orders"})
+            result = _mcp_call_tool(
+                client, "explore_relationships", {"table_name": "orders"}
+            )
         assert "related_tables" in result
         # At least customers should be related to orders
         names = {r["name"] for r in result["related_tables"]}
@@ -365,20 +379,42 @@ class TestMCPfindPathHTTP:
 
     def test_find_path(self, mcp_client):
         with mcp_client() as client:
-            result = _mcp_call_tool(client, "find_path", {"from_table": "orders", "to_table": "customers"})
+            result = _mcp_call_tool(
+                client, "find_path", {"from_table": "orders", "to_table": "customers"}
+            )
         assert "found" in result
         assert result["found"] is True
         assert len(result["paths"]) > 0
 
 
-class TestMCPgetUsageGuideHTTP:
-    """Exercise get_usage_guide through the HTTP transport."""
+class TestMCPUsageGuideResource:
+    """Exercise the usage guide via MCP's resources/read RPC.
 
-    def test_get_usage_guide(self, mcp_client):
+    The guide is a static MCP resource (not a tool) so clients can attach
+    it to the agent's context without spending a tool call.
+    """
+
+    def test_resources_list_includes_usage_guide(self, mcp_client):
         with mcp_client() as client:
-            result = _mcp_call_tool(client, "get_usage_guide")
-        assert "guide" in result
-        assert len(result["guide"]) > 100  # It's a substantial prose guide
+            result = _mcp_post(client, _mcp_json_request("resources/list"))
+        uris = [r["uri"] for r in result["result"]["resources"]]
+        assert any("usage-guide" in u for u in uris)
+
+    def test_resources_read_returns_markdown(self, mcp_client):
+        with mcp_client() as client:
+            result = _mcp_post(
+                client,
+                _mcp_json_request(
+                    "resources/read",
+                    {"uri": "dbt-graphql://usage-guide"},
+                ),
+            )
+        contents = result["result"]["contents"]
+        assert len(contents) == 1
+        assert contents[0]["mimeType"] == "text/markdown"
+        text = contents[0]["text"]
+        assert text.lstrip().startswith("# ")
+        assert "list_tables" in text and "run_graphql" in text
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +534,9 @@ class TestMCPPolicyHTTP:
         """customers links to orders, but orders is outside the policy."""
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
-            result = _mcp_call_tool(client, "explore_relationships", {"table_name": "customers"})
+            result = _mcp_call_tool(
+                client, "explore_relationships", {"table_name": "customers"}
+            )
         names = {r["name"] for r in result["related_tables"]}
         # orders is not visible because the policy doesn't include it
         assert "orders" not in names
@@ -517,7 +555,9 @@ class TestMCPPolicyHTTP:
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
             result = _mcp_call_tool(
-                client, "build_query", {"table": "customers", "fields": ["customer_id", "email"]}
+                client,
+                "build_query",
+                {"table": "customers", "fields": ["customer_id", "email"]},
             )
         # email should be stripped by policy
         assert result["fields"] == ["customer_id"]
@@ -538,7 +578,9 @@ class TestMCPPolicyHTTP:
                     tables={
                         "customers": TablePolicy(
                             column_level=ColumnLevelPolicy(include_all=True),
-                            row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
+                            row_filter={
+                                "customer_id": {"_eq": {"jwt": "claims.cust_id"}}
+                            },
                         ),
                     },
                 ),

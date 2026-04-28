@@ -12,7 +12,6 @@ from dbt_graphql.graphql.policy import (
     PolicyEntry,
     TableAccessDenied,
     TablePolicy,
-    load_access_policy,
 )
 from dbt_graphql.graphql.auth import JWTPayload
 
@@ -391,7 +390,9 @@ def test_engine_uses_dsl_row_filter():
             },
         )
     )
-    resolved = engine.evaluate("orders", _ctx(groups=["analysts"], claims={"org_id": 7}))
+    resolved = engine.evaluate(
+        "orders", _ctx(groups=["analysts"], claims={"org_id": 7})
+    )
     assert resolved.row_filter_clause is not None
     sql, params = _render_clause(resolved.row_filter_clause)
     assert "org_id =" in sql
@@ -404,20 +405,12 @@ def test_multi_policy_row_filter_or():
         _policy(
             "a",
             "True",
-            {
-                "orders": TablePolicy(
-                    row_filter={"user_id": {"_eq": {"jwt": "sub"}}}
-                )
-            },
+            {"orders": TablePolicy(row_filter={"user_id": {"_eq": {"jwt": "sub"}}})},
         ),
         _policy(
             "b",
             "True",
-            {
-                "orders": TablePolicy(
-                    row_filter={"is_public": {"_eq": True}}
-                )
-            },
+            {"orders": TablePolicy(row_filter={"is_public": {"_eq": True}})},
         ),
     )
     result = engine.evaluate("orders", _ctx(sub="u1"))
@@ -467,31 +460,42 @@ def test_validate_against_registry_catches_unknown_column():
 
 
 # ---------------------------------------------------------------------------
-# load_access_policy
+# Inline policy parsing through AppConfig (security.policies)
 # ---------------------------------------------------------------------------
 
 
-def test_load_access_policy(tmp_path):
-    yml = tmp_path / "access.yml"
-    yml.write_text(
+def test_security_policies_parse_from_config(tmp_path):
+    """Policies declared inline in config.yml under ``security.policies``
+    parse into an AccessPolicy without any separate access.yml roundtrip.
+    """
+    from dbt_graphql.config import load_config
+
+    cfg = tmp_path / "config.yml"
+    (tmp_path / "catalog.json").write_text("{}")
+    (tmp_path / "manifest.json").write_text("{}")
+    cfg.write_text(
         """
-policies:
-  - name: analyst
-    when: "'analysts' in jwt.groups"
-    tables:
-      orders:
-        column_level:
-          include_all: true
-          excludes: [internal_notes]
-          mask:
-            email: ~
-        row_filter:
-          user_id: { _eq: { jwt: sub } }
+dbt:
+  catalog: catalog.json
+  manifest: manifest.json
+security:
+  policies:
+    - name: analyst
+      when: "'analysts' in jwt.groups"
+      tables:
+        orders:
+          column_level:
+            include_all: true
+            excludes: [internal_notes]
+            mask:
+              email: ~
+          row_filter:
+            user_id: { _eq: { jwt: sub } }
 """
     )
-    policy = load_access_policy(yml)
-    assert len(policy.policies) == 1
-    entry = policy.policies[0]
+    config = load_config(cfg)
+    assert len(config.security.policies) == 1
+    entry = config.security.policies[0]
     assert entry.name == "analyst"
     tbl = entry.tables["orders"]
     assert tbl.column_level is not None
@@ -500,12 +504,27 @@ policies:
     assert tbl.column_level.mask["email"] is None
     assert tbl.row_filter == {"user_id": {"_eq": {"jwt": "sub"}}}
 
+    # And the policy engine wires up directly from the same models.
+    policy = AccessPolicy(policies=config.security.policies)
+    assert PolicyEngine(policy)._policy.policies[0].name == "analyst"
 
-def test_load_access_policy_invalid_yaml(tmp_path):
-    yml = tmp_path / "access.yml"
-    yml.write_text("- just a list")
-    with pytest.raises(ValueError, match="YAML mapping"):
-        load_access_policy(yml)
+
+def test_security_policies_default_to_empty_list(tmp_path):
+    """Omitting security entirely keeps policies empty (no enforcement)."""
+    from dbt_graphql.config import load_config
+
+    cfg = tmp_path / "config.yml"
+    (tmp_path / "catalog.json").write_text("{}")
+    (tmp_path / "manifest.json").write_text("{}")
+    cfg.write_text(
+        """
+dbt:
+  catalog: catalog.json
+  manifest: manifest.json
+"""
+    )
+    config = load_config(cfg)
+    assert config.security.policies == []
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,7 @@ def cached_client(serve_adapter_env, _cleanup_cache):
             access_policy=access_policy,
             cache_config=cache_cfg if cache_cfg is not None else _cache_config(),
             jwt_config=make_test_jwt_config(),
+            security_enabled=True,
         )
         counter = {"n": 0}
         # We retrieve the live DatabaseManager from the app's resolver
@@ -221,7 +222,9 @@ class TestTenantIsolation:
                     tables={
                         "customers": TablePolicy(
                             column_level=ColumnLevelPolicy(include_all=True),
-                            row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
+                            row_filter={
+                                "customer_id": {"_eq": {"jwt": "claims.cust_id"}}
+                            },
                         )
                     },
                 )

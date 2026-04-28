@@ -1,95 +1,180 @@
-"""Unit tests for query guard limits (depth + field count)."""
+"""Unit tests for query guard validation rules.
+
+Exercises the rules at the same layer Ariadne and MCP run them: parse the
+query into a ``DocumentNode``, then call ``graphql.validate(schema, doc,
+rules)``. Errors carry ``extensions.code`` directly — no message-string
+sniffing.
+"""
 
 from __future__ import annotations
 
 import pytest
+from graphql import build_schema, parse, validate
 
-from dbt_graphql.graphql.guards import check_query_limits
+from dbt_graphql.graphql.guards import (
+    MAX_DEPTH_CODE,
+    MAX_FIELDS_CODE,
+    MAX_LIST_LIMIT_CODE,
+    make_query_guard_rules,
+)
 
 
-class TestCheckQueryLimits:
-    def test_query_within_depth_and_field_limits_returns_empty_list(self):
+# A schema permissive enough for the queries below — names match what
+# the rules walk syntactically; the rules don't care about the actual
+# field types since they do AST-only checks.
+SDL = """
+    type Customer {
+        customer_id: ID
+        first_name: String
+        last_name: String
+        c1: String
+        c2: String
+        c3: String
+        c4: String
+        c5: String
+        c6: String
+        c7: String
+        c8: String
+        c9: String
+        c10: String
+        c11: String
+        c12: String
+        c13: String
+        c14: String
+        c15: String
+        orders(limit: Int, first: Int): [Order]
+    }
+    type Order {
+        order_id: ID
+        status: String
+        line_items: [LineItem]
+    }
+    type LineItem {
+        item_id: ID
+        quantity: Int
+        product: Product
+    }
+    type Product {
+        product_id: ID
+        name: String
+        supplier: Supplier
+    }
+    type Supplier {
+        supplier_id: ID
+        warehouse: Warehouse
+    }
+    type Warehouse {
+        warehouse_id: ID
+        name: String
+    }
+    type Query {
+        customers(limit: Int, first: Int): [Customer]
+    }
+"""
+
+SCHEMA = build_schema(SDL)
+
+
+def _validate(query: str, *, max_depth=5, max_fields=50, max_list_limit=None):
+    rules = make_query_guard_rules(
+        max_depth=max_depth,
+        max_fields=max_fields,
+        max_list_limit=max_list_limit,
+    )
+    return validate(SCHEMA, parse(query), rules)
+
+
+def _codes(errors) -> list[str]:
+    return [(e.extensions or {}).get("code") for e in errors]
+
+
+class TestQueryShape:
+    def test_within_limits_returns_no_errors(self):
         q = "{ customers { customer_id first_name last_name } }"
-        # customers is depth 1, 3 leaf fields
-        assert check_query_limits(q, max_depth=5, max_fields=50) == []
+        assert _validate(q, max_depth=5, max_fields=50) == []
 
-    def test_query_exceeding_depth_returns_error(self):
-        # customers(1) → orders(2) → line_items(3) → product(4) → supplier(5) → warehouse(6) → name(7)
-        q = "{ customers { orders { line_items { product { supplier { warehouse { name } } } } } } }"
-        errors = check_query_limits(q, max_depth=5, max_fields=50)
-        assert len(errors) == 1
-        assert "depth" in errors[0].lower()
-        assert "exceeds" in errors[0].lower()
-        assert "5" in errors[0]
+    def test_depth_violation_emits_max_depth_code(self):
+        q = (
+            "{ customers { orders { line_items { product { supplier "
+            "{ warehouse { name } } } } } } }"
+        )
+        errors = _validate(q, max_depth=5, max_fields=50)
+        assert MAX_DEPTH_CODE in _codes(errors)
 
-    def test_query_exceeding_field_count_returns_error(self):
-        # 15 leaf fields on customers
+    def test_fields_violation_emits_max_fields_code(self):
         q = "{ customers { c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 } }"
-        errors = check_query_limits(q, max_depth=5, max_fields=10)
-        assert len(errors) == 1
-        assert "fields" in errors[0].lower()
-        assert "exceeds" in errors[0].lower()
-        assert "10" in errors[0]
+        errors = _validate(q, max_depth=5, max_fields=10)
+        assert MAX_FIELDS_CODE in _codes(errors)
 
-    def test_query_exceeding_both_depth_and_fields_returns_both_errors(self):
-        # depth 3 (customers→orders→l*) and 12 fields
-        q = "{ customers { orders { l1 l2 l3 l4 l5 l6 l7 l8 l9 l10 l11 l12 } } }"
-        errors = check_query_limits(q, max_depth=2, max_fields=5)
-        assert len(errors) == 2
-        messages_lower = [e.lower() for e in errors]
-        assert any("depth" in m for m in messages_lower)
-        assert any("fields" in m for m in messages_lower)
+    def test_both_violations_reported_independently(self):
+        q = "{ customers { orders { c1: order_id c2: status } } }"
+        errors = _validate(q, max_depth=2, max_fields=1)
+        codes = _codes(errors)
+        assert MAX_DEPTH_CODE in codes
+        assert MAX_FIELDS_CODE in codes
 
-    def test_introspection_query_excluded_from_depth_count(self):
-        # __schema introspection — excluded entirely from depth counting
+    def test_introspection_only_query_excluded_from_depth(self):
         q = "{ __schema { types { name } } }"
-        assert check_query_limits(q, max_depth=0, max_fields=50) == []
+        # depth 0 with introspection stripped → no error
+        assert _validate(q, max_depth=0, max_fields=50) == []
 
-    def test_introspection_leaf_not_counted_as_field(self):
-        # __schema introspection — introspection leaf fields are not counted
-        q = "{ __schema { types { name kind description } } }"
-        # depth 0 (excluded), introspection leaf fields not counted
-        assert check_query_limits(q, max_depth=0, max_fields=0) == []
-
-    def test_typename_inside_data_field_not_counted_for_depth(self):
-        # __typename is introspection, so { customers { __typename } } is depth 1
+    def test_introspection_leaf_inside_data_field_not_counted(self):
         q = "{ customers { __typename } }"
-        assert check_query_limits(q, max_depth=1, max_fields=50) == []
-        # max_depth=0 should fail since customers is depth 1
-        errors = check_query_limits(q, max_depth=0, max_fields=50)
-        assert len(errors) == 1
-        assert "depth" in errors[0].lower()
+        # __typename stripped → customers becomes a leaf at depth 1
+        assert _validate(q, max_depth=1, max_fields=50) == []
+        errors = _validate(q, max_depth=0, max_fields=50)
+        assert MAX_DEPTH_CODE in _codes(errors)
 
     def test_mixed_data_and_introspection_subfields(self):
-        # customers has both a data field and __typename
-        # After filtering __typename, first_name is a leaf at depth 2 (customers is depth 1,
-        # but leaf fields inside a selection set are at depth+1 = 2)
         q = "{ customers { first_name __typename } }"
-        # depth 2, max_depth=2 should pass
-        assert check_query_limits(q, max_depth=2, max_fields=50) == []
-        # depth 2, max_depth=1 should fail
-        errors = check_query_limits(q, max_depth=1, max_fields=50)
-        assert len(errors) == 1
-        assert "depth" in errors[0].lower()
+        # data leaf is at depth 2 after stripping __typename
+        assert _validate(q, max_depth=2, max_fields=50) == []
+        errors = _validate(q, max_depth=1, max_fields=50)
+        assert MAX_DEPTH_CODE in _codes(errors)
 
-    def test_deep_nested_query_against_real_data_model(self):
+    def test_real_data_model_depth(self):
         # customers(1) → orders(2) → line_items(3) → quantity(4)
         q = "{ customers { orders { line_items { quantity } } } }"
-        # depth 4 should pass max_depth=4
-        assert check_query_limits(q, max_depth=4, max_fields=50) == []
-        # depth 4 should fail max_depth=3
-        errors = check_query_limits(q, max_depth=3, max_fields=50)
-        assert len(errors) == 1
-        assert "depth" in errors[0].lower()
+        assert _validate(q, max_depth=4, max_fields=50) == []
+        errors = _validate(q, max_depth=3, max_fields=50)
+        assert MAX_DEPTH_CODE in _codes(errors)
 
-    def test_mutation_query_depth_from_selections(self):
-        # Mutations count depth from their selection set
-        q = "mutation { createCustomer { customer_id } }"
-        # createCustomer(1) → customer_id(2)
-        assert check_query_limits(q, max_depth=2, max_fields=50) == []
+    def test_invalid_syntax_is_caller_responsibility(self):
+        # Validation rules don't catch parse errors — graphql-core's parse()
+        # raises before the rules run. Guards are only for well-formed docs.
+        from graphql.error import GraphQLSyntaxError
 
-    def test_fragment_definition_depth_counted(self):
-        # Fragment on a nested selection
-        q = "fragment CFields on Customer { first_name last_name }"
-        # first_name(1), last_name(1) — depth 1
-        assert check_query_limits(q, max_depth=1, max_fields=50) == []
+        with pytest.raises(GraphQLSyntaxError):
+            parse("{ not valid graphql {{{")
+
+
+class TestListLimitRule:
+    def test_inline_limit_within_cap_passes(self):
+        q = "{ customers(limit: 50) { customer_id } }"
+        assert _validate(q, max_list_limit=100) == []
+
+    def test_inline_limit_above_cap_emits_max_list_limit_code(self):
+        q = "{ customers(limit: 1000000) { customer_id } }"
+        errors = _validate(q, max_list_limit=1000)
+        assert MAX_LIST_LIMIT_CODE in _codes(errors)
+
+    def test_first_argument_also_capped(self):
+        q = "{ customers(first: 5000) { customer_id } }"
+        errors = _validate(q, max_list_limit=1000)
+        assert MAX_LIST_LIMIT_CODE in _codes(errors)
+
+    def test_nested_list_limit_capped(self):
+        q = "{ customers { orders(limit: 10000) { order_id } } }"
+        errors = _validate(q, max_list_limit=1000)
+        assert MAX_LIST_LIMIT_CODE in _codes(errors)
+
+    def test_no_cap_disables_rule(self):
+        q = "{ customers(limit: 10000000) { customer_id } }"
+        # max_list_limit=None → rule not registered
+        assert _validate(q, max_list_limit=None) == []
+
+    def test_variable_value_is_not_checked(self):
+        # Variables bind at execution; validation runs before. Resolvers
+        # are responsible for runtime caps when accepting variables.
+        q = "query Q($n: Int) { customers(limit: $n) { customer_id } }"
+        assert _validate(q, max_list_limit=10) == []

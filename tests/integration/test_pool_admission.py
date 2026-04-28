@@ -37,6 +37,7 @@ async def test_pool_exhaustion_returns_503_with_retry_after(
         registry=serve_adapter_env["registry"],
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
+            security_enabled=True,
         pool_config=pool,
     )
 

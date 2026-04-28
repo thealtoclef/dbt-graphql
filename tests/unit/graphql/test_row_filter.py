@@ -43,9 +43,7 @@ def test_validate_simple_eq_ok():
 
 def test_validate_unknown_column_rejected():
     with pytest.raises(RowFilterError, match="unknown column 'orgg_id'"):
-        validate_row_filter(
-            {"orgg_id": {"_eq": 1}}, allowed_columns=_TABLE_COLUMNS
-        )
+        validate_row_filter({"orgg_id": {"_eq": 1}}, allowed_columns=_TABLE_COLUMNS)
 
 
 def test_validate_unknown_logical_operator_rejected():
@@ -57,16 +55,12 @@ def test_validate_unknown_logical_operator_rejected():
 
 def test_validate_unknown_comparison_operator_rejected():
     with pytest.raises(RowFilterError, match="unknown comparison operator"):
-        validate_row_filter(
-            {"id": {"_like": "%foo"}}, allowed_columns=_TABLE_COLUMNS
-        )
+        validate_row_filter({"id": {"_like": "%foo"}}, allowed_columns=_TABLE_COLUMNS)
 
 
 def test_validate_in_requires_non_empty_list():
     with pytest.raises(RowFilterError, match="non-empty list"):
-        validate_row_filter(
-            {"status": {"_in": []}}, allowed_columns=_TABLE_COLUMNS
-        )
+        validate_row_filter({"status": {"_in": []}}, allowed_columns=_TABLE_COLUMNS)
 
 
 def test_validate_is_null_requires_bool():
@@ -164,9 +158,7 @@ def test_compile_eq_with_jwt_ref():
 
 
 def test_compile_eq_with_literal():
-    sql, params = _render(
-        compile_row_filter({"is_public": {"_eq": True}}, _ctx())
-    )
+    sql, params = _render(compile_row_filter({"is_public": {"_eq": True}}, _ctx()))
     assert "is_public =" in sql
     assert params == {"p_0": True}
 
@@ -185,17 +177,13 @@ def test_compile_in_binds_each_element():
 
 
 def test_compile_is_null_emits_sql_keyword():
-    sql, params = _render(
-        compile_row_filter({"owner_id": {"_is_null": True}}, _ctx())
-    )
+    sql, params = _render(compile_row_filter({"owner_id": {"_is_null": True}}, _ctx()))
     assert sql == "owner_id IS NULL"
     assert params == {}
 
 
 def test_compile_is_not_null():
-    sql, _ = _render(
-        compile_row_filter({"owner_id": {"_is_null": False}}, _ctx())
-    )
+    sql, _ = _render(compile_row_filter({"owner_id": {"_is_null": False}}, _ctx()))
     assert sql == "owner_id IS NOT NULL"
 
 
@@ -247,12 +235,14 @@ def test_compile_jwt_value_is_bound_not_interpolated():
 
 def test_compile_lt_lte_gt_gte():
     clause = compile_row_filter(
-        {"_and": [
-            {"id": {"_lt": 100}},
-            {"id": {"_lte": 200}},
-            {"id": {"_gt": 0}},
-            {"id": {"_gte": 1}},
-        ]},
+        {
+            "_and": [
+                {"id": {"_lt": 100}},
+                {"id": {"_lte": 200}},
+                {"id": {"_gt": 0}},
+                {"id": {"_gte": 1}},
+            ]
+        },
         _ctx(),
     )
     sql, params = _render(clause)
@@ -261,8 +251,6 @@ def test_compile_lt_lte_gt_gte():
 
 
 def test_compile_ne():
-    sql, params = _render(
-        compile_row_filter({"status": {"_ne": "deleted"}}, _ctx())
-    )
+    sql, params = _render(compile_row_filter({"status": {"_ne": "deleted"}}, _ctx()))
     assert "status !=" in sql
     assert params == {"p_0": "deleted"}

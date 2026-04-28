@@ -13,15 +13,19 @@ from __future__ import annotations
 
 import functools
 import json
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from graphql import graphql as graphql_execute, parse, validate
+from graphql import ExecutionResult, execute, parse, validate
+from graphql.validation import specified_rules
 
 from ..formatter.schema import TableRegistry
 from ..graphql.app import GraphQLBundle
 from ..graphql.auth import JWTPayload
 from ..graphql.policy import PolicyEngine, PolicyError, ResolvedPolicy
 from .discovery import SchemaDiscovery
+
+_USAGE_GUIDE_PATH = Path(__file__).with_name("usage_guide.md")
 
 
 @functools.lru_cache(maxsize=1)
@@ -246,7 +250,11 @@ class McpTools:
                 "found": False,
                 "from_table": from_table,
                 "to_table": to_table,
-                "_meta": {"next_steps": ["One or both tables are not authorized for this caller."]},
+                "_meta": {
+                    "next_steps": [
+                        "One or both tables are not authorized for this caller."
+                    ]
+                },
             }
         paths = self._discovery.find_path(from_table, to_table)
         if not paths:
@@ -290,7 +298,9 @@ class McpTools:
             return {
                 "table": table_name,
                 "related_tables": [],
-                "_meta": {"next_steps": ["This table is not authorized for this caller."]},
+                "_meta": {
+                    "next_steps": ["This table is not authorized for this caller."]
+                },
             }
         related = self._discovery.explore_relationships(table_name)
         return {
@@ -309,7 +319,13 @@ class McpTools:
         }
 
     def trace_column_lineage(self, table: str, column: str) -> dict[str, Any]:
-        """Return upstream sources and downstream consumers for a column."""
+        """Return upstream sources and downstream consumers for a column.
+
+        Each lineage entry includes the dbt-derived ``lineage_type`` (one of
+        ``pass_through``, ``rename``, ``transformation``) so the agent can
+        reason about whether the value is preserved verbatim or computed.
+        Edges to tables the caller is not authorized to see are stripped.
+        """
         if self._project is None:
             return {"error": "column lineage not available", "_meta": {}}
 
@@ -317,29 +333,43 @@ class McpTools:
         if not self._is_visible(table, ctx):
             return {"error": f"Table '{table}' is not authorized", "_meta": {}}
 
-        upstream = []
-        downstream = []
+        upstream: list[dict[str, Any]] = []
+        downstream: list[dict[str, Any]] = []
         for edge in self._project.column_lineage:
-            if edge.target == table:
-                # Find matching columns in this edge
-                cols = [c for c in edge.columns if c.target_column == column]
-                if cols and self._is_visible(edge.source, ctx):
-                    upstream.append(
-                        {"table": edge.source, "columns": [c.source_column for c in cols]}
-                    )
-            if edge.source == table:
-                cols = [c for c in edge.columns if c.source_column == column]
-                if cols and self._is_visible(edge.target, ctx):
-                    downstream.append(
-                        {"table": edge.target, "columns": [c.target_column for c in cols]}
-                    )
+            if edge.target == table and self._is_visible(edge.source, ctx):
+                cols = [
+                    {
+                        "source_column": c.source_column,
+                        "lineage_type": str(c.lineage_type),
+                    }
+                    for c in edge.columns
+                    if c.target_column == column
+                ]
+                if cols:
+                    upstream.append({"table": edge.source, "columns": cols})
+            if edge.source == table and self._is_visible(edge.target, ctx):
+                cols = [
+                    {
+                        "target_column": c.target_column,
+                        "lineage_type": str(c.lineage_type),
+                    }
+                    for c in edge.columns
+                    if c.source_column == column
+                ]
+                if cols:
+                    downstream.append({"table": edge.target, "columns": cols})
 
         return {
             "table": table,
             "column": column,
             "upstream": upstream,
             "downstream": downstream,
-            "_meta": {"next_steps": ["Use build_query to construct a query using these tables."]},
+            "_meta": {
+                "next_steps": [
+                    "Use build_query on the upstream/downstream tables to "
+                    "construct queries against them."
+                ]
+            },
         }
 
     def build_query(self, table: str, fields: list[str]) -> dict[str, Any]:
@@ -387,135 +417,94 @@ class McpTools:
 
         The query runs against the same executable schema and per-request
         context the HTTP layer uses, so column allow-lists, masks, and
-        row filters all apply. Returns ``{data, errors}`` — same shape
-        as a GraphQL response.
+        row filters all apply. The same ``validation_rules`` (depth, field
+        count, list-pagination cap) are applied here that the HTTP path
+        uses — wired through ``GraphQLBundle.validation_rules`` so the two
+        transports cannot drift. Returns ``{data, errors}``.
         """
         if self._bundle is None:
-            return {"errors": [{"message": "GraphQL bundle not configured for this MCP server."}]}
+            return {
+                "errors": [
+                    {"message": "GraphQL bundle not configured for this MCP server."}
+                ]
+            }
 
-        # Query guard limits — fall back to defaults when config is not available.
-        from .. import defaults
-        from ..graphql.guards import check_query_limits
+        from graphql import GraphQLError
 
-        max_depth = defaults.QUERY_MAX_DEPTH
-        max_fields = defaults.QUERY_MAX_FIELDS
-        if self._bundle.graphql_config is not None:
-            max_depth = self._bundle.graphql_config.query_max_depth
-            max_fields = self._bundle.graphql_config.query_max_fields
+        try:
+            document = parse(query)
+        except GraphQLError as exc:
+            return {
+                "errors": [
+                    {
+                        "message": str(exc),
+                        "extensions": exc.extensions or {},
+                    }
+                ]
+            }
 
-        errors = check_query_limits(query, max_depth, max_fields)
-        if errors:
-            return {"errors": [{"message": m} for m in errors]}
+        # Combine spec rules + our custom guards — same composition Ariadne
+        # does for the HTTP path (see ariadne.graphql.validate_query).
+        rules = tuple(specified_rules) + tuple(self._bundle.validation_rules)
+        validation_errors = validate(self._bundle.schema, document, rules)
+        if validation_errors:
+            return {
+                "errors": [
+                    {
+                        "message": e.message,
+                        "path": list(e.path) if e.path else None,
+                        "extensions": e.extensions or {},
+                    }
+                    for e in validation_errors
+                ]
+            }
 
         ctx = _current_jwt()
         context_value = self._bundle.build_context(ctx)
-        result = await graphql_execute(
+        result = execute(
             self._bundle.schema,
-            query,
+            document,
             context_value=context_value,
             variable_values=variables,
         )
-        out: dict[str, Any] = {}
-        if result.data is not None:
-            # GraphQL data values may include non-JSON-natives from resolvers
-            # (Decimal, datetime). Round-tripping through json.dumps with the
-            # default str fallback gives the agent a stable JSON view.
-            out["data"] = json.loads(json.dumps(result.data, default=str))
-        if result.errors:
-            out["errors"] = [
-                {"message": str(e), "path": list(e.path) if e.path else None}
-                for e in result.errors
-            ]
-        return out
+        if isinstance(result, ExecutionResult):
+            execution_result = result
+        else:
+            execution_result = await result
+        return _format_execution_result(execution_result)
 
-    def get_usage_guide(self) -> dict[str, Any]:
-        """Return a prose guide teaching the LLM how to use the dbt-graphql MCP tools.
+    @staticmethod
+    def usage_guide_text() -> str:
+        """Return the static usage-guide markdown.
 
-        The guide focuses on workflow and policy semantics — not tool signatures,
-        which are captured in the MCP schema itself.
+        Loaded from ``mcp/usage_guide.md`` so the prose lives next to the
+        rest of the docs and isn't embedded in source. Exposed via MCP as a
+        resource (not a tool) — clients can attach it to context without
+        the LLM spending a tool call to fetch it.
         """
-        guide = """\
-## dbt-graphql MCP Tools — Usage Guide
+        return _USAGE_GUIDE_PATH.read_text()
 
-### Recommended Workflow
 
-1. **Discover available tables** with ``list_tables(filter=None)``.
-   The ``filter`` argument does a case-insensitive substring match on table name
-   and description, so you can narrow down a large warehouse without loading
-   everything into context.
+def _format_execution_result(result: ExecutionResult) -> dict[str, Any]:
+    """Project a graphql-core ExecutionResult into the agent-facing dict.
 
-2. **Inspect a table's columns** with ``describe_table(name)``.
-   This returns column names, types, descriptions, and sample values — all
-   filtered to what your JWT authorizes you to see.
-
-3. **Find how tables connect** with ``explore_relationships(table_name)`` or
-   ``find_path(from_table, to_table)``. These return join relationships that
-   you can use to construct multi-table queries.
-
-4. **Build a query template** with ``build_query(table, fields)``.
-   Pass the fields you need from that table; the tool returns a valid GraphQL
-   query string you can edit and refine before execution. The tool validates
-   against the live schema when a bundle is configured, so it will tell you
-   if your query is malformed.
-
-5. **Execute the query** with ``run_graphql(query, variables=None)``.
-   The query runs through the same GraphQL engine as the HTTP endpoint, so
-   column allow-lists, masks, and row filters all apply uniformly.
-
-### Nested Relations via the ``where`` Argument
-
-When a table has ``has_many`` relationships (e.g., ``orders`` → ``line_items``),
-you can nest them in the query using the ``where`` argument:
-
-```graphql
-query {
-  customers {
-    customer_id
-    orders(where: { status: { _eq: "pending" } }) {
-      order_id
-      status
-    }
-  }
-}
-```
-
-The ``where`` argument accepts boolean expressions to filter related rows server-side.
-Omitting ``where`` returns all related rows.
-
-### Row Filters Are Invisible to the Caller
-
-If an access policy applies row-level filters (e.g., ``tenant_id = 'acme Corp'``),
-those filters are injected by the server **before** your query runs. You will
-not see the filter condition in the query output, and you cannot override it —
-the server enforces it on every query execution. This means:
-
-- You receive only rows you are authorized to see.
-- You cannot accidentally or intentionally query rows outside your policy.
-- ``run_graphql`` returns only data your JWT's policy allows.
-
-### JWT-Driven Column and Row Access
-
-Every tool honours the caller's JWT payload. Depending on the deployed policy:
-
-- **Column-level policy**: ``describe_table`` and ``build_query`` strip blocked
-  columns; ``run_graphql`` omits them from results.
-- **Row-level policy**: ``run_graphql`` silently injects row filters into every
-  relevant table's resolver. You cannot bypass row filters.
-- **Table-level policy**: ``list_tables``, ``describe_table``, ``find_path``,
-  ``explore_relationships`` all filter their output to authorized tables only.
-
-### ``build_query`` Generates Editable Templates
-
-``build_query`` returns a query string you own and can modify before passing
-it to ``run_graphql``. You can:
-- Add ``where`` arguments for nested relation filtering.
-- Request fields on related tables (has_many / has_one).
-- Rename field aliases for clarity.
-
-The tool validates the base query against the schema, but once you edit it,
-``run_graphql`` will re-validate and return errors if the query is invalid.
-"""
-        return {"guide": guide}
+    GraphQL data values may include non-JSON-natives from resolvers
+    (Decimal, datetime). Round-tripping through json.dumps with the default
+    ``str`` fallback gives the agent a stable JSON view.
+    """
+    out: dict[str, Any] = {}
+    if result.data is not None:
+        out["data"] = json.loads(json.dumps(result.data, default=str))
+    if result.errors:
+        out["errors"] = [
+            {
+                "message": str(e),
+                "path": list(e.path) if e.path else None,
+                "extensions": e.extensions or {},
+            }
+            for e in result.errors
+        ]
+    return out
 
 
 def create_mcp_server(
@@ -556,9 +545,20 @@ def create_mcp_server(
     )
     mcp.tool(name="build_query")(_instrument_tool("build_query", tools.build_query))
     mcp.tool(name="run_graphql")(_instrument_tool("run_graphql", tools.run_graphql))
-    mcp.tool(name="get_usage_guide")(
-        _instrument_tool("get_usage_guide", tools.get_usage_guide)
+
+    # Static usage guide as an MCP resource (not a tool). Resources can be
+    # streamed into agent context by the client without burning a tool call.
+    @mcp.resource(
+        uri="dbt-graphql://usage-guide",
+        name="Usage Guide",
+        description=(
+            "Workflow guide for the dbt-graphql MCP tools — recommended call "
+            "order, query-guard limits, and policy semantics."
+        ),
+        mime_type="text/markdown",
     )
+    def _usage_guide() -> str:
+        return McpTools.usage_guide_text()
 
     return mcp
 

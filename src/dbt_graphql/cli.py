@@ -103,42 +103,31 @@ def _run_serve(project, config) -> None:
         )
         sys.exit(1)
 
-    if not config.security.jwt.enabled and not config.security.allow_anonymous:
-        print(
-            "Error: security.jwt.enabled is false and security.allow_anonymous is "
-            "not set. Refusing to start: every request would be treated as "
-            "anonymous. Set security.allow_anonymous: true to confirm (dev mode "
-            "or behind a trusted proxy that authenticates upstream), or enable "
-            "JWT verification.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    from loguru import logger
 
-    if not config.security.jwt.enabled:
-        from loguru import logger
-
+    if not config.security.enabled:
         logger.warning(
-            "starting with security.jwt.enabled=false and "
-            "security.allow_anonymous=true — every request will be treated as "
-            "anonymous. Do not run this configuration in production unless an "
-            "upstream proxy authenticates requests."
+            "starting with security.enabled=false — every request is treated "
+            "as anonymous and access policies are NOT enforced. Do not run "
+            "this configuration in production unless an upstream proxy "
+            "authenticates and authorizes requests."
         )
 
     from .formatter.graphql import build_registry
     from .graphql.policy import (
-        load_access_policy,
+        AccessPolicy,
         validate_access_policy_against_registry,
     )
     from .serve import run as _run
 
     registry = build_registry(project)
-    access_policy = None
-    if config.security.policy_path:
+    access_policy: AccessPolicy | None = None
+    if config.security.enabled and config.security.policies:
+        access_policy = AccessPolicy(policies=config.security.policies)
         try:
-            access_policy = load_access_policy(config.security.policy_path)
             validate_access_policy_against_registry(access_policy, registry)
         except Exception as exc:
-            print(f"Error loading policy: {exc}", file=sys.stderr)
+            print(f"Error in security.policies: {exc}", file=sys.stderr)
             sys.exit(1)
 
     _run(

@@ -1,34 +1,47 @@
 # Access Policy
 
 `dbt-graphql` supports per-request access control at the GraphQL layer.
-Policies are declared in a single YAML file (`access.yml` by convention) and
-evaluated at **SQL compile time** — column restrictions, masking, and row
-filters are injected into the generated SQL, so the runtime never sees values
-it should not.
+Policies are declared **inline in `config.yml`** under `security.policies`
+and evaluated at **SQL compile time** — column restrictions, masking, and
+row filters are injected into the generated SQL, so the runtime never sees
+values it should not.
 
 This is the **application-level** control plane. Warehouse-level controls
 (column policy tags, RLS, IAM on service accounts) remain the warehouse's
 responsibility and are complementary. A single dbt model can be served by
-multiple applications, each with a different `access.yml`.
+multiple applications, each with different `security.policies`.
 
 ---
 
 ## Quick start
 
-1. Write an `access.yml` (see [`access.example.yml`](../access.example.yml)
-   for a working reference).
-2. Reference it from `config.yml`:
-   ```yaml
-   security:
-     policy_path: access.yml
-   ```
-3. Start the API. Each GraphQL **and MCP** request is evaluated against
-   the policy using the `Authorization: Bearer <jwt>` header. Both
-   transports share the same `AuthenticationMiddleware` and the same
-   `AccessPolicy`, so a caller's column allow-list, masks, and row
-   filters apply identically to direct `/graphql` calls and to MCP
-   tools (`list_tables`, `describe_table`, `run_graphql`, …). See
-   [mcp.md § Authorization model](mcp.md#authorization-model).
+Declare policies inline in `config.yml`:
+
+```yaml
+security:
+  enabled: true             # master switch — JWT verified, policies enforced
+  jwt:
+    algorithms: [RS256]
+    jwks_url: https://issuer.example/.well-known/jwks.json
+  policies:
+    - name: analyst
+      when: "'analysts' in jwt.groups"
+      tables:
+        customers:
+          column_level: { include_all: true }
+```
+
+Each GraphQL **and MCP** request is evaluated against the policy using the
+`Authorization: Bearer <jwt>` header. Both transports share the same
+`AuthenticationMiddleware` and the same `AccessPolicy`, so a caller's
+column allow-list, masks, and row filters apply identically to direct
+`/graphql` calls and to MCP tools (`list_tables`, `describe_table`,
+`run_graphql`, …). See [mcp.md § Authorization model](mcp.md#authorization-model).
+
+When `security.enabled` is false (the default), JWTs are not verified and
+policies are not evaluated — every request is anonymous. The server warns
+at startup. Use this for dev or behind a trusted proxy that authenticates
+upstream.
 
 ---
 
@@ -74,7 +87,7 @@ Each table entry contains:
 | `excludes` | list[str] | Columns to strip from results. |
 | `mask` | map[str, str\|null] | `column_name → SQL expression`. Use YAML `~` (null) to emit SQL `NULL`. |
 
-Mask values are raw SQL fragments. `access.yml` is operator-controlled and
+Mask values are raw SQL fragments. The `security.policies` block is operator-controlled and
 trusted; **do not populate it from untrusted sources.**
 
 ### `row_filter`
@@ -144,7 +157,7 @@ relation — the engine runs these steps:
      the column *and* they agree on the expression. Conflicting expressions
      raise; any matching policy that leaves a column unmasked drops the
      mask (most-permissive rule). Raise at request time forces operators to
-     fix the conflict in `access.yml`.
+     fix the conflict in `security.policies`.
    - **Row filters** — OR: `(filter_a) OR (filter_b)`. Bind params from
      each filter are merged under per-policy prefixes to avoid collisions.
 4. Every column the client requested is checked against the merged policy.
@@ -159,13 +172,13 @@ relation — the engine runs these steps:
 
 ### Default-deny
 
-When `access.yml` is loaded, **every table must be explicitly listed under
+When `security.policies` is loaded, **every table must be explicitly listed under
 some policy that matches the subject** — otherwise the request is rejected
 with a GraphQL error. This closes the hole where a role with a narrow
 policy (say, on `orders`) could silently read any other table the policy
 forgot to mention.
 
-When no `access.yml` is configured at all (`security.policy_path` unset),
+When `security.policies` is empty (or `security.enabled` is false),
 enforcement is skipped entirely — this is dev/test mode. Pick one:
 configure a policy file, or don't; there is no "partial enforcement".
 
@@ -276,7 +289,7 @@ by a regression test in
 ## End-to-end example
 
 ```yaml
-# access.yml
+# config.yml — security.policies
 policies:
   - name: admin
     when: "'data-admins' in jwt.groups"
@@ -336,7 +349,7 @@ predicate.
 1. **Compile-time enforcement.** Filters and masks are injected into the SQL
    sent to the warehouse. The runtime never sees values it should not. It
    is impossible to "forget" to apply a filter downstream.
-2. **Declarative.** All policy in `access.yml`; no code changes per policy
+2. **Declarative.** All policy in `security.policies`; no code changes per policy
    edit.
 3. **Parameterized everywhere.** Claim values are never string-interpolated
    into SQL.
@@ -445,7 +458,7 @@ change, but collectively they transform the engine from "policy file" to
 
 ## Related documents
 
-- [`access.example.yml`](../access.example.yml) — working example
-- [configuration.md](configuration.md) — `security.policy_path` and env vars
+- [`config.example.yml`](../config.example.yml) — see the `security:` block
+- [configuration.md](configuration.md) — `security.enabled`, `security.policies`, env vars
 - [architecture.md](architecture.md) — where the policy fits in the request path
 - [../ROADMAP.md](../ROADMAP.md) — all security phases (Sec-A … Sec-L)

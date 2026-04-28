@@ -67,7 +67,7 @@ def _app(backend: JWTAuthBackend) -> Starlette:
 
 
 def test_disabled_treats_every_request_as_anonymous():
-    backend, _ = build_auth_backend(JWTConfig(enabled=False))
+    backend, _ = build_auth_backend(JWTConfig(), enabled=False)
     with TestClient(_app(backend)) as c:
         # Even with a token, payload is not read.
         resp = c.get("/me", headers={"Authorization": "Bearer bogus"})
@@ -84,7 +84,8 @@ def test_valid_token_authenticates(monkeypatch):
     secret = "x" * 32
     monkeypatch.setenv("HMAC_SECRET", secret)
     backend, _ = build_auth_backend(
-        JWTConfig(enabled=True, algorithms=["HS256"], key_env="HMAC_SECRET")
+        JWTConfig(algorithms=["HS256"], key_env="HMAC_SECRET"),
+        enabled=True,
     )
     token = joserfc_jwt.encode(
         {"alg": "HS256"},
@@ -103,7 +104,8 @@ def test_valid_token_authenticates(monkeypatch):
 def test_invalid_signature_returns_401_with_www_authenticate(monkeypatch):
     monkeypatch.setenv("HMAC_SECRET", "a" * 32)
     backend, _ = build_auth_backend(
-        JWTConfig(enabled=True, algorithms=["HS256"], key_env="HMAC_SECRET")
+        JWTConfig(algorithms=["HS256"], key_env="HMAC_SECRET"),
+        enabled=True,
     )
     # Sign with a different secret → signature invalid.
     token = joserfc_jwt.encode(
@@ -123,7 +125,8 @@ def test_missing_token_on_protected_route_is_403(monkeypatch):
     """No token = anonymous = `requires('authenticated')` returns 403."""
     monkeypatch.setenv("HMAC_SECRET", "a" * 32)
     backend, _ = build_auth_backend(
-        JWTConfig(enabled=True, algorithms=["HS256"], key_env="HMAC_SECRET")
+        JWTConfig(algorithms=["HS256"], key_env="HMAC_SECRET"),
+        enabled=True,
     )
     with TestClient(_app(backend)) as c:
         resp = c.get("/protected")
