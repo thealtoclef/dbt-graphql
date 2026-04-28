@@ -39,7 +39,7 @@ Standard GraphQL `IntrospectionQuery` only exposes a fixed set of fields on `__T
 - **dbt descriptions** on tables and columns are emitted as triple-quoted blocks above the type / field, so they show up directly in `__Type.description` and `__Field.description`.
 - **`@masked` / `@filtered`** are emitted in the printed `db.graphql` artefact when the corresponding flags are set. They will be set per principal once policy-aware introspection is wired (see `docs/policy-aware-introspection-plan.md`); today `ColumnDef.masked` / `TableDef.filtered` exist as scaffolding and are not populated at runtime.
 
-The remaining custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) appear only in the printed `db.graphql` artefact (`--output` mode); they do not reach introspection clients. The introspection-carrier decision for surfacing these signals to standard introspection is tracked in the plan doc above.
+The remaining custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) do not appear in standard `__schema` introspection. They are exposed via a dedicated `Query._sdl: String!` field that returns the **effective** db.graphql SDL for the current caller — pruned to tables and columns the caller's `AccessPolicy` allows, with `@masked` / `@filtered` injected per the resolved policy. The same pruned-AST renderer powers the MCP `describe_tables` tool, so HTTP clients and LLM agents see byte-identical SDL. (The `--output` artefact is the unfiltered "boot" view; the per-caller view is `_sdl`.)
 
 ---
 

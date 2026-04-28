@@ -11,6 +11,8 @@ from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 from ..cache.result import execute_with_cache
 from ..compiler.query import compile_query
 from ..config import CacheConfig
+from ..formatter.sdl_view import effective_document, render_sdl
+from .effective import effective_registry
 from .policy import PolicyError
 
 # GraphQL extension code paired with the HTTP handler's 503 elevation.
@@ -27,7 +29,21 @@ def create_query_type(registry) -> QueryType:
     for table_def in registry:
         name = table_def.name
         query_type.set_field(name, _make_resolver(name))
+    query_type.set_field("_sdl", _resolve_sdl)
     return query_type
+
+
+def _resolve_sdl(_, info) -> str:
+    """Return the effective db.graphql SDL for the current caller.
+
+    Computed per-request from the caller's JWT and the active policy
+    engine; never cached across users.
+    """
+    ctx = info.context
+    eff = effective_registry(
+        ctx["registry"], ctx.get("jwt_payload"), ctx.get("policy_engine")
+    )
+    return render_sdl(effective_document(ctx["source_doc"], eff))
 
 
 def _make_resolver(table_name: str):

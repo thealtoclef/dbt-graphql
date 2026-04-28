@@ -20,8 +20,10 @@ from graphql import ExecutionResult, execute, parse, validate
 from graphql.validation import specified_rules
 
 from ..formatter.schema import TableRegistry
+from ..formatter.sdl_view import effective_document, render_sdl
 from ..graphql.app import GraphQLBundle
 from ..graphql.auth import JWTPayload
+from ..graphql.effective import effective_registry
 from ..graphql.policy import PolicyEngine, PolicyError, ResolvedPolicy
 from .discovery import SchemaDiscovery
 
@@ -232,6 +234,37 @@ class McpTools:
                 ]
             },
         }
+
+    def describe_tables(self, names: list[str]) -> str:
+        """Return the effective ``db.graphql`` SDL slice for ``names``.
+
+        The output is plain SDL — type definitions with full custom
+        directives (``@table``, ``@column``, ``@relation``, ``@masked``,
+        ``@filtered``).
+
+        Empty input is rejected. Names not in the caller's effective
+        registry are rejected with a single error shape so the response
+        does not reveal whether the table exists at all.
+        """
+        if not names:
+            raise ValueError(
+                "describe_tables requires at least one table name. "
+                "Call list_tables first to choose candidates."
+            )
+        if self._bundle is None:
+            raise RuntimeError("describe_tables requires a configured GraphQL bundle.")
+
+        ctx = _current_jwt()
+        eff = effective_registry(self._bundle.registry, ctx, self._policy_engine)
+        visible = {t.name for t in eff}
+        unknown = [n for n in names if n not in visible]
+        if unknown:
+            raise ValueError(
+                f"unknown or unauthorized table(s): {sorted(set(unknown))}"
+            )
+
+        doc = effective_document(self._bundle.source_doc, eff, restrict_to=set(names))
+        return render_sdl(doc)
 
     def find_path(self, from_table: str, to_table: str) -> dict[str, Any]:
         """Find the shortest join path(s) between two visible tables."""
@@ -524,6 +557,9 @@ def create_mcp_server(
     mcp.tool(name="list_tables")(_instrument_tool("list_tables", tools.list_tables))
     mcp.tool(name="describe_table")(
         _instrument_tool("describe_table", tools.describe_table)
+    )
+    mcp.tool(name="describe_tables")(
+        _instrument_tool("describe_tables", tools.describe_tables)
     )
     mcp.tool(name="find_path")(_instrument_tool("find_path", tools.find_path))
     mcp.tool(name="explore_relationships")(

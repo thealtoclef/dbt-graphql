@@ -12,12 +12,12 @@ from typing import Any
 
 from ariadne import make_executable_schema
 from ariadne.asgi import GraphQL
-from graphql import GraphQLSchema
+from graphql import DocumentNode, GraphQLSchema
 
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
 from ..config import GraphQLConfig
-from ..formatter.graphql import _description_block
+from ..formatter.graphql import _description_block, build_source_doc
 from ..formatter.schema import TableRegistry
 from .auth import JWTPayload
 from .guards import make_query_guard_rules
@@ -71,6 +71,10 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         + f"  {t.name}(limit: Int, offset: Int, where: {t.name}WhereInput): [{t.name}]"
         for t in registry
     ]
+    query_fields.append(
+        '  "The effective db.graphql SDL for this caller, with full custom directives."\n'
+        "  _sdl: String!"
+    )
     query_block = "type Query {\n" + "\n".join(query_fields) + "\n}"
 
     scalar_defs = [f"scalar {s}" for s in sorted(custom_scalars)]
@@ -93,6 +97,7 @@ class GraphQLBundle:
     asgi: GraphQL
     schema: GraphQLSchema
     registry: TableRegistry
+    source_doc: DocumentNode
     build_context: Any  # callable: (jwt_payload, request|None) -> dict
     db: DatabaseManager
     policy_engine: PolicyEngine | None
@@ -118,7 +123,13 @@ def create_graphql_subapp(
     any co-mounted sub-apps (e.g. MCP). See
     ``dbt_graphql.serve.app.create_app``.
     """
+    if any(t.name == "_sdl" for t in registry):
+        raise ValueError(
+            "model name '_sdl' collides with the reserved Query._sdl field; "
+            "rename the model or exclude it via dbt.exclude."
+        )
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
+    source_doc = build_source_doc(registry)
     query_type = create_query_type(registry)
     gql_schema = make_executable_schema(_build_ariadne_sdl(registry), query_type)
 
@@ -132,6 +143,7 @@ def create_graphql_subapp(
         return {
             "request": request,
             "registry": registry,
+            "source_doc": source_doc,
             "db": db,
             "jwt_payload": jwt_payload,
             "policy_engine": policy_engine,
@@ -149,6 +161,7 @@ def create_graphql_subapp(
         asgi=asgi,
         schema=gql_schema,
         registry=registry,
+        source_doc=source_doc,
         build_context=build_context,
         db=db,
         policy_engine=policy_engine,

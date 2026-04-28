@@ -11,6 +11,13 @@
    Returns column names, types, descriptions, and live-DB sample values — all
    filtered to what your JWT authorizes you to see.
 
+   For full SDL with custom directives (`@table`, `@column`, `@relation`,
+   `@masked`, `@filtered`) — the format the schema is authored in — call
+   `describe_tables(names: [str])` instead. The tool returns the effective
+   SDL slice for the named tables, suited for direct LLM consumption.
+   **Do not use GraphQL `__schema` introspection** — `describe_tables`
+   is the authoritative effective view with full directive metadata.
+
 3. **Find how tables connect** with `explore_relationships(table_name)` or
    `find_path(from_table, to_table)`. These return foreign-key relationships
    you can use to construct multi-table queries.
@@ -84,9 +91,11 @@ policy:
   columns; `run_graphql` rejects them with `FORBIDDEN_COLUMN`.
 - **Row-level**: `run_graphql` silently injects row filters into every
   relevant table's resolver. You cannot bypass them.
-- **Table-level**: `list_tables`, `describe_table`, `find_path`,
-  `explore_relationships`, `trace_column_lineage` all filter their output
-  to authorized tables only.
+- **Table-level**: `list_tables`, `describe_table`, `describe_tables`,
+  `find_path`, `explore_relationships`, `trace_column_lineage` all filter
+  their output to authorized tables only. `describe_tables` rejects
+  unauthorized names with the same error shape as unknown names so the
+  caller cannot probe for table existence.
 
 ## `build_query` Generates Editable Templates
 

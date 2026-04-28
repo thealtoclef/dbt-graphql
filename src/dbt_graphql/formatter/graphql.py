@@ -10,19 +10,22 @@ compiler never needs to parse the GraphQL type name back into SQL.
 Flow:
   ProjectInfo  ──build_registry()──▶  TableRegistry  (Python object, used by the server)
                                             │
-                                   _registry_to_sdl()
+                                  build_source_doc()  →  DocumentNode
+                                            │
+                                       render_sdl()
                                             │
                                             ▼
                                       db.graphql file  (--output mode)
 
-format_graphql() = build_registry() + _registry_to_sdl().  There is only one code path
-from dbt artifacts to the schema representation; --output just adds serialization.
+The same ``render_sdl`` is used by the GraphQL ``_sdl`` field and the MCP
+``describe_tables`` tool, so file output and live SDL are byte-identical.
 """
 
 from __future__ import annotations
 
 import re
 
+from graphql import DocumentNode, parse
 from pydantic import BaseModel
 
 from ..ir.models import ProjectInfo, RelationshipInfo
@@ -83,16 +86,14 @@ class GraphQLResult(BaseModel):
 
 def format_graphql(project: ProjectInfo) -> GraphQLResult:
     """Convert domain-neutral ProjectInfo into GraphQL db schema."""
-    return GraphQLResult(db_graphql=_registry_to_sdl(build_registry(project)))
+    from .sdl_view import render_sdl
+
+    registry = build_registry(project)
+    return GraphQLResult(db_graphql=render_sdl(build_source_doc(registry)))
 
 
 def build_registry(project: ProjectInfo) -> TableRegistry:
-    """Build a TableRegistry from dbt project info.
-
-    This is the single code path from dbt artifacts to the Python schema
-    representation.  The server uses this object directly; --output mode
-    additionally serialises it to SDL via _registry_to_sdl().
-    """
+    """Build a TableRegistry from dbt project info."""
     rel_map = _build_rel_map(project.relationships)
     tables: list[TableDef] = []
 
@@ -149,6 +150,16 @@ def _registry_to_sdl(registry: TableRegistry) -> str:
     """Serialise a TableRegistry to db.graphql SDL format."""
     blocks = [_table_to_sdl(t) for t in registry]
     return "\n".join(blocks).rstrip() + "\n"
+
+
+def build_source_doc(registry: TableRegistry) -> DocumentNode:
+    """Render the registry to db.graphql SDL and parse it into an AST.
+
+    The returned ``DocumentNode`` carries every custom directive
+    (``@table``, ``@column``, ``@relation``, ``@masked``, ``@filtered``)
+    and every description string verbatim.
+    """
+    return parse(_registry_to_sdl(registry))
 
 
 def _description_block(text: str, indent: str = "") -> str:
@@ -221,7 +232,11 @@ def _column_to_sdl(col: ColumnDef) -> str:
                 f"toField: [{', '.join(r.to_columns)}]",
             ]
         else:
-            args = [f"type: {r.target_model}", f"fromField: {col.name}", f"toField: {r.target_column}"]
+            args = [
+                f"type: {r.target_model}",
+                f"fromField: {col.name}",
+                f"toField: {r.target_column}",
+            ]
         args.append(f"cardinality: {r.cardinality}")
         args.append(f"origin: {r.origin}")
         directives.append(f"@relation({', '.join(args)})")

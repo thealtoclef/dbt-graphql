@@ -266,6 +266,7 @@ class TestMCPHTTPtoolsList:
         expected = {
             "list_tables",
             "describe_table",
+            "describe_tables",
             "find_path",
             "explore_relationships",
             "trace_column_lineage",
@@ -325,6 +326,71 @@ class TestMCPdescribeTableHTTP:
         with mcp_client() as client:
             result = _mcp_call_tool(client, "describe_table", {"name": "orders"})
         assert "relationships" in result
+
+
+class TestMCPdescribeTablesHTTP:
+    """Exercise describe_tables through the HTTP transport.
+
+    The tool returns plain SDL text — not JSON — so we read it from the
+    MCP ``content[0].text`` field instead of ``structuredContent``.
+    """
+
+    def _call_text(
+        self, client: TestClient, names: list[str]
+    ) -> tuple[str | None, dict]:
+        result = _mcp_post(
+            client,
+            _mcp_json_request(
+                "tools/call",
+                {"name": "describe_tables", "arguments": {"names": names}},
+            ),
+        )
+        tool_result = result["result"]
+        content = tool_result.get("content") or []
+        text = content[0].get("text") if content else None
+        return text, tool_result
+
+    def test_returns_sdl_for_named_table(self, mcp_client):
+        with mcp_client() as client:
+            text, tool_result = self._call_text(client, ["customers"])
+        assert tool_result.get("isError") is not True, tool_result
+        assert text is not None
+        assert "type customers " in text
+        assert "type orders " not in text
+        assert "@table" in text
+
+    def test_unknown_name_is_error_without_existence_leak(self, mcp_client):
+        with mcp_client() as client:
+            text, tool_result = self._call_text(client, ["nope_does_not_exist"])
+        assert tool_result.get("isError") is True
+        assert "unknown or unauthorized" in (text or "")
+
+    def test_policy_denied_table_same_error_shape_as_unknown(self, mcp_client):
+        policy = AccessPolicy(
+            policies=[
+                PolicyEntry(
+                    name="cust-only",
+                    effect=Effect.ALLOW,
+                    when="True",
+                    tables={
+                        "customers": TablePolicy(
+                            column_level=ColumnLevelPolicy(include_all=True)
+                        ),
+                    },
+                )
+            ]
+        )
+        with mcp_client(access_policy=policy) as client:
+            denied_text, denied_res = self._call_text(client, ["orders"])
+            unknown_text, unknown_res = self._call_text(
+                client, ["definitely_not_a_table"]
+            )
+        assert denied_res.get("isError") is True
+        assert unknown_res.get("isError") is True
+        # Both should match the same prefix — caller cannot distinguish
+        # "exists but denied" from "does not exist".
+        assert "unknown or unauthorized" in (denied_text or "")
+        assert "unknown or unauthorized" in (unknown_text or "")
 
 
 class TestMCPbuildQueryHTTP:
