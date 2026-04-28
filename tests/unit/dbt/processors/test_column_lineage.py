@@ -102,6 +102,51 @@ class TestClassification:
             assert col.lineage_type == LineageType.transformation
 
 
+class TestStarExpansion:
+    """`SELECT *` must expand to per-column lineage when the schema dict
+    knows the upstream table — across all dialects, including those whose
+    compiled SQL uses backtick-quoted identifiers (mysql, spark, etc.).
+
+    Without identifier normalisation, sqlglot's qualify pass can't match
+    `` `t` `` against the schema entry `t` and falls through to a single
+    edge named ``"*"`` instead of expanding into real column refs."""
+
+    def test_star_expanded_for_postgres_double_quotes(self):
+        items = _edges('SELECT * FROM "db"."sch"."t"')
+        sources = {col.source_column for _, col in _cols(items, "a")}
+        assert sources == {"a"}
+        sources = {col.source_column for _, col in _cols(items, "b")}
+        assert sources == {"b"}
+
+    def test_star_expanded_for_backtick_quoted_sql(self):
+        sql = "SELECT * FROM `db`.`sch`.`t`"
+        scope = qualify_model_sql(sql, "mysql", _SCHEMA)
+        assert scope is not None
+        items = _edges_for_model("t", scope, _TABLE_LOOKUP, "mysql")
+        sources = {col.source_column for _, col in _cols(items, "a")}
+        assert sources == {"a"}, f"expected ['a'], star not expanded: {sources}"
+        sources = {col.source_column for _, col in _cols(items, "b")}
+        assert sources == {"b"}, f"expected ['b'], star not expanded: {sources}"
+
+    def test_star_through_cte_expanded_for_backticks(self):
+        """Reproduces the user-reported case: a CTE wrapper around
+        ``SELECT *`` plus extra computed columns. With normalisation,
+        each named outer column resolves to its real upstream column
+        instead of collapsing to ``"*"``."""
+        sql = (
+            "WITH cte AS (SELECT *, 1 AS extra FROM `db`.`sch`.`t`) "
+            "SELECT a, b FROM cte"
+        )
+        scope = qualify_model_sql(sql, "mysql", _SCHEMA)
+        assert scope is not None
+        items = _edges_for_model("t", scope, _TABLE_LOOKUP, "mysql")
+        a_sources = {col.source_column for _, col in _cols(items, "a")}
+        b_sources = {col.source_column for _, col in _cols(items, "b")}
+        assert "*" not in a_sources and "*" not in b_sources
+        assert a_sources == {"a"}
+        assert b_sources == {"b"}
+
+
 class TestCteResolution:
     def test_column_traced_through_cte(self):
         sql = 'WITH wrapped AS (SELECT a FROM "db"."sch"."t") SELECT a FROM wrapped'

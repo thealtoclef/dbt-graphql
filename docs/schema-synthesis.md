@@ -127,9 +127,9 @@ For every `model.*` node, emit an edge for each entry in `depends_on.nodes` that
 
 For every materialized model:
 
-1. Build a per-model schema dict `{database: {schema: {table: {col: type}}}}` restricted to `depends_on.nodes`.
+1. Build a catalog-wide schema dict `{database: {schema: {table: {col: type}}}}` covering every model, source, seed and snapshot. Scoping it to a single model's `depends_on` is unsafe: dbt inlines `materialized='ephemeral'` parents as `__dbt__cte__*` CTEs that reference the ephemeral's own upstreams (often sources), which are *not* in the consumer's direct `depends_on`. Without those upstreams in the schema, `qualify` can't expand `SELECT *` and column lineage collapses to a single `"*"` edge.
 2. Sanitize the compiled SQL (dialect-specific: Oracle `LISTAGG DISTINCT` / `ON OVERFLOW` stripping).
-3. Parse with the detected sqlglot dialect (`"sqlserver"` → `"tsql"`; Postgres strips quoted identifiers so `SELECT *` can expand).
+3. Parse with the detected sqlglot dialect (`"sqlserver"` → `"tsql"`). Strip identifier quoting on all dialects except BigQuery (which is case-sensitive on quoted identifiers and instead gets the inner name lower-cased) so quoted compiled SQL like `` `events` `` matches the unquoted schema entry `events` and `SELECT *` expands cleanly.
 4. `qualify()` with `validate_qualify_columns=False` and `identify=False` — the goal is scope construction, not a validated rewrite.
 5. `build_scope()` → recursively trace each outer select through CTE/subquery scopes to leaf `exp.Table` nodes, classifying each hop (`pass_through` / `rename` / `transformation`) and taking the max rank across the chain.
 

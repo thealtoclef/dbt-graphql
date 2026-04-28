@@ -29,10 +29,7 @@
    The same lineage is also surfaced inline in the SDL via the `@lineage`
    directive: at type level (`@lineage(sources: [...])`) for upstream
    model names, and as a repeatable field-level directive
-   (`@lineage(source, column, type)`) for column-level edges. A
-   `column: "*"` arg means the field is derived from the whole upstream
-   row (e.g. `COUNT(*)`, `MD5(t.*)`) — it only appears when the target
-   column name has no matching column on the source model.
+   (`@lineage(source, column, type)`) for column-level edges.
 
 5. **Build a query template** with `build_query(table, fields)`.
    Pass the fields you need; the tool returns a valid GraphQL query string,

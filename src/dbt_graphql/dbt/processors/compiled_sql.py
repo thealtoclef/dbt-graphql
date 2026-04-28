@@ -89,38 +89,41 @@ def build_table_lookup(manifest: DbtManifest) -> dict[str, str]:
     return lookup
 
 
-def build_schema_for_model(
-    model_node: Any, manifest: DbtManifest, catalog: DbtCatalog
-) -> dict:
+def build_catalog_schema(catalog: DbtCatalog) -> dict:
     """Build a sqlglot schema dict ``{database: {schema: {table: {col: type}}}}``
-    restricted to the parent models/sources/seeds of ``model_node``.
+    covering every model, source, seed and snapshot in the catalog.
+
+    Scoping the schema to a single model's ``depends_on`` is unsafe: dbt
+    inlines ``materialized='ephemeral'`` parents into compilers' SQL as
+    ``__dbt__cte__*`` CTEs that reference the ephemeral parent's own
+    upstreams (often dbt sources) which are NOT in the consumer's
+    direct ``depends_on``. Without those upstreams in the schema dict,
+    sqlglot's qualify pass can't expand ``SELECT *`` and column lineage
+    collapses to a single ``"*"`` edge.
     """
     schema: dict[str, dict[str, dict[str, dict[str, str]]]] = {}
 
-    depends_on = getattr(model_node, "depends_on", None)
-    parent_ids = list(depends_on.nodes) if depends_on else []
+    catalog_iters: list[Any] = [catalog.nodes]
+    sources = getattr(catalog, "sources", None)
+    if sources:
+        catalog_iters.append(sources)
 
-    catalog_nodes = dict(catalog.nodes)
-    catalog_sources = dict(getattr(catalog, "sources", None) or {})
+    for nodes in catalog_iters:
+        for cat_node in nodes.values():
+            metadata = getattr(cat_node, "metadata", None)
+            if metadata is None:
+                continue
+            db = getattr(metadata, "database", None)
+            sch = getattr(metadata, "schema_", None) or getattr(metadata, "schema", None)
+            tbl = getattr(metadata, "name", None)
+            if not (db and sch and tbl):
+                continue
 
-    for parent_id in parent_ids:
-        cat_node = catalog_nodes.get(parent_id) or catalog_sources.get(parent_id)
-        if cat_node is None:
-            continue
-        metadata = getattr(cat_node, "metadata", None)
-        if metadata is None:
-            continue
-        db = getattr(metadata, "database", None)
-        sch = getattr(metadata, "schema_", None) or getattr(metadata, "schema", None)
-        tbl = getattr(metadata, "name", None)
-        if not (db and sch and tbl):
-            continue
+            cols: dict[str, str] = {}
+            for col_name, col_meta in (cat_node.columns or {}).items():
+                cols[col_name] = getattr(col_meta, "type", None) or ""
 
-        cols: dict[str, str] = {}
-        for col_name, col_meta in (cat_node.columns or {}).items():
-            cols[col_name] = getattr(col_meta, "type", None) or ""
-
-        schema.setdefault(db, {}).setdefault(sch, {})[tbl] = cols
+            schema.setdefault(db, {}).setdefault(sch, {})[tbl] = cols
 
     return schema
 
@@ -148,10 +151,19 @@ def qualify_model_sql(sql: str, dialect: str, schema: dict) -> Scope | None:
 
     try:
         expression = parse_one(sql, read=dialect or None)
-        if dialect == "postgres":
-            expression = remove_quotes(expression)
-        elif dialect == "bigquery":
+        # Identifiers in the catalog-derived schema dict are plain unquoted
+        # strings (e.g. "events"), but compiled SQL often quotes them with
+        # `"`, `` ` ``, or `[]`. Without normalisation, sqlglot's qualify
+        # pass can't match `` `events` `` against the schema entry
+        # `events` and consequently fails to expand `SELECT *` into per-
+        # column refs — column lineage then collapses to a single edge
+        # named `"*"`. Strip quoting on all dialects except BigQuery,
+        # which is case-sensitive on quoted identifiers and instead needs
+        # the inner name lower-cased while keeping the quote flag.
+        if dialect == "bigquery":
             expression = remove_upper(expression)
+        else:
+            expression = remove_quotes(expression)
         _, scope = prepare_scope(expression, schema=schema, dialect=dialect or None)
         return scope
     except SqlglotError as e:
@@ -440,6 +452,7 @@ def _extract_both(
     """Single pass over compiled SQL producing both column lineage and join relationships."""
     table_lookup = build_table_lookup(manifest)
     dialect = detect_dialect(manifest)
+    schema = build_catalog_schema(catalog)
 
     col_result: list[ColumnLineageItem] = []
     join_seen_names: set[str] = set()
@@ -454,7 +467,6 @@ def _extract_both(
         if not compiled_code:
             continue
 
-        schema = build_schema_for_model(node, manifest, catalog)
         scope = qualify_model_sql(compiled_code, dialect, schema)
         if scope is None:
             continue

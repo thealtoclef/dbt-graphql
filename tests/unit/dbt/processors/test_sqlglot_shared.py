@@ -6,7 +6,7 @@ import pytest
 
 from dbt_graphql.dbt.artifacts import load_catalog, load_manifest
 from dbt_graphql.dbt.processors.compiled_sql import (
-    build_schema_for_model,
+    build_catalog_schema,
     build_table_lookup,
     detect_dialect,
     qualify_model_sql,
@@ -51,23 +51,22 @@ class TestBuildTableLookup:
         assert lookup["main.raw_orders"] == "raw_orders"
 
 
-class TestBuildSchemaForModel:
-    def test_contains_only_parent_models(self):
-        manifest = load_manifest(MANIFEST)
+class TestBuildCatalogSchema:
+    def test_contains_every_catalog_table(self):
         catalog = load_catalog(CATALOG)
-        customers = manifest.nodes["model.jaffle_shop.customers"]
-        schema = build_schema_for_model(customers, manifest, catalog)
-        # depends_on: stg_customers, stg_orders, stg_payments
-        db = "jaffle_shop"
-        sch = "main"
-        tables = schema[db][sch]
-        assert set(tables.keys()) == {"stg_customers", "stg_orders", "stg_payments"}
+        schema = build_catalog_schema(catalog)
+        tables = schema["jaffle_shop"]["main"]
+        assert {
+            "customers",
+            "orders",
+            "stg_customers",
+            "stg_orders",
+            "stg_payments",
+        } <= set(tables.keys())
 
     def test_column_types_present(self):
-        manifest = load_manifest(MANIFEST)
         catalog = load_catalog(CATALOG)
-        customers = manifest.nodes["model.jaffle_shop.customers"]
-        schema = build_schema_for_model(customers, manifest, catalog)
+        schema = build_catalog_schema(catalog)
         cols = schema["jaffle_shop"]["main"]["stg_customers"]
         assert "customer_id" in cols
         assert cols["customer_id"]  # non-empty type string

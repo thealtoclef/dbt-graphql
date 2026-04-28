@@ -99,38 +99,17 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
     for edge in project.table_lineage:
         table_sources_by_target.setdefault(edge.target, []).append(edge.source)
 
-    # Source-model column index for "*" disambiguation below.
-    model_columns: dict[str, set[str]] = {
-        m.name: {c.name for c in m.columns} for m in project.models
-    }
-
     # (target_model, target_column) -> [(source_model, source_column, lineage_type), ...]
     col_lineage_by_target: dict[tuple[str, str], list[ColumnLineageRef]] = {}
     for cedge in project.column_lineage:
         for col in cedge.columns:
             if not col.target_column:
                 continue
-            # dbt-colibri returns "*" when sqlglot can't pin the target to a
-            # specific upstream column — this happens for `SELECT *`, for
-            # CTE/subquery wrappers around `SELECT *`, and for genuine
-            # whole-row expressions (`COUNT(*)`, `MD5(t.*)`).
-            #
-            # Sqlglot can't always tell these apart and may classify a name-
-            # preserving `SELECT *` as `transformation`. When the target
-            # column name actually exists on the upstream model we
-            # substitute it — that's the real edge in 99% of cases. We only
-            # preserve `"*"` when the target name has no upstream
-            # counterpart, i.e. the column is genuinely row-derived.
-            source_col = col.source_column
-            if source_col == "*" and col.target_column in model_columns.get(
-                cedge.source, set()
-            ):
-                source_col = col.target_column
             key = (cedge.target, col.target_column)
             col_lineage_by_target.setdefault(key, []).append(
                 ColumnLineageRef(
                     source=cedge.source,
-                    column=source_col,
+                    column=col.source_column,
                     type=str(col.lineage_type),
                 )
             )
