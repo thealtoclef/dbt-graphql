@@ -99,7 +99,7 @@ class GraphQLConfig(BaseModel):
     query_max_depth: int = defaults.QUERY_MAX_DEPTH
     query_max_fields: int = defaults.QUERY_MAX_FIELDS
     # ``None`` disables the list-limit cap entirely.
-    query_max_list_limit: int | None = defaults.QUERY_MAX_LIST_LIMIT
+    query_max_limit: int | None = defaults.QUERY_MAX_LIMIT
 
 
 class JWTConfig(BaseModel):

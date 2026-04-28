@@ -117,13 +117,13 @@ def create_graphql_subapp(
         else GraphQLConfig(
             query_max_depth=defaults.QUERY_MAX_DEPTH,
             query_max_fields=defaults.QUERY_MAX_FIELDS,
-            query_max_list_limit=defaults.QUERY_MAX_LIST_LIMIT,
+            query_max_limit=defaults.QUERY_MAX_LIMIT,
         )
     )
     validation_rules = make_query_guard_rules(
         max_depth=cfg.query_max_depth,
         max_fields=cfg.query_max_fields,
-        max_list_limit=cfg.query_max_list_limit,
+        max_limit=cfg.query_max_limit,
     )
 
     def build_context(jwt_payload: JWTPayload, request: Any = None) -> dict[str, Any]:

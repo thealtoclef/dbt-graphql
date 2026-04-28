@@ -114,7 +114,7 @@ Query guard limits applied to all incoming GraphQL operations — both HTTP `/gr
 |---|---|---|---|
 | `query_max_depth` | int | `5` | Maximum selection-set nesting depth. Introspection-only queries (`__schema { ... }`) are excluded from this limit. |
 | `query_max_fields` | int | `50` | Maximum total leaf fields across the entire query. |
-| `query_max_list_limit` | int \| null | `1000` | Caps integer literals on `limit:` / `first:` arguments. `null` disables the cap. Variables are not checked at validation time — resolvers must apply runtime caps when accepting variables for pagination. Emits `MAX_LIST_LIMIT_EXCEEDED` on violation. |
+| `query_max_limit` | int \| null | `1000` | Caps integer literals on `limit:` / `first:` arguments. `null` disables the cap. Variables are not checked at validation time — resolvers must apply runtime caps when accepting variables for pagination. Emits `MAX_LIMIT_EXCEEDED` on violation. |
 
 The default values (5 levels of nesting, 50 leaf fields) follow Hasura's defaults and cover typical analytics queries (5–10 tables × 5–10 fields each). Apollo Router defaults to 100/200 but is geared toward enterprise multi-tenant APIs.
 

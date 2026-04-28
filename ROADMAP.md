@@ -30,6 +30,7 @@ Centralized tracking for all planned features. Sections are ordered by priority 
 | Sec-L | Policy test harness + `policy explain` CLI | 🔲 Planned |
 | Sec-J | Caching & burst protection | ✅ Done (result cache + singleflight + OTel metrics; Redis URI for shared backend) |
 | Sec-N | Pool admission control (503 + Retry-After) | ✅ Done |
+| Sec-O | Pagination — Relay-style cursor connections | 🔲 Planned (per-page cap = `query_max_limit`) |
 | Sec-M | Python extension hooks (Superset-style overrides file) | 🔲 Placeholder |
 
 ---
@@ -618,6 +619,100 @@ OTel SQLAlchemy auto-instrumentation. See
 | Ariadne `PoolAwareHandler` → 503 + Retry-After | ✅ |
 | `db.client.connections.wait_time` histogram | ✅ |
 | Cross-replica pool admission (warehouse-side concern) | 🔲 Out of scope — see plan §rationale |
+
+---
+
+### Sec-O — Pagination (Relay-style cursor connections)
+
+**Status:** 🔲 Planned. Today's `query_max_limit` is a hard ceiling on
+inline `limit:` / `first:` literals — it bounds a single response, but
+gives the agent no way to *resume* past it. Pagination is the missing
+half: cooperative iteration over a result set the cap forbids in one
+shot.
+
+**Reference points (SOTA in GraphQL data APIs):**
+
+| Project | Shape | Notes |
+|---|---|---|
+| **Relay spec** | `TypeConnection { edges { node, cursor } pageInfo { startCursor, endCursor, hasNextPage, hasPreviousPage } }` with `first/after` (forward) and `last/before` (backward) | The de facto standard. Apollo, PostGraphile, Hot Chocolate, GraphQL.js all align here. |
+| **Hasura** | Offset-based (`limit`, `offset`) by default; cursor-style achieved via `where: { id: { _gt: $last_id } } order_by: { id: asc }` | Permission-table cap (`limit` on the role) acts as a hard per-request ceiling — analogous to our `query_max_limit`. |
+| **GraphJin** | Native cursor pagination — generates opaque base64 cursors from the `order_by` columns; `first`/`last`/`after`/`before` args. Per-table `default_limit` + `max_limit` config. | Closest to what dbt-graphql wants: declarative, no resolver code per table. |
+| **PostGraphile** | Full Relay connections; cursors derived from primary key + order. | Same pattern as GraphJin, more verbose schema. |
+
+**Plan:**
+
+1. **Adopt Relay-style connections** as a new optional resolver shape
+   per table. The plain list form (`customers(limit, where) { ... }`)
+   stays as the simple path; opting into pagination produces a
+   *Connection* type (`customers_connection { edges { node, cursor }
+   pageInfo { ... } }`) selectable instead of the plain list.
+2. **Cursor encoding.** Opaque base64 of `(order_by_value, primary_key)`
+   tuples — same approach as GraphJin/PostGraphile. The primary key
+   tiebreaker makes the cursor stable across rows that share the
+   `order_by` value. Cursors are signed with an HMAC keyed off the
+   process secret so a client can't forge one to skip forward into
+   policy-restricted territory.
+3. **Args.** `first: Int, after: String` (forward) and `last: Int,
+   before: String` (backward). Combined invariants per the Relay spec
+   (no mixing forward+backward). `where:` and `order_by:` continue to
+   apply.
+4. **Default `order_by`.** Required for cursor stability — without it
+   the warehouse can return a different page order each call. When the
+   schema can derive a primary key from constraints (already extracted
+   for relationships), default to `order_by: { <pk>: asc }`. Tables
+   without a discoverable PK must declare an explicit `order_by`
+   argument or the resolver returns a structured error.
+
+**Coordination with `query_max_limit`:**
+
+The cap is the **per-page ceiling** — it does not change meaning when
+pagination lands:
+
+| Args supplied | Resolver behaviour |
+|---|---|
+| Neither `limit:` nor `first:` | Resolver injects `first: query_max_limit` automatically. The "unbounded" `{ customers { id } }` becomes a 1000-row first page; the agent must opt into more rows by paginating. (Mirrors Hasura's per-role default-limit + GraphJin's `default_limit`.) |
+| `first: N` (or `limit: N`) with N ≤ cap | Honoured as-is. |
+| `first: N` (or `limit: N`) with N > cap | Validation rule rejects with `MAX_LIMIT_EXCEEDED` *before* execution — same as today. |
+| Variable `$n` in `first:` / `limit:` | Validation can't see the value; resolver applies `min($n, cap)` at execution and tags the response with `extensions.truncated_to: <cap>` so the client knows the page was capped. |
+
+The total-scan question ("agent walks 100 pages") is answered by
+**cooperative iteration plus auth backoff**, not a second cap:
+
+- Cursors give an explicit `pageInfo.hasNextPage: false` termination
+  signal — agents stop when the data ends, not when a magic number hits.
+- Each page is a normal request, so it's already covered by
+  `db.pool.timeout` admission (Sec-N) and the result cache (Sec-J).
+  Bursty agent loops degrade through 503+`Retry-After`, not via a new
+  knob.
+- A `query_max_total_pages` would be a tempting third cap but adds
+  little: the agent can launch a second connection and continue from
+  the last cursor. Keep limits *per request* and let admission control
+  shape *across requests*.
+
+**Why the per-page cap remains useful even after pagination:**
+
+- It prevents the trivial "single shot, give me everything" exploit
+  (`first: 10000000`) that pagination *enables* if you forget to cap
+  the page.
+- It makes default behaviour (no args) safe — without the cap, the
+  resolver would have to either (a) refuse to execute or (b) silently
+  pick a default. Hasura/GraphJin both pick (b); we'd do the same and
+  the cap is the operator-tunable value of that default.
+- It bounds memory + warehouse cost for any *one* query so admission
+  control can reason about budget per checkout, not per session.
+
+**Files / scope (sketch, not committed):**
+- `src/dbt_graphql/formatter/graphql.py` — emit `XConnection` /
+  `XEdge` / `PageInfo` SDL when a table opts in.
+- `src/dbt_graphql/graphql/resolvers.py` — new connection resolver path
+  alongside the plain-list resolver.
+- `src/dbt_graphql/compiler/query.py` — translate `(after, first)` into
+  `WHERE (order_value, pk) > (after_order_value, after_pk) ORDER BY ...
+  LIMIT first+1` (the +1 produces `hasNextPage` without a second
+  query).
+- `src/dbt_graphql/graphql/cursors.py` — HMAC-signed encode/decode.
+- `docs/pagination.md` — operator + agent guide, including how the
+  default-limit injection composes with `query_max_limit`.
 
 ---
 

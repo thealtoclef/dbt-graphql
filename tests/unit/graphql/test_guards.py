@@ -14,7 +14,7 @@ from graphql import build_schema, parse, validate
 from dbt_graphql.graphql.guards import (
     MAX_DEPTH_CODE,
     MAX_FIELDS_CODE,
-    MAX_LIST_LIMIT_CODE,
+    MAX_LIMIT_CODE,
     make_query_guard_rules,
 )
 
@@ -75,11 +75,11 @@ SDL = """
 SCHEMA = build_schema(SDL)
 
 
-def _validate(query: str, *, max_depth=5, max_fields=50, max_list_limit=None):
+def _validate(query: str, *, max_depth=5, max_fields=50, max_limit=None):
     rules = make_query_guard_rules(
         max_depth=max_depth,
         max_fields=max_fields,
-        max_list_limit=max_list_limit,
+        max_limit=max_limit,
     )
     return validate(SCHEMA, parse(query), rules)
 
@@ -148,33 +148,33 @@ class TestQueryShape:
             parse("{ not valid graphql {{{")
 
 
-class TestListLimitRule:
+class TestLimitRule:
     def test_inline_limit_within_cap_passes(self):
         q = "{ customers(limit: 50) { customer_id } }"
-        assert _validate(q, max_list_limit=100) == []
+        assert _validate(q, max_limit=100) == []
 
-    def test_inline_limit_above_cap_emits_max_list_limit_code(self):
+    def test_inline_limit_above_cap_emits_max_limit_code(self):
         q = "{ customers(limit: 1000000) { customer_id } }"
-        errors = _validate(q, max_list_limit=1000)
-        assert MAX_LIST_LIMIT_CODE in _codes(errors)
+        errors = _validate(q, max_limit=1000)
+        assert MAX_LIMIT_CODE in _codes(errors)
 
     def test_first_argument_also_capped(self):
         q = "{ customers(first: 5000) { customer_id } }"
-        errors = _validate(q, max_list_limit=1000)
-        assert MAX_LIST_LIMIT_CODE in _codes(errors)
+        errors = _validate(q, max_limit=1000)
+        assert MAX_LIMIT_CODE in _codes(errors)
 
     def test_nested_list_limit_capped(self):
         q = "{ customers { orders(limit: 10000) { order_id } } }"
-        errors = _validate(q, max_list_limit=1000)
-        assert MAX_LIST_LIMIT_CODE in _codes(errors)
+        errors = _validate(q, max_limit=1000)
+        assert MAX_LIMIT_CODE in _codes(errors)
 
     def test_no_cap_disables_rule(self):
         q = "{ customers(limit: 10000000) { customer_id } }"
-        # max_list_limit=None → rule not registered
-        assert _validate(q, max_list_limit=None) == []
+        # max_limit=None → rule not registered
+        assert _validate(q, max_limit=None) == []
 
     def test_variable_value_is_not_checked(self):
         # Variables bind at execution; validation runs before. Resolvers
         # are responsible for runtime caps when accepting variables.
         q = "query Q($n: Int) { customers(limit: $n) { customer_id } }"
-        assert _validate(q, max_list_limit=10) == []
+        assert _validate(q, max_limit=10) == []

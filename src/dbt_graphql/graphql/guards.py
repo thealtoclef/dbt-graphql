@@ -22,13 +22,13 @@ from graphql.validation import ValidationContext, ValidationRule
 __all__ = [
     "MAX_DEPTH_CODE",
     "MAX_FIELDS_CODE",
-    "MAX_LIST_LIMIT_CODE",
+    "MAX_LIMIT_CODE",
     "make_query_guard_rules",
 ]
 
 MAX_DEPTH_CODE = "MAX_DEPTH_EXCEEDED"
 MAX_FIELDS_CODE = "MAX_FIELDS_EXCEEDED"
-MAX_LIST_LIMIT_CODE = "MAX_LIST_LIMIT_EXCEEDED"
+MAX_LIMIT_CODE = "MAX_LIMIT_EXCEEDED"
 
 # Introspection field names — excluded from depth + field counting because
 # they don't traverse the data-model relationship graph.
@@ -41,7 +41,7 @@ _INTROSPECTION_FIELDS = frozenset(
 )
 
 # Argument names commonly used to bound list resolvers.
-_LIST_LIMIT_ARGS = ("limit", "first")
+_LIMIT_ARGS = ("limit", "first")
 
 
 def _is_introspection(name: str) -> bool:
@@ -101,16 +101,16 @@ def make_query_guard_rules(
     *,
     max_depth: int,
     max_fields: int,
-    max_list_limit: int | None = None,
+    max_limit: int | None = None,
 ) -> list[type[ValidationRule]]:
     """Return validation-rule classes parameterized for the given limits.
 
     The rules raise ``GraphQLError`` with ``extensions.code`` set to one of
-    ``MAX_DEPTH_CODE`` / ``MAX_FIELDS_CODE`` / ``MAX_LIST_LIMIT_CODE``. They
+    ``MAX_DEPTH_CODE`` / ``MAX_FIELDS_CODE`` / ``MAX_LIMIT_CODE``. They
     are pure AST checks — no schema lookup needed — so they run before
     type-validation rules and short-circuit cheaply.
 
-    ``max_list_limit`` (when set) caps integer literals on ``limit:`` /
+    ``max_limit`` (when set) caps integer literals on ``limit:`` /
     ``first:`` arguments. This addresses the analytics-cost axis that depth
     and field count don't: a single-field query selecting a million rows is
     far more expensive than a 50-field projection.
@@ -166,10 +166,10 @@ def make_query_guard_rules(
 
     rules: list[type[ValidationRule]] = [QueryShapeRule]
 
-    if max_list_limit is not None:
-        cap = max_list_limit
+    if max_limit is not None:
+        cap = max_limit
 
-        class ListLimitRule(ValidationRule):
+        class LimitRule(ValidationRule):
             """Caps integer literals on ``limit:`` / ``first:`` arguments.
 
             Variables bypass this check by design — they are bound at
@@ -180,7 +180,7 @@ def make_query_guard_rules(
 
             def enter_field(self, node: FieldNode, *_: object) -> None:
                 for arg in node.arguments or ():
-                    if arg.name.value not in _LIST_LIMIT_ARGS:
+                    if arg.name.value not in _LIMIT_ARGS:
                         continue
                     if not isinstance(arg.value, IntValueNode):
                         continue
@@ -191,10 +191,10 @@ def make_query_guard_rules(
                                 f"Argument '{arg.name.value}: {val}' exceeds "
                                 f"the maximum of {cap}",
                                 nodes=[arg],
-                                extensions={"code": MAX_LIST_LIMIT_CODE},
+                                extensions={"code": MAX_LIMIT_CODE},
                             )
                         )
 
-        rules.append(ListLimitRule)
+        rules.append(LimitRule)
 
     return rules

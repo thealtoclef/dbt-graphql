@@ -63,7 +63,8 @@ serve:
 # -----------------------------------------------------------------------------
 # graphql:
 #   query_max_depth: 5      # max selection-set nesting depth (depth of deepest leaf; e.g. { customers { orders { id } } } is depth 3)
-#   query_max_fields: 50   # max total leaf fields across the whole query
+#   query_max_fields: 50    # max total leaf fields across the whole query
+#   query_max_limit: 1000   # cap on `limit:` / `first:` integer literals (analytics-cost axis); set null to disable
 
 # -----------------------------------------------------------------------------
 # monitoring (optional) — OpenTelemetry + log level. Each signal block is

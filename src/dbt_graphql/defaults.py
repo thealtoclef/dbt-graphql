@@ -48,4 +48,4 @@ QUERY_MAX_FIELDS: Final[int] = 50
 # trivial query can't ask for an unbounded warehouse scan. Variables bypass
 # this rule by design (validation runs before binding); resolvers must
 # apply runtime caps when accepting variables for pagination.
-QUERY_MAX_LIST_LIMIT: Final[int] = 1000
+QUERY_MAX_LIMIT: Final[int] = 1000

@@ -41,7 +41,7 @@ is validated against three limits before execution:
   variable for pagination.
 
 Violations return a GraphQL error with `extensions.code` set to
-`MAX_DEPTH_EXCEEDED`, `MAX_FIELDS_EXCEEDED`, or `MAX_LIST_LIMIT_EXCEEDED`
+`MAX_DEPTH_EXCEEDED`, `MAX_FIELDS_EXCEEDED`, or `MAX_LIMIT_EXCEEDED`
 respectively (HTTP 400).
 
 ## Nested Relations via the `where` Argument
