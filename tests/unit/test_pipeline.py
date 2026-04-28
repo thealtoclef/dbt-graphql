@@ -113,7 +113,7 @@ class TestRelToDomain:
         result = _rel_to_domain(rel, unique_cols=set())
         assert result.cardinality_confidence == "assumed"
 
-    def test_lineage_edge_no_unique_becomes_join_hint(self):
+    def test_lineage_edge_no_unique_becomes_assumed(self):
         rel = _rel(
             name="x_y",
             models=["x", "y"],
@@ -123,7 +123,7 @@ class TestRelToDomain:
             to_columns=["id"],
         )
         result = _rel_to_domain(rel, unique_cols=set())
-        assert result.origin == RelationshipOrigin.join_hint
+        assert result.origin == RelationshipOrigin.lineage
         assert result.cardinality_confidence == "assumed"
 
     def test_lineage_edge_with_unique_stays_lineage(self):

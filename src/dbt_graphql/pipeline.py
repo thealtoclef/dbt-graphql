@@ -250,9 +250,6 @@ def _rel_to_domain(
         join_type, confidence = _infer_join_type(
             from_model, from_cols, to_model, to_cols, unique_cols
         )
-        # JOIN-mined edges with no uniqueness evidence on either side are hints only.
-        if rel.origin == RelationshipOrigin.lineage and confidence == "assumed":
-            origin = RelationshipOrigin.join_hint
     else:
         confidence = "assumed"
         join_type = rel.join_type

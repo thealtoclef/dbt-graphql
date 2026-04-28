@@ -31,7 +31,6 @@ class RelationshipOrigin(StrEnum):
     constraint = auto()
     data_test = auto()
     lineage = auto()
-    join_hint = auto()
 
 
 @dataclass
