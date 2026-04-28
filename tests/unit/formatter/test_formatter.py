@@ -29,7 +29,10 @@ class TestDbGraphQL:
     def test_has_relation_directive(self):
         project = _make_project()
         gj = format_graphql(project)
-        assert "@relation(type: customers, field: customer_id" in gj.db_graphql
+        assert "@relation(type: customers, fromField:" in gj.db_graphql
+        assert "toField:" in gj.db_graphql
+        assert "origin:" in gj.db_graphql
+        assert "cardinality:" in gj.db_graphql
 
     def test_required_fields_have_bang(self):
         project = _make_project()
@@ -235,10 +238,13 @@ class TestColumnDirectives:
             from_columns=["customer_id"],
             to_columns=["customer_id"],
             origin="data_test",
-            confidence="inferred",
+            cardinality="many_to_one",
         )
         line = _sdl_col("customer_id", "INTEGER", not_null=True, relation=rel)
-        assert "@relation(type: customers, field: customer_id" in line
+        assert (
+            "@relation(type: customers, fromField: customer_id, toField: customer_id, cardinality: many_to_one, origin: data_test)"
+            in line
+        )
 
 
 class TestNoRelationships:
@@ -303,11 +309,10 @@ class TestDescriptionEmission:
 
 
 class TestRelationDirectiveMetadata:
-    def test_relation_directive_has_origin_and_confidence(self):
+    def test_relation_directive_has_origin(self):
         project = _make_project()
         gj = format_graphql(project)
         assert "origin:" in gj.db_graphql
-        assert "confidence:" in gj.db_graphql
 
 
 class TestBuildRegistry:

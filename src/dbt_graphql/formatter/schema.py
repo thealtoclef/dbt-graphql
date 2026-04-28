@@ -36,7 +36,7 @@ class RelationDef:
     from_columns: list[str] = field(default_factory=list)
     to_columns: list[str] = field(default_factory=list)
     origin: str = ""
-    confidence: str = ""
+    cardinality: str = ""
 
 
 @dataclass
@@ -170,32 +170,30 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
             col.sql_size = str(args.get("size", ""))
         elif dname == "relation":
             args = _directive_args(directive)
-            target_col = args.get("field", "")
-            to_fields = args.get("toFields", [])
-            from_fields = args.get("fields", [])
+            # Single FK: fromField=X, toField=Y. Composite FK: fromField=[X,Y], toField=[Z,W]
+            from_arg = args.get("fromField", "")
+            to_arg = args.get("toField", "")
             # Normalize to list form
-            if isinstance(from_fields, list):
-                fc = from_fields
-            elif from_fields:
-                fc = [str(from_fields)]
+            if isinstance(from_arg, list):
+                fc = [str(f) for f in from_arg]
+            elif from_arg:
+                fc = [str(from_arg)]
             else:
                 fc = []
-            if isinstance(to_fields, list):
-                tc = to_fields
-            elif to_fields:
-                tc = [str(to_fields)]
-            elif target_col:
-                tc = [str(target_col)]
+            if isinstance(to_arg, list):
+                tc = [str(t) for t in to_arg]
+            elif to_arg:
+                tc = [str(to_arg)]
             else:
                 tc = []
 
             col.relation = RelationDef(
                 target_model=str(args.get("type", "")),
-                target_column=str(target_col),
+                target_column=tc[0] if tc else "",
                 from_columns=fc,
                 to_columns=tc,
+                cardinality=str(args.get("cardinality", "")),
                 origin=str(args.get("origin", "")),
-                confidence=str(args.get("confidence", "")),
             )
 
     return col

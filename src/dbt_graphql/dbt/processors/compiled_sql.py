@@ -24,9 +24,9 @@ from dbt_colibri.utils.parsing_utils import (
 )
 
 from ...ir.models import (
+    Cardinality,
     Column,
     ColumnLineageItem,
-    JoinType,
     LineageType,
     ProcessorRelationship,
     RelationshipOrigin,
@@ -411,7 +411,7 @@ def _relationships_for_model(
                     ProcessorRelationship(
                         name=rel_name,
                         models=[from_model, to_model],
-                        join_type=JoinType.many_to_one,
+                        cardinality=Cardinality.many_to_one,
                         origin=RelationshipOrigin.lineage,
                         from_columns=[from_col],
                         to_columns=[to_col],

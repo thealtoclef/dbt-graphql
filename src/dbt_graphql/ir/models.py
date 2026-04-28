@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from enum import StrEnum, auto
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 # ---------------------------------------------------------------------------
 
 
-class JoinType(StrEnum):
+class Cardinality(StrEnum):
     many_to_one = auto()
     one_to_many = auto()
     one_to_one = auto()
@@ -37,7 +37,7 @@ class RelationshipOrigin(StrEnum):
 class ProcessorRelationship:
     name: str
     models: list[str]
-    join_type: JoinType
+    cardinality: Cardinality
     origin: RelationshipOrigin
     from_columns: list[str] = dc_field(default_factory=list)
     to_columns: list[str] = dc_field(default_factory=list)
@@ -77,9 +77,8 @@ class RelationshipInfo(BaseModel):
     to_model: str
     from_columns: list[str] = Field(default_factory=list)
     to_columns: list[str] = Field(default_factory=list)
-    join_type: JoinType
+    cardinality: Cardinality
     origin: RelationshipOrigin
-    cardinality_confidence: Literal["declared", "inferred", "assumed"] = "assumed"
 
 
 class ModelInfo(BaseModel):

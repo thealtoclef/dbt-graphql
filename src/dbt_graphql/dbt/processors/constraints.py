@@ -13,7 +13,7 @@ from sqlglot import exp
 from sqlglot import parse_one as _sqlglot_parse
 from sqlglot.errors import SqlglotError
 
-from ...ir.models import ProcessorRelationship, JoinType, RelationshipOrigin
+from ...ir.models import Cardinality, ProcessorRelationship, RelationshipOrigin
 from ..artifacts import DbtManifest
 
 
@@ -165,7 +165,7 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                             ProcessorRelationship(
                                 name=rel_name,
                                 models=[from_model, to_table],
-                                join_type=JoinType.many_to_one,
+                                cardinality=Cardinality.many_to_one,
                                 origin=RelationshipOrigin.constraint,
                                 from_columns=from_col_list,
                                 to_columns=to_col_list,
@@ -234,7 +234,7 @@ def extract_constraints(manifest: DbtManifest) -> ConstraintsResult:
                                     ProcessorRelationship(
                                         name=rel_name,
                                         models=[from_model, to_table],
-                                        join_type=JoinType.many_to_one,
+                                        cardinality=Cardinality.many_to_one,
                                         origin=RelationshipOrigin.constraint,
                                         from_columns=[col_name],
                                         to_columns=to_col_list,

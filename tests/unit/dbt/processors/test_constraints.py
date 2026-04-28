@@ -5,7 +5,7 @@ from dbt_graphql.dbt.processors.constraints import (
     _resolve_to_model,
     extract_constraints,
 )
-from dbt_graphql.ir.models import JoinType, ProcessorRelationship
+from dbt_graphql.ir.models import Cardinality, ProcessorRelationship
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ class TestExtractConstraints:
         rel = result.foreign_key_relationships[0]
         assert isinstance(rel, ProcessorRelationship)
         assert rel.models == ["orders", "customers"]
-        assert rel.join_type == JoinType.many_to_one
+        assert rel.cardinality == Cardinality.many_to_one
         assert rel.from_columns == ["customer_id"]
         assert rel.to_columns == ["customer_id"]
 

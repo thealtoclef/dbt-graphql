@@ -131,7 +131,7 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
                     from_columns=[] if single else rel.from_columns,
                     to_columns=rel.to_columns,
                     origin=str(rel.origin),
-                    confidence=str(rel.cardinality_confidence),
+                    cardinality=str(rel.cardinality),
                 )
             table.columns.append(col_def)
 
@@ -214,14 +214,16 @@ def _column_to_sdl(col: ColumnDef) -> str:
 
     if col.relation:
         r = col.relation
-        args = [f"type: {r.target_model}"]
         if r.to_columns and len(r.to_columns) > 1:
-            args.append(f"fields: [{', '.join(r.from_columns)}]")
-            args.append(f"toFields: [{', '.join(r.to_columns)}]")
+            args = [
+                f"type: {r.target_model}",
+                f"fromField: [{', '.join(r.from_columns)}]",
+                f"toField: [{', '.join(r.to_columns)}]",
+            ]
         else:
-            args.append(f"field: {r.target_column}")
+            args = [f"type: {r.target_model}", f"fromField: {col.name}", f"toField: {r.target_column}"]
+        args.append(f"cardinality: {r.cardinality}")
         args.append(f"origin: {r.origin}")
-        args.append(f"confidence: {r.confidence}")
         directives.append(f"@relation({', '.join(args)})")
 
     line = f"{col.name}: {gql_type}"

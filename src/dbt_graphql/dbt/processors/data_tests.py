@@ -18,9 +18,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...ir.models import (
+    Cardinality,
     EnumDefinition,
     EnumValue,
-    JoinType,
     ProcessorRelationship,
     RelationshipOrigin,
 )
@@ -170,7 +170,7 @@ def build_relationships(manifest: DbtManifest) -> list[ProcessorRelationship]:
             ProcessorRelationship(
                 name=rel_name,
                 models=[from_model, to_model],
-                join_type=JoinType.many_to_one,
+                cardinality=Cardinality.many_to_one,
                 origin=RelationshipOrigin.data_test,
                 from_columns=[from_col],
                 to_columns=[to_col],

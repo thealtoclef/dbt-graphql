@@ -12,7 +12,7 @@ type customers @table(database: mydb, schema: main, name: customers) {
 
 type orders @table(database: mydb, schema: main, name: orders) {
   order_id: ID! @column(type: "INTEGER")
-  customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, field: customer_id)
+  customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, fromField: customer_id, toField: customer_id, cardinality: many_to_one, origin: data_test)
   order_date: Date @column(type: "DATE")
   status: Varchar @column(type: "VARCHAR")
   tags: [Text] @column(type: "TEXT[]")
@@ -104,11 +104,11 @@ class TestDirectives:
 
 
 class TestExtendedRelationDirective:
-    """Parse @relation with origin, confidence, composite fields, etc."""
+    """Parse @relation with origin and cardinality."""
 
     SDL_EXTENDED = """\
     type orders @table(database: db, schema: main, name: orders) {
-      customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, field: customer_id, origin: constraint, confidence: declared)
+      customer_id: Integer! @column(type: "INTEGER") @relation(fromField: customer_id, toField: customer_id, cardinality: many_to_one, origin: constraint)
     }
     """
 
@@ -117,18 +117,18 @@ class TestExtendedRelationDirective:
         col = info.tables[0].columns[0]
         assert col.relation.origin == "constraint"
 
-    def test_confidence_parsed(self):
+    def test_cardinality_parsed(self):
         info, _ = parse_db_graphql(self.SDL_EXTENDED)
         col = info.tables[0].columns[0]
-        assert col.relation.confidence == "declared"
+        assert col.relation.cardinality == "many_to_one"
 
 
 class TestCompositeRelationDirective:
-    """Parse @relation with fields/toFields for composite FKs."""
+    """Parse @relation with fromField/toField for composite FKs."""
 
     SDL_COMPOSITE = """\
     type order_items @table(database: db, schema: main, name: order_items) {
-      order_id: Integer! @column(type: "INTEGER") @relation(type: orders, fields: [tenant_id, order_id], toFields: [tenant_id, id])
+      order_id: Integer! @column(type: "INTEGER") @relation(type: orders, fromField: [tenant_id, order_id], toField: [tenant_id, id], cardinality: many_to_one, origin: constraint)
     }
     """
 

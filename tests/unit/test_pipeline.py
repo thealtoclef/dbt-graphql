@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from dbt_graphql.pipeline import _rel_to_domain, extract_project
-from dbt_graphql.ir.models import JoinType, RelationshipInfo, RelationshipOrigin
+from dbt_graphql.ir.models import Cardinality, RelationshipInfo, RelationshipOrigin
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "dbt-artifacts"
 CATALOG = FIXTURES / "catalog.json"
@@ -22,7 +22,7 @@ MANIFEST = FIXTURES / "manifest.json"
 def _rel(
     name,
     models,
-    join_type,
+    cardinality,
     origin=RelationshipOrigin.data_test,
     from_columns=None,
     to_columns=None,
@@ -30,7 +30,7 @@ def _rel(
     return SimpleNamespace(
         name=name,
         models=models,
-        join_type=join_type,
+        cardinality=cardinality,
         origin=origin,
         from_columns=from_columns or [],
         to_columns=to_columns or [],
@@ -42,7 +42,7 @@ class TestRelToDomain:
         rel = _rel(
             name="orders_customers",
             models=["orders", "customers"],
-            join_type=JoinType.many_to_one,
+            cardinality=Cardinality.many_to_one,
             from_columns=["customer_id"],
             to_columns=["customer_id"],
         )
@@ -53,13 +53,13 @@ class TestRelToDomain:
         assert result.to_model == "customers"
         assert result.from_columns == ["customer_id"]
         assert result.to_columns == ["customer_id"]
-        assert result.join_type == "many_to_one"
+        assert result.cardinality == "many_to_one"
 
     def test_different_column_names(self):
         rel = _rel(
             name="line_items_orders",
             models=["line_items", "orders"],
-            join_type=JoinType.many_to_one,
+            cardinality=Cardinality.many_to_one,
             from_columns=["order_ref"],
             to_columns=["order_id"],
         )
@@ -71,66 +71,30 @@ class TestRelToDomain:
         rel = _rel(
             name="a_b",
             models=["a", "b"],
-            join_type=JoinType.many_to_one,
+            cardinality=Cardinality.many_to_one,
         )
         result = _rel_to_domain(rel)
         assert result.from_columns == []
         assert result.to_columns == []
 
     def test_empty_from_to_columns(self):
-        rel = _rel("a_b", ["a", "b"], JoinType.many_to_one)
+        rel = _rel("a_b", ["a", "b"], Cardinality.many_to_one)
         # from_columns/to_columns default to [] via _rel helper
         result = _rel_to_domain(rel)
         assert result.from_columns == []
         assert result.to_columns == []
 
-    def test_join_type_string(self):
-        for jt in JoinType:
+    def test_cardinality_string(self):
+        for jt in Cardinality:
             rel = _rel("x_y", ["x", "y"], jt)
             result = _rel_to_domain(rel)
-            assert result.join_type == str(jt)
-
-    def test_constraint_origin_gives_declared_confidence(self):
-        rel = _rel(
-            name="x_y",
-            models=["x", "y"],
-            join_type=JoinType.many_to_one,
-            origin=RelationshipOrigin.constraint,
-            from_columns=["x_id"],
-            to_columns=["id"],
-        )
-        result = _rel_to_domain(rel)
-        assert result.cardinality_confidence == "declared"
-
-    def test_no_unique_cols_gives_assumed_confidence(self):
-        rel = _rel(
-            name="x_y",
-            models=["x", "y"],
-            join_type=JoinType.many_to_one,
-            from_columns=["x_id"],
-            to_columns=["id"],
-        )
-        result = _rel_to_domain(rel, unique_cols=set())
-        assert result.cardinality_confidence == "assumed"
-
-    def test_lineage_edge_no_unique_becomes_assumed(self):
-        rel = _rel(
-            name="x_y",
-            models=["x", "y"],
-            join_type=JoinType.many_to_one,
-            origin=RelationshipOrigin.lineage,
-            from_columns=["x_id"],
-            to_columns=["id"],
-        )
-        result = _rel_to_domain(rel, unique_cols=set())
-        assert result.origin == RelationshipOrigin.lineage
-        assert result.cardinality_confidence == "assumed"
+            assert result.cardinality == str(jt)
 
     def test_lineage_edge_with_unique_stays_lineage(self):
         rel = _rel(
             name="x_y",
             models=["x", "y"],
-            join_type=JoinType.many_to_one,
+            cardinality=Cardinality.many_to_one,
             origin=RelationshipOrigin.lineage,
             from_columns=["x_id"],
             to_columns=["id"],
@@ -138,7 +102,6 @@ class TestRelToDomain:
         # "y".id is unique → inferred, stays lineage
         result = _rel_to_domain(rel, unique_cols={("y", "id")})
         assert result.origin == RelationshipOrigin.lineage
-        assert result.cardinality_confidence == "inferred"
 
 
 class TestExtractProjectErrors:
@@ -218,74 +181,7 @@ class TestCardinalityInference:
             for r in project.relationships
             if r.from_model == "orders" and r.to_model == "customers"
         )
-        assert rel.join_type == "many_to_one"
-
-    def test_one_to_one_when_both_cols_unique(self, tmp_path):
-        import json
-
-        data = json.loads(MANIFEST.read_text())
-
-        # Add a unique test on orders.customer_id to simulate a one-to-one FK
-        uid = "test.jaffle_shop.unique_orders_customer_id.synthetic"
-        data["nodes"][uid] = {
-            "resource_type": "test",
-            "database": "dev",
-            "schema": "main",
-            "name": "unique_orders_customer_id",
-            "unique_id": uid,
-            "package_name": "jaffle_shop",
-            "path": "x.sql",
-            "original_file_path": "x.yml",
-            "fqn": ["jaffle_shop", "unique_orders_customer_id"],
-            "alias": "unique_orders_customer_id",
-            "checksum": {"name": "sha256", "checksum": "x"},
-            "column_name": "customer_id",
-            "attached_node": "model.jaffle_shop.orders",
-            "refs": [],
-            "test_metadata": {"name": "unique", "kwargs": {}, "namespace": None},
-        }
-
-        manifest_path = tmp_path / "manifest.json"
-        manifest_path.write_text(json.dumps(data))
-
-        project = extract_project(CATALOG, manifest_path)
-        rel = next(
-            r
-            for r in project.relationships
-            if r.from_model == "orders" and r.to_model == "customers"
-        )
-        assert rel.join_type == "one_to_one"
-
-    def test_infer_join_type_function_directly(self):
-        from dbt_graphql.pipeline import _infer_join_type
-
-        unique = {("customers", "customer_id"), ("orders", "order_id")}
-
-        jt, conf = _infer_join_type(
-            "orders", ["customer_id"], "customers", ["customer_id"], unique
-        )
-        assert jt == "many_to_one"
-        assert conf == "inferred"
-
-        jt, conf = _infer_join_type(
-            "orders", ["order_id"], "customers", ["customer_id"], unique
-        )
-        assert jt == "one_to_one"
-
-        jt, conf = _infer_join_type(
-            "orders", ["order_id"], "line_items", ["order_id"], set()
-        )
-        assert jt == "many_to_one"
-        assert conf == "assumed"
-
-        jt, conf = _infer_join_type(
-            "orders",
-            ["order_id"],
-            "customers",
-            ["customer_id"],
-            {("orders", "order_id")},
-        )
-        assert jt == "one_to_many"
+        assert rel.cardinality == "many_to_one"
 
 
 class TestOriginPropagation:
@@ -295,7 +191,7 @@ class TestOriginPropagation:
         rel = _rel(
             name="orders_customers",
             models=["orders", "customers"],
-            join_type=JoinType.many_to_one,
+            cardinality=Cardinality.many_to_one,
             origin=RelationshipOrigin.data_test,
         )
         assert _rel_to_domain(rel).origin == RelationshipOrigin.data_test
@@ -304,7 +200,7 @@ class TestOriginPropagation:
         rel = _rel(
             name="x_y",
             models=["x", "y"],
-            join_type=JoinType.many_to_one,
+            cardinality=Cardinality.many_to_one,
             origin=RelationshipOrigin.constraint,
         )
         assert _rel_to_domain(rel).origin == RelationshipOrigin.constraint
@@ -313,7 +209,7 @@ class TestOriginPropagation:
         rel = _rel(
             name="x_y",
             models=["x", "y"],
-            join_type=JoinType.many_to_one,
+            cardinality=Cardinality.many_to_one,
             origin=RelationshipOrigin.lineage,
         )
         assert _rel_to_domain(rel).origin == RelationshipOrigin.lineage

@@ -6,8 +6,8 @@ from dbt_graphql.formatter.graphql import build_registry
 from dbt_graphql.pipeline import extract_project
 from dbt_graphql.mcp.discovery import SchemaDiscovery
 from dbt_graphql.ir.models import (
+    Cardinality,
     ColumnInfo,
-    JoinType,
     ModelInfo,
     ProjectInfo,
     RelationshipInfo,
@@ -138,7 +138,7 @@ def _make_rel(
         from_columns=[from_col],
         to_model=to_model,
         to_columns=[to_col],
-        join_type=JoinType.many_to_one,
+        cardinality=Cardinality.many_to_one,
         origin=RelationshipOrigin.data_test,
     )
 

@@ -9,15 +9,13 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from .ir.models import (
     ColumnInfo,
-    JoinType,
     ProjectInfo,
     ModelInfo,
     RelationshipInfo,
-    RelationshipOrigin,
 )
 from .dbt.artifacts import load_catalog, load_manifest
 from .dbt.processors.compiled_sql import (
@@ -213,25 +211,6 @@ def extract_project(
     )
 
 
-def _infer_join_type(
-    from_model: str,
-    from_cols: list[str],
-    to_model: str,
-    to_cols: list[str],
-    unique_cols: set[tuple[str, str]],
-) -> tuple[JoinType, Literal["inferred", "assumed"]]:
-    """Infer cardinality from known-unique columns on each side."""
-    from_unique = any((from_model, c) in unique_cols for c in from_cols)
-    to_unique = any((to_model, c) in unique_cols for c in to_cols)
-    if from_unique and to_unique:
-        return JoinType.one_to_one, "inferred"
-    if from_unique:
-        return JoinType.one_to_many, "inferred"
-    if to_unique:
-        return JoinType.many_to_one, "inferred"
-    return JoinType.many_to_one, "assumed"
-
-
 def _rel_to_domain(
     rel: Any, unique_cols: set[tuple[str, str]] | None = None
 ) -> RelationshipInfo:
@@ -242,25 +221,12 @@ def _rel_to_domain(
     from_model = rel.models[0]
     to_model = rel.models[1]
 
-    origin = rel.origin
-    if rel.origin == RelationshipOrigin.constraint:
-        confidence: Literal["declared", "inferred", "assumed"] = "declared"
-        join_type = rel.join_type
-    elif from_cols and to_cols and unique_cols is not None:
-        join_type, confidence = _infer_join_type(
-            from_model, from_cols, to_model, to_cols, unique_cols
-        )
-    else:
-        confidence = "assumed"
-        join_type = rel.join_type
-
     return RelationshipInfo(
         name=rel.name,
         from_model=from_model,
         to_model=to_model,
         from_columns=from_cols,
         to_columns=to_cols,
-        join_type=join_type,
-        origin=origin,
-        cardinality_confidence=confidence,
+        cardinality=rel.cardinality,
+        origin=rel.origin,
     )

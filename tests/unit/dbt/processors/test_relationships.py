@@ -3,7 +3,7 @@ from pathlib import Path
 
 from dbt_graphql.dbt.artifacts import load_manifest
 from dbt_graphql.dbt.processors.data_tests import build_relationships
-from dbt_graphql.ir.models import ProcessorRelationship, JoinType
+from dbt_graphql.ir.models import Cardinality, ProcessorRelationship
 
 
 FIXTURES_DIR = (
@@ -22,7 +22,7 @@ def test_builds_relationship_from_test():
     assert isinstance(rel, ProcessorRelationship)
     assert "orders" in rel.name
     assert "customers" in rel.name
-    assert rel.join_type == JoinType.many_to_one
+    assert rel.cardinality == Cardinality.many_to_one
     assert rel.from_columns == ["customer_id"]
     assert rel.to_columns == ["customer_id"]
     assert set(rel.models) == {"orders", "customers"}
@@ -85,10 +85,10 @@ def test_non_relationship_tests_ignored():
         assert "accepted_values" not in rel.name
 
 
-def test_join_type_is_many_to_one():
+def test_cardinality_is_many_to_one():
     manifest = load_manifest(MANIFEST)
     rels = build_relationships(manifest)
-    assert all(r.join_type == JoinType.many_to_one for r in rels)
+    assert all(r.cardinality == Cardinality.many_to_one for r in rels)
 
 
 def test_quoted_column_names_stripped(tmp_path):
