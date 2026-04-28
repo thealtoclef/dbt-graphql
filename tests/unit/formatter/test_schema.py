@@ -108,7 +108,7 @@ class TestExtendedRelationDirective:
 
     SDL_EXTENDED = """\
     type orders @table(database: db, schema: main, name: orders) {
-      customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, field: customer_id, origin: constraint, confidence: declared, name: "order customer", description: "FK to customers")
+      customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, field: customer_id, origin: constraint, confidence: declared)
     }
     """
 
@@ -121,16 +121,6 @@ class TestExtendedRelationDirective:
         info, _ = parse_db_graphql(self.SDL_EXTENDED)
         col = info.tables[0].columns[0]
         assert col.relation.confidence == "declared"
-
-    def test_business_name_parsed(self):
-        info, _ = parse_db_graphql(self.SDL_EXTENDED)
-        col = info.tables[0].columns[0]
-        assert col.relation.business_name == "order customer"
-
-    def test_description_parsed(self):
-        info, _ = parse_db_graphql(self.SDL_EXTENDED)
-        col = info.tables[0].columns[0]
-        assert col.relation.description == "FK to customers"
 
 
 class TestCompositeRelationDirective:

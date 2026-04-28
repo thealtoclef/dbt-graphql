@@ -132,8 +132,6 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
                     to_columns=rel.to_columns,
                     origin=str(rel.origin),
                     confidence=str(rel.cardinality_confidence),
-                    business_name=rel.business_name,
-                    description=rel.description,
                 )
             table.columns.append(col_def)
 
@@ -224,10 +222,6 @@ def _column_to_sdl(col: ColumnDef) -> str:
             args.append(f"field: {r.target_column}")
         args.append(f"origin: {r.origin}")
         args.append(f"confidence: {r.confidence}")
-        if r.business_name:
-            args.append(f'name: "{r.business_name}"')
-        if r.description:
-            args.append(f'description: "{r.description}"')
         directives.append(f"@relation({', '.join(args)})")
 
     line = f"{col.name}: {gql_type}"

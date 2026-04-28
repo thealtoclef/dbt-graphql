@@ -42,8 +42,6 @@ class ProcessorRelationship:
     origin: RelationshipOrigin
     from_columns: list[str] = dc_field(default_factory=list)
     to_columns: list[str] = dc_field(default_factory=list)
-    business_name: str = ""
-    description: str = ""
 
 
 @dataclass
@@ -83,8 +81,6 @@ class RelationshipInfo(BaseModel):
     join_type: JoinType
     origin: RelationshipOrigin
     cardinality_confidence: Literal["declared", "inferred", "assumed"] = "assumed"
-    business_name: str = ""
-    description: str = ""
 
 
 class ModelInfo(BaseModel):

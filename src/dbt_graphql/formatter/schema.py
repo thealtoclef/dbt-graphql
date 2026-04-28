@@ -37,8 +37,6 @@ class RelationDef:
     to_columns: list[str] = field(default_factory=list)
     origin: str = ""
     confidence: str = ""
-    business_name: str = ""
-    description: str = ""
 
 
 @dataclass
@@ -198,8 +196,6 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
                 to_columns=tc,
                 origin=str(args.get("origin", "")),
                 confidence=str(args.get("confidence", "")),
-                business_name=str(args.get("name", "")),
-                description=str(args.get("description", "")),
             )
 
     return col

@@ -166,16 +166,6 @@ def build_relationships(manifest: DbtManifest) -> list[ProcessorRelationship]:
             continue
         seen.add(rel_name)
 
-        node_meta: dict = getattr(node, "meta", None) or {}
-        config_meta: dict = getattr(getattr(node, "config", None), "meta", None) or {}
-        business_name = str(
-            config_meta.get("relationship_name", "")
-            or node_meta.get("relationship_name", "")
-        )
-        description = str(
-            config_meta.get("description", "") or node_meta.get("description", "")
-        )
-
         relationships.append(
             ProcessorRelationship(
                 name=rel_name,
@@ -184,8 +174,6 @@ def build_relationships(manifest: DbtManifest) -> list[ProcessorRelationship]:
                 origin=RelationshipOrigin.data_test,
                 from_columns=[from_col],
                 to_columns=[to_col],
-                business_name=business_name,
-                description=description,
             )
         )
 

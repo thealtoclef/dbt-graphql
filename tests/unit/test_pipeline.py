@@ -34,8 +34,6 @@ def _rel(
         origin=origin,
         from_columns=from_columns or [],
         to_columns=to_columns or [],
-        business_name="",
-        description="",
     )
 
 
@@ -91,21 +89,6 @@ class TestRelToDomain:
             rel = _rel("x_y", ["x", "y"], jt)
             result = _rel_to_domain(rel)
             assert result.join_type == str(jt)
-
-    def test_business_name_and_description_propagated(self):
-        rel = SimpleNamespace(
-            name="orders_customers",
-            models=["orders", "customers"],
-            join_type=JoinType.many_to_one,
-            origin=RelationshipOrigin.constraint,
-            from_columns=["customer_id"],
-            to_columns=["customer_id"],
-            business_name="order customer",
-            description="FK from orders to customers",
-        )
-        result = _rel_to_domain(rel)
-        assert result.business_name == "order customer"
-        assert result.description == "FK from orders to customers"
 
     def test_constraint_origin_gives_declared_confidence(self):
         rel = _rel(

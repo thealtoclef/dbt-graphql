@@ -266,6 +266,4 @@ def _rel_to_domain(
         join_type=join_type,
         origin=origin,
         cardinality_confidence=confidence,
-        business_name=rel.business_name,
-        description=rel.description,
     )
