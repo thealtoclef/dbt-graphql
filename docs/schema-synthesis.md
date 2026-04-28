@@ -1,6 +1,6 @@
 # Schema Synthesis
 
-The phase that reads dbt artifacts and produces a `TableRegistry` — the Python object the serve layer consumes directly. In `--output` mode it also serialises `db.graphql` and `lineage.json` as side artifacts.
+The phase that reads dbt artifacts and produces a `TableRegistry` — the Python object the serve layer consumes directly. In `--output` mode it also serialises `db.graphql` as a side artifact (lineage is embedded inline via `@lineage` directives).
 
 **Entry point:** [`src/dbt_graphql/pipeline.py`](../src/dbt_graphql/pipeline.py) — `extract_project()`.
 
@@ -51,7 +51,7 @@ Four Pydantic models carry the full dbt semantics into the rest of the system:
 - **`ColumnInfo`** — name, SQL type, not_null, unique, enum_values, description.
 - **`ModelInfo`** — name, database/schema, columns, primary_keys, relationships, description.
 - **`RelationshipInfo`** — from/to model + column, join_type, origin. Carried on both endpoints.
-- **`ProjectInfo`** — all models, enums, table lineage, column lineage; exposes `build_lineage_schema()`.
+- **`ProjectInfo`** — all models, enums, table lineage, column lineage.
 
 Two deliberate choices:
 
@@ -60,7 +60,7 @@ Two deliberate choices:
 
 ### Lineage types
 
-`LineageType` is a `StrEnum` with values `pass_through`, `rename`, `transformation`, `filter`, `join`, `unknown`. `ProjectInfo.build_lineage_schema()` groups raw column-lineage dicts by `(source, target)`, constructs typed `ColumnLineageItem` entries, and validates via Pydantic. JSON serialization uses `by_alias=True` so the output is camelCase (`sourceColumn`, `lineageType`) — friendlier to downstream JavaScript tooling.
+`LineageType` is a `StrEnum` with values `pass_through`, `rename`, `transformation`, `filter`, `join`, `unknown`. `ProjectInfo` carries `table_lineage` and `column_lineage` lists; `build_registry()` indexes them by target and emits them as `@lineage` directives in `db.graphql` (type-level `@lineage(sources: [...])`, repeatable field-level `@lineage(source, column, type)`).
 
 ---
 

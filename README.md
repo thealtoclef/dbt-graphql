@@ -20,7 +20,7 @@ The CLI takes a single `--config` flag pointing at `config.yml`. See
 
 ```bash
 dbt-graphql --config config.yml --output ./out
-# → out/db.graphql, out/lineage.json
+# → out/db.graphql
 ```
 
 **2. Serve the API**

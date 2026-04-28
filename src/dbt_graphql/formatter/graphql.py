@@ -29,7 +29,7 @@ from graphql import DocumentNode, parse
 from pydantic import BaseModel
 
 from ..ir.models import ProjectInfo, RelationshipInfo
-from .schema import ColumnDef, RelationDef, TableDef, TableRegistry
+from .schema import ColumnDef, ColumnLineageRef, RelationDef, TableDef, TableRegistry
 
 # Explicit int aliases that don't end with "INT" (e.g. INTEGER, UINTEGER, INT64).
 _INT_EXACT = frozenset({"INT", "INT2", "INT4", "INT8", "INT64", "INTEGER", "UINTEGER"})
@@ -95,6 +95,46 @@ def format_graphql(project: ProjectInfo) -> GraphQLResult:
 def build_registry(project: ProjectInfo) -> TableRegistry:
     """Build a TableRegistry from dbt project info."""
     rel_map = _build_rel_map(project.relationships)
+    table_sources_by_target: dict[str, list[str]] = {}
+    for edge in project.table_lineage:
+        table_sources_by_target.setdefault(edge.target, []).append(edge.source)
+
+    # Source-model column index for "*" disambiguation below.
+    model_columns: dict[str, set[str]] = {
+        m.name: {c.name for c in m.columns} for m in project.models
+    }
+
+    # (target_model, target_column) -> [(source_model, source_column, lineage_type), ...]
+    col_lineage_by_target: dict[tuple[str, str], list[ColumnLineageRef]] = {}
+    for cedge in project.column_lineage:
+        for col in cedge.columns:
+            if not col.target_column:
+                continue
+            # dbt-colibri returns "*" when sqlglot can't pin the target to a
+            # specific upstream column — this happens for `SELECT *`, for
+            # CTE/subquery wrappers around `SELECT *`, and for genuine
+            # whole-row expressions (`COUNT(*)`, `MD5(t.*)`).
+            #
+            # Sqlglot can't always tell these apart and may classify a name-
+            # preserving `SELECT *` as `transformation`. When the target
+            # column name actually exists on the upstream model we
+            # substitute it — that's the real edge in 99% of cases. We only
+            # preserve `"*"` when the target name has no upstream
+            # counterpart, i.e. the column is genuinely row-derived.
+            source_col = col.source_column
+            if source_col == "*" and col.target_column in model_columns.get(
+                cedge.source, set()
+            ):
+                source_col = col.target_column
+            key = (cedge.target, col.target_column)
+            col_lineage_by_target.setdefault(key, []).append(
+                ColumnLineageRef(
+                    source=cedge.source,
+                    column=source_col,
+                    type=str(col.lineage_type),
+                )
+            )
+
     tables: list[TableDef] = []
 
     for model in project.models:
@@ -104,6 +144,7 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
             schema=model.schema_,
             table=model.relation_name,
             description=model.description,
+            lineage_sources=table_sources_by_target.get(model.name, []),
         )
         for col in model.columns:
             base, size, is_array = _parse_sql_type(col.type)
@@ -123,6 +164,7 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
                 sql_size=size,
                 description=col.description,
             )
+            col_def.lineage = col_lineage_by_target.get((model.name, col.name), [])
             rel = rel_map.get((model.name, (col.name,)))
             if rel:
                 single = len(rel.to_columns) == 1
@@ -197,6 +239,9 @@ def _table_to_sdl(table: TableDef) -> str:
     ]
     if table.filtered:
         directives.append("@filtered")
+    if table.lineage_sources:
+        srcs = ", ".join(f'"{s}"' for s in table.lineage_sources)
+        directives.append(f"@lineage(sources: [{srcs}])")
     header = f"type {table.name} {' '.join(directives)} {{"
 
     out = _description_block(table.description)
@@ -222,6 +267,12 @@ def _column_to_sdl(col: ColumnDef) -> str:
         directives.append("@unique")
     if col.masked:
         directives.append("@masked")
+
+    for ref in col.lineage:
+        directives.append(
+            f'@lineage(source: "{ref.source}", column: "{ref.column}",'
+            f" type: {ref.type})"
+        )
 
     if col.relation:
         r = col.relation

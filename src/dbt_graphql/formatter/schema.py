@@ -40,6 +40,15 @@ class RelationDef:
 
 
 @dataclass
+class ColumnLineageRef:
+    """A single upstream column edge feeding into a column."""
+
+    source: str  # upstream model name
+    column: str  # upstream column name
+    type: str  # pass_through | rename | transformation
+
+
+@dataclass
 class ColumnDef:
     name: str
     gql_type: str  # Standard GraphQL scalar (Int, Float, Boolean, String)
@@ -54,6 +63,7 @@ class ColumnDef:
     # Set per-request by the policy filter when a column-level mask
     # applies to the caller. Drives the @masked SDL directive.
     masked: bool = False
+    lineage: list[ColumnLineageRef] = field(default_factory=list)
 
 
 @dataclass
@@ -67,6 +77,7 @@ class TableDef:
     # Set per-request by the policy filter when a row filter applies to
     # the caller. Drives the @filtered SDL directive.
     filtered: bool = False
+    lineage_sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -164,6 +175,15 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
             col.is_unique = True
         elif dname == "masked":
             col.masked = True
+        elif dname == "lineage":
+            args = _directive_args(directive)
+            col.lineage.append(
+                ColumnLineageRef(
+                    source=str(args.get("source", "")),
+                    column=str(args.get("column", "")),
+                    type=str(args.get("type", "")),
+                )
+            )
         elif dname == "column":
             args = _directive_args(directive)
             col.sql_type = str(args.get("type", ""))
@@ -227,6 +247,10 @@ def parse_db_graphql(sdl: str) -> tuple[SchemaInfo, TableRegistry]:
                 table.table = str(args.get("name", ""))
             elif dname == "filtered":
                 table.filtered = True
+            elif dname == "lineage":
+                srcs = args.get("sources", [])
+                if isinstance(srcs, list):
+                    table.lineage_sources = [str(s) for s in srcs]
 
         if not table.table:
             table.table = table.name

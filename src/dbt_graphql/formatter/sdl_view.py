@@ -1,8 +1,10 @@
 """Effective SDL view: prune the parsed db.graphql AST per caller.
 
 ``effective_document`` walks the boot-time ``DocumentNode``, drops types
-and fields the caller cannot see, and injects ``@masked`` / ``@filtered``
-directives on survivors flagged by the per-request ``ResolvedPolicy``.
+and fields the caller cannot see, prunes ``@lineage`` references that
+point at hidden upstream models/columns, and injects ``@masked`` /
+``@filtered`` directives on survivors flagged by the per-request
+``ResolvedPolicy``.
 ``render_sdl`` emits the result via graphql-core's ``print_ast``.
 """
 
@@ -14,8 +16,10 @@ from graphql import (
     ConstDirectiveNode,
     DocumentNode,
     FieldDefinitionNode,
+    ListValueNode,
     NameNode,
     ObjectTypeDefinitionNode,
+    StringValueNode,
     print_ast,
 )
 
@@ -50,6 +54,14 @@ def effective_document(
     if restrict_to is not None:
         keep_tables = {n: t for n, t in keep_tables.items() if n in restrict_to}
 
+    # Lineage filter set: full effective_reg, NOT restrict_to. A caller can
+    # legitimately reference upstream models via lineage even when the
+    # current view restricts to a subset.
+    visible_models: set[str] = {t.name for t in effective_reg}
+    visible_cols: dict[str, set[str]] = {
+        t.name: {c.name for c in t.columns} for t in effective_reg
+    }
+
     new_defs = []
     for defn in doc.definitions:
         if not isinstance(defn, ObjectTypeDefinitionNode):
@@ -66,17 +78,25 @@ def effective_document(
             if eff_col is None:
                 continue
             new_field = field
-            if eff_col.masked and not _has_directive(field.directives, "masked"):
+            new_directives = _filter_field_lineage(
+                field.directives, visible_models, visible_cols
+            )
+            if new_directives is not field.directives:
                 new_field = copy.copy(field)
-                new_field.directives = tuple(field.directives or ()) + (
+                new_field.directives = new_directives
+            if eff_col.masked and not _has_directive(new_field.directives, "masked"):
+                if new_field is field:
+                    new_field = copy.copy(field)
+                new_field.directives = tuple(new_field.directives or ()) + (
                     _make_directive("masked"),
                 )
             new_fields.append(new_field)
 
         new_def = copy.copy(defn)
         new_def.fields = tuple(new_fields)
-        if eff_table.filtered and not _has_directive(defn.directives, "filtered"):
-            new_def.directives = tuple(defn.directives or ()) + (
+        new_def.directives = _filter_type_lineage(defn.directives, visible_models)
+        if eff_table.filtered and not _has_directive(new_def.directives, "filtered"):
+            new_def.directives = tuple(new_def.directives or ()) + (
                 _make_directive("filtered"),
             )
         new_defs.append(new_def)
@@ -100,3 +120,73 @@ def _has_directive(directives, name: str) -> bool:
 
 def _make_directive(name: str) -> ConstDirectiveNode:
     return ConstDirectiveNode(name=NameNode(value=name), arguments=())
+
+
+def _filter_type_lineage(directives, visible_models: set[str]):
+    """Rewrite type-level @lineage to only reference visible source models.
+
+    Drops the directive entirely if no sources remain.
+    """
+    if not directives:
+        return directives
+    out = []
+    changed = False
+    for d in directives:
+        if d.name.value != "lineage":
+            out.append(d)
+            continue
+        sources_arg = next(
+            (a for a in (d.arguments or ()) if a.name.value == "sources"), None
+        )
+        if sources_arg is None or not isinstance(sources_arg.value, ListValueNode):
+            out.append(d)
+            continue
+        kept = [
+            v
+            for v in sources_arg.value.values
+            if isinstance(v, StringValueNode) and v.value in visible_models
+        ]
+        if not kept:
+            changed = True
+            continue
+        if len(kept) == len(sources_arg.value.values):
+            out.append(d)
+            continue
+        new_d = copy.copy(d)
+        new_list = copy.copy(sources_arg.value)
+        new_list.values = tuple(kept)
+        new_arg = copy.copy(sources_arg)
+        new_arg.value = new_list
+        new_d.arguments = tuple(
+            new_arg if a is sources_arg else a for a in (d.arguments or ())
+        )
+        out.append(new_d)
+        changed = True
+    return tuple(out) if changed else directives
+
+
+def _filter_field_lineage(
+    directives, visible_models: set[str], visible_cols: dict[str, set[str]]
+):
+    """Drop field-level @lineage directives whose source/column is hidden."""
+    if not directives:
+        return directives
+    out = []
+    changed = False
+    for d in directives:
+        if d.name.value != "lineage":
+            out.append(d)
+            continue
+        args = {a.name.value: a.value for a in (d.arguments or ())}
+        src = args.get("source")
+        col = args.get("column")
+        if not (isinstance(src, StringValueNode) and isinstance(col, StringValueNode)):
+            out.append(d)
+            continue
+        if src.value not in visible_models or col.value not in visible_cols.get(
+            src.value, set()
+        ):
+            changed = True
+            continue
+        out.append(d)
+    return tuple(out) if changed else directives

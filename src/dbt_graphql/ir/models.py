@@ -115,16 +115,6 @@ class ProjectInfo(BaseModel):
     table_lineage: list[TableLineageItem] = Field(default_factory=list)
     column_lineage: list[ColumnLineageItem] = Field(default_factory=list)
 
-    def build_lineage_schema(self) -> LineageSchema:
-        if not self.models:
-            raise ValueError("Cannot build lineage schema: no models in project")
-        return LineageSchema(
-            project_name=self.project_name,  # type:ignore[ty:unknown-argument]
-            adapter_type=self.adapter_type,  # type:ignore[ty:unknown-argument]
-            table_lineage=self.table_lineage,  # type:ignore[ty:unknown-argument]
-            column_lineage=self.column_lineage,  # type:ignore[ty:unknown-argument]
-        )
-
 
 # ---------------------------------------------------------------------------
 # Lineage
@@ -184,28 +174,3 @@ class ColumnLineageItem(BaseModel):
         ..., description="The downstream (consuming) model name."
     )
     columns: list[Column] = Field(..., description="Column-level lineage mappings.")
-
-
-class LineageSchema(BaseModel):
-    """Root schema for dbt model lineage (table + column level)."""
-
-    model_config = ConfigDict(extra="forbid", validate_by_name=True)
-
-    project_name: str = Field(
-        ...,
-        alias="projectName",
-        description="dbt project name.",
-    )
-    adapter_type: str = Field(
-        ...,
-        alias="adapterType",
-        description="dbt adapter type (e.g., postgres, mysql).",
-    )
-    table_lineage: list[TableLineageItem] = Field(
-        ...,
-        alias="tableLineage",
-        description="Table-level lineage edges. Each edge represents a data flow from a source model to a target model.",
-    )
-    column_lineage: list[ColumnLineageItem] = Field(
-        ..., alias="columnLineage", description="Column-level lineage edges."
-    )

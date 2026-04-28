@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> None:
         "--output",
         type=Path,
         metavar="DIR",
-        help="Write db.graphql + lineage.json to DIR and exit (generate mode).",
+        help="Write db.graphql to DIR and exit (generate mode).",
     )
 
     args = parser.parse_args(argv)
@@ -69,12 +69,6 @@ def main(argv: list[str] | None = None) -> None:
 
 def _write_artifacts(project, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    lineage = project.build_lineage_schema()
-    if lineage.table_lineage or lineage.column_lineage:
-        lineage_path = output_dir / "lineage.json"
-        lineage_path.write_text(lineage.model_dump_json(by_alias=True, indent=2))
-        print(f"lineage.json -> {lineage_path}")
 
     gj = format_graphql(project)
     db_graphql_path = output_dir / "db.graphql"

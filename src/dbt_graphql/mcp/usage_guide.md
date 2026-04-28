@@ -12,8 +12,8 @@
    filtered to what your JWT authorizes you to see.
 
    For full SDL with custom directives (`@table`, `@column`, `@relation`,
-   `@masked`, `@filtered`) — the format the schema is authored in — call
-   `describe_tables(names: [str])` instead. The tool returns the effective
+   `@lineage`, `@masked`, `@filtered`) — the format the schema is authored
+   in — call `describe_tables(names: [str])` instead. The tool returns the effective
    SDL slice for the named tables, suited for direct LLM consumption.
    **Do not use GraphQL `__schema` introspection** — `describe_tables`
    is the authoritative effective view with full directive metadata.
@@ -26,6 +26,13 @@
    Returns upstream sources and downstream consumers from the dbt manifest,
    each tagged with a `lineage_type` (`pass_through`, `rename`,
    `transformation`). Edges to tables you cannot see are stripped.
+   The same lineage is also surfaced inline in the SDL via the `@lineage`
+   directive: at type level (`@lineage(sources: [...])`) for upstream
+   model names, and as a repeatable field-level directive
+   (`@lineage(source, column, type)`) for column-level edges. A
+   `column: "*"` arg means the field is derived from the whole upstream
+   row (e.g. `COUNT(*)`, `MD5(t.*)`) — it only appears when the target
+   column name has no matching column on the source model.
 
 5. **Build a query template** with `build_query(table, fields)`.
    Pass the fields you need; the tool returns a valid GraphQL query string,

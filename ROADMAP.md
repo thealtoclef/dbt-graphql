@@ -452,7 +452,7 @@ The two primary references for the policy engine:
 | Lineage type normalization (`pass-through` → `pass_through`) | ✅ |
 | `remove_quotes`/`remove_upper` for Postgres/BigQuery dialects | ✅ |
 | `source_model` → `unique_id` for cross-package disambiguation | 🔲 Deferred until multi-package projects are encountered |
-| Snapshot test against baseline `lineage.json` | 🔲 |
+| Snapshot test against baseline `db.graphql` `@lineage` directives | 🔲 |
 | New adapter fixtures (Postgres CamelCase, BigQuery backtick, UNNEST, two-package) | 🔲 |
 
 ---

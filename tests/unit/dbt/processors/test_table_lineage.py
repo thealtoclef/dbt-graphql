@@ -55,21 +55,3 @@ class TestTableLineage:
         result = extract_table_lineage(manifest)
         assert isinstance(result, list)
         assert all(isinstance(e, TableLineageItem) for e in result)
-
-
-class TestConvertResultLineage:
-    def test_convert_result_has_lineage(self):
-        from dbt_graphql import extract_project
-
-        project = extract_project(CATALOG, MANIFEST)
-        lineage = project.build_lineage_schema()
-        assert lineage is not None
-
-    def test_lineage_schema_serialization(self):
-        from dbt_graphql import extract_project
-
-        project = extract_project(CATALOG, MANIFEST)
-        lineage = project.build_lineage_schema()
-        json_str = lineage.model_dump_json(by_alias=True, indent=2)
-        assert "tableLineage" in json_str
-        assert "columnLineage" in json_str

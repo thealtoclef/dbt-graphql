@@ -1,4 +1,3 @@
-import json
 import pytest
 from pathlib import Path
 
@@ -59,17 +58,12 @@ def test_cli_exclude_multiple_patterns(tmp_path):
     assert "type customers" in content
 
 
-def test_cli_produces_lineage_json(tmp_path):
+def test_cli_emits_lineage_directives_in_db_graphql(tmp_path):
     cfg = _config(tmp_path)
     main(["--config", str(cfg), "--output", str(tmp_path)])
-    assert (tmp_path / "lineage.json").exists()
-
-
-def test_cli_lineage_json_has_table_lineage(tmp_path):
-    cfg = _config(tmp_path)
-    main(["--config", str(cfg), "--output", str(tmp_path)])
-    data = json.loads((tmp_path / "lineage.json").read_text())
-    assert "tableLineage" in data or "table_lineage" in data
+    sdl = (tmp_path / "db.graphql").read_text()
+    assert "@lineage(sources:" in sdl
+    assert "@lineage(source:" in sdl
 
 
 def test_cli_missing_catalog_exits_nonzero(tmp_path):

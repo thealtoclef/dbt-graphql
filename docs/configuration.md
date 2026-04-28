@@ -13,7 +13,7 @@ dbt-graphql --config config.yml [--output DIR]
 | Flag | Description |
 |---|---|
 | `--config PATH` | Path to `config.yml` (required). |
-| `--output DIR` | Write `db.graphql` + `lineage.json` to DIR and exit (generate mode). Omit to serve. |
+| `--output DIR` | Write `db.graphql` to DIR and exit (generate mode). Omit to serve. |
 
 **Generate mode** (`--output` present): parse dbt artifacts, write schema files, exit. No database connection required.
 

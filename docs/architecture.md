@@ -61,8 +61,11 @@ Side export (`--output DIR` only — no server is started):
 
 ```
   TableRegistry  ──▶  _registry_to_sdl()        ──▶  db.graphql
-  ProjectInfo    ──▶  build_lineage_schema()     ──▶  lineage.json
 ```
+
+Lineage is embedded in `db.graphql` via the `@lineage` directive (type-level
+`@lineage(sources: [...])` and field-level repeatable
+`@lineage(source, column, type)`).
 
 Entry point: [`src/dbt_graphql/pipeline.py`](../src/dbt_graphql/pipeline.py) — `extract_project()`.
 
@@ -143,7 +146,7 @@ dbt-graphql --config config.yml --output DIR   # export mode
    - MCP at `/mcp` when `serve.mcp_enabled: true`. The MCP server shares the GraphQL bundle: the `TableRegistry` drives schema discovery, the executable schema backs `run_graphql`, and the same `PolicyEngine` filters every tool's view. dbt artifacts contribute descriptions and enum metadata only.
 
 **Export mode** (`--output DIR`):
-Steps 1–2 only, then `_registry_to_sdl()` writes `db.graphql` and `build_lineage_schema()` writes `lineage.json` to `DIR`. No server is started.
+Steps 1–2 only, then `_registry_to_sdl()` writes `db.graphql` (lineage included via `@lineage` directives) to `DIR`. No server is started.
 
 ---
 
