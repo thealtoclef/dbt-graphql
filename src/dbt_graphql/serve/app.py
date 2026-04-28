@@ -67,9 +67,7 @@ def create_app(
         introspection=introspection,
     )
     mcp_http_app = mcp_factory(bundle) if mcp_factory is not None else None
-    auth_backend, owned_http = build_auth_backend(
-        jwt_config, enabled=security_enabled
-    )
+    auth_backend, owned_http = build_auth_backend(jwt_config, enabled=security_enabled)
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
