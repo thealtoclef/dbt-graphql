@@ -14,7 +14,6 @@ from graphql import GraphQLError
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from dbt_graphql.cache import CacheConfig
-
 from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE, _make_resolver
 from dbt_graphql.config import PoolConfig
 
@@ -41,9 +40,12 @@ def _make_info(db, registry):
 
 
 @pytest.mark.asyncio
-async def test_resolver_translates_pool_timeout_to_graphql_error(monkeypatch):
+async def test_resolver_translates_pool_timeout_to_graphql_error(
+    monkeypatch, fresh_cache
+):
     """``db.execute`` raises ``TimeoutError`` → resolver raises GraphQLError
     with ``extensions.code == POOL_TIMEOUT`` and the configured retry-after."""
+    del fresh_cache  # fixture configures cashews — production lifespan equivalent
     # Stub compile_query so we don't need a real registry/table def.
     monkeypatch.setattr(
         "dbt_graphql.graphql.resolvers.compile_query",

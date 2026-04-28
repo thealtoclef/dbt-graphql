@@ -1,13 +1,13 @@
-"""Per-test cache isolation.
+"""Shared fixtures for all unit tests.
 
 cashews exposes a process-global ``cache`` singleton. Without explicit
 teardown, state from one test leaks into the next — and because pytest-asyncio
 runs tests in a single event loop by default, a stale entry from test A can
 satisfy a lookup in test B and silently turn a real miss into a phantom hit.
 
-The fixture below configures a fresh in-memory backend at the start of every
-test and clears state afterwards. We deliberately do NOT use ``autouse`` — a
-few tests need to inspect setup behavior themselves.
+The ``fresh_cache`` fixture configures a fresh in-memory backend at the start
+of every test that requests it and clears state afterwards. It is opt-in
+(not autouse) so a few tests can inspect setup behavior themselves.
 """
 
 from __future__ import annotations

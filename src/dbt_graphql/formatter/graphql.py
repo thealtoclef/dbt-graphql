@@ -162,10 +162,11 @@ def _description_block(text: str, indent: str = "") -> str:
         """` blocks.
     """
     )
-    if not text:
+    stripped = text.strip() if text else ""
+    if not stripped:
         return ""
     # Escape any embedded triple quotes so the block stays well-formed.
-    safe = text.replace('"""', '\\"""')
+    safe = stripped.replace('"""', '\\"""')
     return f'{indent}"""\n{indent}{safe}\n{indent}"""\n'
 
 

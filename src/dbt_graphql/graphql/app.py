@@ -67,7 +67,8 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         where_input_defs.append("\n".join(input_lines))
 
     query_fields = [
-        f"  {t.name}(limit: Int, offset: Int, where: {t.name}WhereInput): [{t.name}]"
+        _description_block(t.description, indent="  ")
+        + f"  {t.name}(limit: Int, offset: Int, where: {t.name}WhereInput): [{t.name}]"
         for t in registry
     ]
     query_block = "type Query {\n" + "\n".join(query_fields) + "\n}"
