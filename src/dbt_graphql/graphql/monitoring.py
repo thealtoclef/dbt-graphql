@@ -136,16 +136,12 @@ def instrument_starlette(app) -> None:
         status_code = event.get("status")
         if not isinstance(status_code, int):
             return
-        if 200 <= status_code < 300:
-            status_group = "2xx"
-        elif 400 <= status_code < 500:
-            status_group = "4xx"
-        elif 500 <= status_code < 600:
-            status_group = "5xx"
-        else:
-            status_group = f"{status_code // 100}xx"
         status_counter.add(
-            1, {"http.status_code": status_code, "http.status_group": status_group}
+            1,
+            {
+                "http.status_code": status_code,
+                "http.status_group": f"{status_code // 100}xx",
+            },
         )
 
     StarletteInstrumentor().instrument_app(
