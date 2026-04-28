@@ -61,6 +61,7 @@ security:
     jwks_url: https://issuer.example/.well-known/jwks.json
   policies:
     - name: analyst
+      effect: allow                    # IAM-style; required, no default
       when: "'analysts' in jwt.groups"
       tables:
         customers:
@@ -70,6 +71,13 @@ security:
               email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
           row_filter:
             org_id: { _eq: { jwt: claims.org_id } }
+
+    # Cross-cutting deny — wins over any allow that also matches.
+    - name: contractors_no_pii
+      effect: deny
+      when: "'contractors' in jwt.groups"
+      tables:
+        customers: { deny_columns: [email, ssn] }
 ```
 
 See [`config.example.yml`](config.example.yml) and

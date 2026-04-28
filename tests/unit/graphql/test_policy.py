@@ -7,6 +7,7 @@ import pytest
 from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
+    Effect,
     MaskConflictError,
     PolicyEngine,
     PolicyEntry,
@@ -32,8 +33,14 @@ def _ctx(sub=None, email=None, groups=None, claims=None) -> JWTPayload:
     return JWTPayload(data)
 
 
-def _policy(name: str, when: str, tables: dict) -> PolicyEntry:
-    return PolicyEntry(name=name, when=when, tables=tables)
+def _policy(
+    name: str,
+    when: str,
+    tables: dict,
+    *,
+    effect: Effect = Effect.ALLOW,
+) -> PolicyEntry:
+    return PolicyEntry(name=name, effect=effect, when=when, tables=tables)
 
 
 def _engine(*entries: PolicyEntry) -> PolicyEngine:
@@ -481,6 +488,7 @@ dbt:
 security:
   policies:
     - name: analyst
+      effect: allow
       when: "'analysts' in jwt.groups"
       tables:
         orders:
@@ -551,6 +559,212 @@ def test_table_denial_carries_table_name_in_exception():
         engine.evaluate("customers", _ctx())
     assert exc_info.value.table == "customers"
     assert "customers" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# effect: allow | deny — IAM-style precedence (deny wins)
+# ---------------------------------------------------------------------------
+
+
+def test_effect_is_required_no_default():
+    """``effect`` is a required field — no implicit default."""
+    with pytest.raises(ValueError, match="effect"):
+        PolicyEntry.model_validate({"name": "x", "when": "True", "tables": {}})
+
+
+def test_allow_rule_rejects_deny_fields():
+    with pytest.raises(ValueError, match="effect=allow but table"):
+        PolicyEntry(
+            name="bad",
+            effect=Effect.ALLOW,
+            when="True",
+            tables={"orders": TablePolicy(deny_all=True)},
+        )
+
+
+def test_deny_rule_rejects_allow_fields():
+    with pytest.raises(ValueError, match="effect=deny but table"):
+        PolicyEntry(
+            name="bad",
+            effect=Effect.DENY,
+            when="True",
+            tables={
+                "orders": TablePolicy(
+                    column_level=ColumnLevelPolicy(include_all=True),
+                )
+            },
+        )
+
+
+def test_allow_rule_requires_at_least_one_allow_field():
+    with pytest.raises(ValueError, match="must declare column_level"):
+        PolicyEntry(
+            name="empty",
+            effect=Effect.ALLOW,
+            when="True",
+            tables={"orders": TablePolicy()},
+        )
+
+
+def test_deny_rule_requires_at_least_one_deny_field():
+    with pytest.raises(ValueError, match="must declare deny_all"):
+        PolicyEntry(
+            name="empty_deny",
+            effect=Effect.DENY,
+            when="True",
+            tables={"orders": TablePolicy()},
+        )
+
+
+def test_deny_all_with_deny_columns_rejected():
+    with pytest.raises(ValueError, match="redundant"):
+        PolicyEntry(
+            name="redundant",
+            effect=Effect.DENY,
+            when="True",
+            tables={
+                "orders": TablePolicy(deny_all=True, deny_columns=["x"]),
+            },
+        )
+
+
+def test_deny_all_overrides_allow():
+    """A matching deny_all denies the table even if an allow also matches."""
+    engine = _engine(
+        _policy(
+            "analyst",
+            "'analysts' in jwt.groups",
+            {"orders": TablePolicy(column_level=ColumnLevelPolicy(include_all=True))},
+        ),
+        _policy(
+            "contractor_block",
+            "'contractors' in jwt.groups",
+            {"orders": TablePolicy(deny_all=True)},
+            effect=Effect.DENY,
+        ),
+    )
+    with pytest.raises(TableAccessDenied):
+        engine.evaluate("orders", _ctx(groups=["analysts", "contractors"]))
+
+
+def test_deny_all_does_not_fire_without_match():
+    """Deny rule whose ``when`` is false leaves the allow result intact."""
+    engine = _engine(
+        _policy(
+            "analyst",
+            "'analysts' in jwt.groups",
+            {"orders": TablePolicy(column_level=ColumnLevelPolicy(include_all=True))},
+        ),
+        _policy(
+            "contractor_block",
+            "'contractors' in jwt.groups",
+            {"orders": TablePolicy(deny_all=True)},
+            effect=Effect.DENY,
+        ),
+    )
+    resolved = engine.evaluate("orders", _ctx(groups=["analysts"]))
+    assert resolved.allowed_columns is None  # include_all preserved
+
+
+def test_deny_columns_subtracts_from_allowed():
+    """``deny_columns`` are added to blocked_columns regardless of include_all."""
+    engine = _engine(
+        _policy(
+            "analyst",
+            "'analysts' in jwt.groups",
+            {
+                "customers": TablePolicy(
+                    column_level=ColumnLevelPolicy(include_all=True),
+                )
+            },
+        ),
+        _policy(
+            "contractor_no_pii",
+            "'contractors' in jwt.groups",
+            {"customers": TablePolicy(deny_columns=["salary", "ssn"])},
+            effect=Effect.DENY,
+        ),
+    )
+    resolved = engine.evaluate("customers", _ctx(groups=["analysts", "contractors"]))
+    assert resolved.blocked_columns == frozenset({"salary", "ssn"})
+    assert not resolved.is_column_allowed("salary")
+    assert resolved.is_column_allowed("name")
+
+
+def test_deny_columns_drops_mask_for_denied_column():
+    """Masking a column the deny rule blocks is meaningless — drop the mask."""
+    engine = _engine(
+        _policy(
+            "analyst",
+            "'analysts' in jwt.groups",
+            {
+                "customers": TablePolicy(
+                    column_level=ColumnLevelPolicy(
+                        include_all=True,
+                        mask={"email": "CONCAT('***@', SPLIT_PART(email, '@', 2))"},
+                    )
+                )
+            },
+        ),
+        _policy(
+            "no_email_for_contractors",
+            "'contractors' in jwt.groups",
+            {"customers": TablePolicy(deny_columns=["email"])},
+            effect=Effect.DENY,
+        ),
+    )
+    resolved = engine.evaluate("customers", _ctx(groups=["analysts", "contractors"]))
+    assert "email" not in resolved.masks
+    assert "email" in resolved.blocked_columns
+
+
+def test_deny_only_no_allow_still_denies_table():
+    """A matching deny without any matching allow → default-deny still applies."""
+    engine = _engine(
+        _policy(
+            "no_pii",
+            "True",
+            {"customers": TablePolicy(deny_columns=["ssn"])},
+            effect=Effect.DENY,
+        ),
+    )
+    with pytest.raises(TableAccessDenied):
+        engine.evaluate("customers", _ctx())
+
+
+def test_deny_columns_validated_against_registry():
+    """``deny_columns`` typos are caught at policy-load time."""
+    from dbt_graphql.graphql.policy import (
+        AccessPolicy,
+        validate_access_policy_against_registry,
+    )
+
+    class _Col:
+        def __init__(self, name):
+            self.name = name
+
+    class _TDef:
+        columns = [_Col("id"), _Col("salary"), _Col("ssn")]
+
+    class _Registry:
+        def get(self, _name):
+            return _TDef()
+
+    policy = AccessPolicy(
+        policies=[
+            _policy(
+                "block",
+                "True",
+                {"customers": TablePolicy(deny_columns=["sallary"])},
+                effect=Effect.DENY,
+            )
+        ]
+    )
+    with pytest.raises(ValueError, match="unknown column"):
+        validate_access_policy_against_registry(policy, _Registry())
+
+
+# ---------------------------------------------------------------------------
 
 
 def test_denied_when_condition_never_fires_even_if_table_listed():

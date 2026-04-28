@@ -11,6 +11,7 @@ from dbt_graphql.graphql.policy import (
     PolicyEngine,
     PolicyEntry,
     TablePolicy,
+    Effect,
 )
 from dbt_graphql.pipeline import extract_project
 from dbt_graphql.mcp.server import McpTools
@@ -248,6 +249,7 @@ def _customers_only_engine() -> PolicyEngine:
         AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="customers-only",
                     when="True",
                     tables={
@@ -368,6 +370,7 @@ class TestRunGraphqlWithBundle:
         access_policy = AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="customers-only",
                     when="True",
                     tables={

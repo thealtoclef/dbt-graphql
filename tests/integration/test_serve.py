@@ -17,6 +17,7 @@ from dbt_graphql.graphql.policy import (
     ColumnLevelPolicy,
     PolicyEntry,
     TablePolicy,
+    Effect,
 )
 from dbt_graphql.config import GraphQLConfig
 
@@ -354,7 +355,11 @@ def _full_access_policy(**overrides) -> AccessPolicy:
             TablePolicy(column_level=ColumnLevelPolicy(include_all=True)),
         ),
     }
-    return AccessPolicy(policies=[PolicyEntry(name="all", when="True", tables=tables)])
+    return AccessPolicy(
+        policies=[
+            PolicyEntry(effect=Effect.ALLOW, name="all", when="True", tables=tables)
+        ]
+    )
 
 
 class TestPolicyHTTP:
@@ -448,6 +453,7 @@ class TestPolicyHTTP:
         policy = AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="analyst",
                     when="'analysts' in jwt.groups",
                     tables={
@@ -459,6 +465,7 @@ class TestPolicyHTTP:
                     },
                 ),
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="finance",
                     when="'finance' in jwt.groups",
                     tables={
@@ -486,6 +493,7 @@ class TestPolicyHTTP:
         policy = AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="anon",
                     when="jwt.sub == None",
                     tables={
@@ -495,6 +503,7 @@ class TestPolicyHTTP:
                     },
                 ),
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="auth",
                     when="jwt.sub != None",
                     tables={
@@ -521,6 +530,7 @@ class TestPolicyHTTP:
         policy = AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="orders_only",
                     when="True",
                     tables={
@@ -542,6 +552,7 @@ class TestPolicyHTTP:
         policy = AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="analyst",
                     when="'analysts' in jwt.groups",
                     tables={

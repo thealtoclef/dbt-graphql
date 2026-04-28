@@ -27,6 +27,7 @@ from dbt_graphql.graphql.policy import (
     ColumnLevelPolicy,
     PolicyEntry,
     TablePolicy,
+    Effect,
 )
 from dbt_graphql.cache import CacheConfig, stats
 from dbt_graphql.cache.setup import close_cache
@@ -217,6 +218,7 @@ class TestTenantIsolation:
         return AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="self",
                     when="True",
                     tables={

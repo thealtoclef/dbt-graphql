@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -110,17 +111,73 @@ class ColumnLevelPolicy(BaseModel):
         return self
 
 
+class Effect(str, Enum):
+    """Allow vs deny — XACML / AWS IAM ``Effect`` field.
+
+    Each policy entry must declare one explicitly; deny short-circuits or
+    subtracts from the merged allow result, matching IAM / Cedar / SQL
+    Server semantics where a deny always wins over an allow.
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+
+
 class TablePolicy(BaseModel):
+    # Allow-effect fields.
     column_level: ColumnLevelPolicy | None = None
     # Structured DSL — validated against the table registry by
     # ``validate_access_policy_against_registry`` at policy-load time.
     row_filter: dict[str, Any] | None = None
 
+    # Deny-effect fields. Mutually exclusive with the allow-effect fields
+    # above; the active set is checked against the parent ``PolicyEntry.effect``.
+    deny_all: bool = False
+    deny_columns: list[str] = Field(default_factory=list)
+
 
 class PolicyEntry(BaseModel):
     name: str
+    effect: Effect
     when: str
     tables: dict[str, TablePolicy] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_effect_fields(self) -> "PolicyEntry":
+        for tname, tp in self.tables.items():
+            allow_set = tp.column_level is not None or tp.row_filter is not None
+            deny_set = tp.deny_all or bool(tp.deny_columns)
+            if self.effect == Effect.ALLOW:
+                if deny_set:
+                    raise ValueError(
+                        f"policy {self.name!r} has effect=allow but table "
+                        f"{tname!r} declares deny_all/deny_columns. Allow "
+                        "rules use column_level/row_filter only."
+                    )
+                if not allow_set:
+                    raise ValueError(
+                        f"policy {self.name!r} table {tname!r}: allow rule "
+                        "must declare column_level and/or row_filter."
+                    )
+            else:  # Effect.DENY
+                if allow_set:
+                    raise ValueError(
+                        f"policy {self.name!r} has effect=deny but table "
+                        f"{tname!r} declares column_level/row_filter. Deny "
+                        "rules use deny_all/deny_columns only."
+                    )
+                if not deny_set:
+                    raise ValueError(
+                        f"policy {self.name!r} table {tname!r}: deny rule "
+                        "must declare deny_all: true and/or deny_columns: [...]."
+                    )
+                if tp.deny_all and tp.deny_columns:
+                    raise ValueError(
+                        f"policy {self.name!r} table {tname!r}: deny_all "
+                        "already covers the whole table; deny_columns is "
+                        "redundant. Pick one."
+                    )
+        return self
 
 
 class AccessPolicy(BaseModel):
@@ -137,21 +194,30 @@ def validate_access_policy_against_registry(
     """
     for entry in policy.policies:
         for table_name, table_policy in entry.tables.items():
-            if table_policy.row_filter is None:
-                continue
             tdef = registry.get(table_name)
             if tdef is None:
-                raise ValueError(
-                    f"policy {entry.name!r} references row_filter on unknown "
-                    f"table {table_name!r}"
-                )
+                if table_policy.row_filter is not None or table_policy.deny_columns:
+                    raise ValueError(
+                        f"policy {entry.name!r} references unknown table {table_name!r}"
+                    )
+                continue
             allowed = {c.name for c in tdef.columns}
-            try:
-                validate_row_filter(table_policy.row_filter, allowed_columns=allowed)
-            except ValueError as exc:
+            if table_policy.row_filter is not None:
+                try:
+                    validate_row_filter(
+                        table_policy.row_filter, allowed_columns=allowed
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"policy {entry.name!r} table {table_name!r}: {exc}"
+                    ) from exc
+            unknown = [c for c in table_policy.deny_columns if c not in allowed]
+            if unknown:
                 raise ValueError(
-                    f"policy {entry.name!r} table {table_name!r}: {exc}"
-                ) from exc
+                    f"policy {entry.name!r} table {table_name!r}: "
+                    f"deny_columns references unknown column(s) {sorted(unknown)}. "
+                    f"Allowed columns: {sorted(allowed)}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -194,18 +260,56 @@ class PolicyEngine:
     def evaluate(self, table_name: str, ctx: JWTPayload) -> ResolvedPolicy:
         """Return the merged ResolvedPolicy for ``table_name`` given ``ctx``.
 
-        Default-deny: if no loaded policy matches both the ``when`` clause
-        and the requested table, raise ``TableAccessDenied``. Operators
-        must explicitly list every table a role may read.
-        """
-        matching: list[TablePolicy] = []
-        for entry in self._policy.policies:
-            if self._eval_when(entry.when, ctx) and table_name in entry.tables:
-                matching.append(entry.tables[table_name])
+        Default-deny + IAM-style deny precedence:
 
-        if not matching:
+        1. Partition matching entries (``when`` true and table listed) into
+           allows and denies by ``effect``.
+        2. Any matching deny with ``deny_all: true`` short-circuits to
+           ``TableAccessDenied`` — deny always wins.
+        3. If no allow matches, the table is denied (default-deny).
+        4. The merged allow result is computed, then ``deny_columns`` from
+           every matching deny is subtracted from ``allowed_columns``,
+           added to ``blocked_columns``, and removed from ``masks``.
+        """
+        allows: list[TablePolicy] = []
+        denies: list[TablePolicy] = []
+        for entry in self._policy.policies:
+            if not self._eval_when(entry.when, ctx):
+                continue
+            if table_name not in entry.tables:
+                continue
+            tp = entry.tables[table_name]
+            if entry.effect == Effect.DENY:
+                denies.append(tp)
+            else:
+                allows.append(tp)
+
+        for tp in denies:
+            if tp.deny_all:
+                raise TableAccessDenied(table_name)
+
+        if not allows:
             raise TableAccessDenied(table_name)
-        return self._merge(table_name, matching, ctx)
+
+        resolved = self._merge(table_name, allows, ctx)
+
+        denied_cols: set[str] = set()
+        for tp in denies:
+            denied_cols.update(tp.deny_columns)
+        if denied_cols:
+            allowed = resolved.allowed_columns
+            if allowed is not None:
+                allowed = allowed - denied_cols
+            blocked = resolved.blocked_columns | frozenset(denied_cols)
+            masks = {k: v for k, v in resolved.masks.items() if k not in denied_cols}
+            resolved = ResolvedPolicy(
+                allowed_columns=allowed,
+                blocked_columns=blocked,
+                masks=masks,
+                row_filter_clause=resolved.row_filter_clause,
+            )
+
+        return resolved
 
     def _eval_when(self, expr: str, ctx: JWTPayload) -> bool:
         """Evaluate a when-clause safely via simpleeval."""

@@ -28,6 +28,7 @@ from dbt_graphql.graphql.policy import (
     ColumnLevelPolicy,
     PolicyEntry,
     TablePolicy,
+    Effect,
 )
 from dbt_graphql.formatter.graphql import build_registry
 from dbt_graphql.pipeline import extract_project
@@ -490,6 +491,7 @@ class TestMCPPolicyHTTP:
         return AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="customers-only",
                     when="True",
                     tables={
@@ -573,6 +575,7 @@ class TestMCPPolicyHTTP:
         policy = AccessPolicy(
             policies=[
                 PolicyEntry(
+                    effect=Effect.ALLOW,
                     name="customer-filter",
                     when="True",
                     tables={

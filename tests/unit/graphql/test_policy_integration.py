@@ -21,6 +21,7 @@ from dbt_graphql.graphql.policy import (
     PolicyEntry,
     TableAccessDenied,
     TablePolicy,
+    Effect,
 )
 from dbt_graphql.graphql.auth import JWTPayload
 from dbt_graphql.compiler.query import compile_query
@@ -129,6 +130,7 @@ def test_blocked_column_is_stripped_from_sql():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -157,6 +159,7 @@ def test_includes_whitelist_in_sql():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -189,6 +192,7 @@ def test_strict_includes_raises_on_unlisted_column():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="limited",
             when="True",
             tables={
@@ -215,6 +219,7 @@ def test_strict_excludes_raises_on_excluded_column():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -239,6 +244,7 @@ def test_default_deny_at_root_raises_table_denied():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="orders_only",
             when="True",
             tables={
@@ -276,6 +282,7 @@ def test_null_mask_appears_in_sql():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -301,6 +308,7 @@ def test_expression_mask_appears_in_sql():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -335,6 +343,7 @@ def test_row_filter_uses_bind_param():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -363,6 +372,7 @@ def test_row_filter_injection_attempt_does_not_inject():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -393,6 +403,7 @@ def test_row_filter_combined_with_user_where():
     customers, registry = _customers_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="analyst",
             when="True",
             tables={
@@ -436,6 +447,7 @@ def test_nested_relation_denies_when_target_table_unlisted():
     customers, _orders, registry = _customers_orders_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="customers_only",
             when="True",
             tables={
@@ -460,6 +472,7 @@ def test_nested_relation_strict_column_rejects_unauthorized_child_column():
     customers, _orders, registry = _customers_orders_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="all",
             when="True",
             tables={
@@ -490,6 +503,7 @@ def test_nested_relation_mask_applied_inside_subquery():
     customers, _orders, registry = _customers_orders_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="all",
             when="True",
             tables={
@@ -528,6 +542,7 @@ def test_nested_relation_row_filter_applied_to_subquery():
     customers, _orders, registry = _customers_orders_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="all",
             when="True",
             tables={
@@ -567,6 +582,7 @@ def test_nested_relation_row_filter_AND_mask_both_inside_subquery():
     customers, _orders, registry = _customers_orders_registry()
     engine = _engine(
         PolicyEntry(
+            effect=Effect.ALLOW,
             name="all",
             when="True",
             tables={

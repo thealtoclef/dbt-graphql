@@ -25,6 +25,7 @@ security:
     jwks_url: https://issuer.example/.well-known/jwks.json
   policies:
     - name: analyst
+      effect: allow
       when: "'analysts' in jwt.groups"
       tables:
         customers:
@@ -50,6 +51,7 @@ upstream.
 ```yaml
 policies:
   - name: analyst
+    effect: allow
     when: "'analysts' in jwt.groups"
     tables:
       customers:
@@ -61,6 +63,14 @@ policies:
             ssn: ~
         row_filter:
           org_id: { _eq: { jwt: claims.org_id } }
+
+  # Cross-cutting deny rule. Precedence over every allow above.
+  - name: contractors_no_pii
+    effect: deny
+    when: "'contractors' in jwt.groups"
+    tables:
+      customers: { deny_columns: [email, ssn] }
+      orders:    { deny_all: true }
 ```
 
 Top-level key is `policies` (a list). Each entry has:
@@ -68,15 +78,66 @@ Top-level key is `policies` (a list). Each entry has:
 | Field | Type | Description |
 |---|---|---|
 | `name` | string | Human-readable label (used in logs). |
+| `effect` | enum | `allow` or `deny`. **Required**, no default. See [`effect`](#effect) below. |
 | `when` | string | Boolean expression evaluated by `simpleeval` against `jwt`. |
 | `tables` | map | Per-table rules keyed by GraphQL table name. |
 
-Each table entry contains:
+Each table entry contains a different set of fields depending on the
+parent entry's `effect`:
 
-| Field | Type | Description |
-|---|---|---|
-| `column_level` | object | Column allow/deny + masking. |
-| `row_filter` | object | Structured boolean-expression DSL (Hasura-style). |
+| Effect | Field | Type | Description |
+|---|---|---|---|
+| `allow` | `column_level` | object | Column allow-list + masking. |
+| `allow` | `row_filter` | object | Structured boolean-expression DSL (Hasura-style). |
+| `deny`  | `deny_all` | bool | Deny the whole table for any subject the rule matches. |
+| `deny`  | `deny_columns` | list[str] | Deny specific columns. |
+
+Mixing fields across effects (e.g. `column_level` under a `deny` rule)
+fails policy load — the loader names the offending entry and table.
+
+### `effect`
+
+The `effect` field follows the
+[XACML](https://en.wikipedia.org/wiki/XACML) / [AWS IAM](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_effect.html)
+convention — the standard vocabulary for ABAC policies, where every rule
+has a single `Effect` of either `Allow` or `Deny`. Cedar uses the
+synonym pair `permit` / `forbid`; SQL Server uses `GRANT` / `DENY`.
+The semantics are the same across all three: **a deny always wins over
+an allow**.
+
+`effect` is required on every entry — there is no implicit default.
+Forcing the operator to type `effect: allow` on every grant rule keeps
+the file readable and prevents the "I forgot which kind this was"
+mistake that an `effect: allow` default would invite.
+
+**Allow rules** are additive. The merged result of every matching allow
+rule produces the per-table column allow-list, mask map, and row-filter
+predicate.
+
+**Deny rules** are subtractive and take precedence:
+
+- `deny_all: true` for a matching subject → the table is denied with
+  `FORBIDDEN_TABLE`, regardless of any allow rule that would have
+  granted access.
+- `deny_columns: [...]` for a matching subject → those columns are
+  removed from the merged allow result, added to the blocked set, and
+  any mask the allow side declared for them is dropped (masking a
+  blocked column is meaningless). Selecting a denied column triggers
+  `FORBIDDEN_COLUMN`.
+
+A request with **only matching denies and no matching allow** still
+falls through to default-deny — denies subtract from grants; they don't
+imply one.
+
+The cross-cutting use case `effect: deny` exists to solve:
+
+> *"contractors never see `salary`, even when they're also in the
+> `analysts` group."*
+
+Without deny, that guard has to be copied into every allow rule's
+`when` clause and any allow added later that forgets the guard silently
+re-grants the column. With `effect: deny`, the rule lives in one place
+and a new allow cannot accidentally bypass it.
 
 ### `column_level`
 
@@ -92,10 +153,20 @@ trusted; **do not populate it from untrusted sources.**
 
 ### `row_filter`
 
-A structured boolean-expression tree (Hasura convention). The engine
-compiles it to a SQLAlchemy `ColumnElement` — column references are
-validated at policy-load time, JWT values are bound as named parameters,
-and there is no template engine in the data-access path.
+A structured boolean-expression tree. The operator vocabulary
+(`_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`,
+`_and`, `_or`, `_not`) is taken directly from
+[Hasura's permission-rule DSL](https://hasura.io/docs/latest/auth/authorization/permissions/row-level-permissions/),
+which is the de-facto standard for declarative row-level filters in the
+GraphQL data-API ecosystem (PostGraphile, GraphJin, and Postgrest all
+use the same shape). Adopting it means operators familiar with any of
+those tools recognize the syntax immediately, and we get a vocabulary
+that has already been battle-tested against SQL/NULL edge cases.
+
+The engine compiles the tree to a SQLAlchemy `ColumnElement` — column
+references are validated at policy-load time, JWT values are bound as
+named parameters, and there is no template engine in the data-access
+path.
 
 **Logical operators:** `_and`, `_or`, `_not`. **Comparison operators:**
 `_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`. RHS values
@@ -264,6 +335,12 @@ when: "'eu-west' in jwt.claims.allowed_regions"
 
 ## `row_filter` reference
 
+The grammar follows
+[Hasura's row-level permission syntax](https://hasura.io/docs/latest/auth/authorization/permissions/row-level-permissions/)
+— the same convention used by PostGraphile, GraphJin, and Postgrest
+for declarative SQL filters. Operators carry the same meaning across
+those tools.
+
 Each tree node is either a logical-operator map (`_and`, `_or`, `_not`)
 or a column-comparison map. Logical operators take a list of sub-trees
 (except `_not`, which takes a single sub-tree). A column-comparison map
@@ -292,12 +369,14 @@ by a regression test in
 # config.yml — security.policies
 policies:
   - name: admin
+    effect: allow
     when: "'data-admins' in jwt.groups"
     tables:
       orders:    { column_level: { include_all: true } }
       customers: { column_level: { include_all: true } }
 
   - name: analyst
+    effect: allow
     when: "'analysts' in jwt.groups"
     tables:
       customers:
@@ -311,12 +390,21 @@ policies:
           org_id: { _eq: { jwt: claims.org_id } }
 
   - name: anon
+    effect: allow
     when: "jwt.sub == None"
     tables:
       products:
         column_level: { includes: [product_id, name, price] }
         row_filter:
           published: { _eq: true }
+
+  # Deny precedence: contractors lose PII access on customers no matter
+  # which other groups also match. Single source of truth.
+  - name: contractors_no_pii
+    effect: deny
+    when: "'contractors' in jwt.groups"
+    tables:
+      customers: { deny_columns: [email, ssn] }
 ```
 
 A request `GET /graphql?...` with
@@ -390,10 +478,6 @@ attribute sets:
 | **Resource** | table name, column name, column classification (`pii`, `financial`, `public`) |
 | **Environment** | request IP, time of day, is-production-hours, rate-limit bucket |
 
-Moving to structured `match:` blocks (instead of opaque string expressions)
-makes policies statically inspectable — you can answer *"which policies
-apply to this JWT?"* without actually evaluating a request.
-
 ### Column classifications (Sec-I)
 
 Declare sensitivity classes; roles opt in or bypass by class rather than
@@ -435,18 +519,6 @@ resource attributes) to OPA/Cedar/custom; the PDP returns
 `{ allowed, filters, masks }`. This is the architecture Stripe, Netflix,
 Goldman, and every Kubernetes cluster use for authz. When no `pdp` is
 configured, the built-in engine decides locally.
-
-### Deny rules (Sec-G)
-
-OR semantics cannot express *"contractors never see salary, even if they're
-also analysts."* First-class `deny:` with highest precedence:
-
-```yaml
-- name: contractor_deny
-  when: "'contractors' in jwt.groups"
-  deny:
-    customers: [salary, ssn]
-```
 
 ### Hot reload, policy test harness, query allow-list, decision log
 

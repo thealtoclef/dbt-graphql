@@ -22,7 +22,6 @@ priority places them.
 | P1 | Source Node Inclusion (`catalog.sources`) | 🔲 Pending |
 | P1 | Hot reload of `access.yml` | 🔲 Planned |
 | P1 | Policy test harness + `policy explain` CLI | 🔲 Planned |
-| P2 | ABAC `match:` clauses + deny rules | 🔲 Planned |
 | P2 | Column classifications | 🔲 Planned |
 | P3 | Python extension hooks (Superset-style overrides file) | 🔲 Placeholder |
 | ✅ | dbt-colibri delegation | Done |
@@ -32,6 +31,7 @@ priority places them.
 | ✅ | Config-driven CLI + HTTP MCP transport | Done |
 | ✅ | Identity & JWT Auth | Done |
 | ✅ | RBAC + Column-Level Security | Done |
+| ✅ | Allow / Deny effect (IAM-style precedence) | Done |
 | ✅ | Row-Level Security | Done |
 | ✅ | Data Masking | Done |
 | ✅ | Structured row-filter DSL | Done |
@@ -342,44 +342,6 @@ dbt-graphql policy test         # runs inline tests, CI-friendly exit code
 
 ## P2 — Later
 
-### ABAC `match:` clauses + deny rules (Sec-G)
-
-**Motivation:** Today's `when:` is an opaque Python-style string. SOTA
-authz engines (OPA, Cedar, Hasura metadata) express conditions as a
-**structured attribute-based** tree so policies are statically inspectable
-(*"which policies could apply to this JWT?"*) and machine-testable. Also:
-permissive-OR semantics cannot express "contractors never see salary, even
-if they are also analysts" — deny rules with highest precedence fix that.
-
-**Policy additions:**
-```yaml
-- name: analyst
-  match:
-    all:
-      - { jwt.groups: { contains: analysts } }
-      - { jwt.claims.level: { gte: 3 } }
-  tables: { ... }
-
-- name: contractor_deny
-  match:
-    all: [ { jwt.groups: { contains: contractors } } ]
-  deny:
-    customers: [salary, ssn]   # hard deny, overrides all allow rules
-```
-
-**Behavior:** `match:` coexists with the existing `when:` string for two
-releases, then `when:` is deprecated. Both compile to the same
-`MatchTree` AST used by the engine and by the test harness.
-
-| Item | Status |
-|---|---|
-| `MatchTree` AST + compiler for both `when:` and `match:` | 🔲 |
-| Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `contains`, `exists`, `and`, `or`, `not` | 🔲 |
-| `deny:` rules (highest precedence, short-circuits OR merge) | 🔲 |
-| Deprecation warning for string `when:` on load | 🔲 |
-
----
-
 ### Column classifications (Sec-I)
 
 **Motivation:** Today a mask rule lives on every `policy × table × column`
@@ -628,6 +590,34 @@ selection cannot bypass deny / strict / mask / row-filter.
 | Nested-relation policy enforcement (columns / masks / row filters) | ✅ |
 | Structured GraphQL error extensions (`code`, `table`, `columns`) | ✅ |
 | `--policy PATH` CLI override of `config.security.policy_path` | 🔲 |
+
+---
+
+### Allow / Deny effect (Sec-G)
+
+Each `PolicyEntry` carries a required `effect: allow | deny` field —
+the standard XACML / AWS IAM convention (`Allow`/`Deny`), synonymous
+with Cedar's `permit`/`forbid` and SQL Server's `GRANT`/`DENY`. Allows
+merge OR-style; denies take precedence (deny always wins). Allow rules
+declare `column_level` and/or `row_filter`; deny rules declare
+`deny_all` (full table) and/or `deny_columns` (column subtraction).
+Mixing the two field sets in one entry fails policy load.
+
+**Reference:** [`docs/access-policy.md`](docs/access-policy.md) §
+*`effect`*.
+
+The motivation is cross-cutting prohibitions like *"contractors never
+see PII even if they're also analysts"* — a guard that's impossible to
+keep correct when written into every allow rule's `when` clause but
+trivial as a single deny rule.
+
+| Item | Status |
+|---|---|
+| `Effect` enum + required `effect` field on `PolicyEntry` | ✅ |
+| `deny_all` / `deny_columns` fields on `TablePolicy` | ✅ |
+| Effect-vs-fields validator (rejects mixed shapes at load) | ✅ |
+| Engine: deny short-circuit on full-table denial; column subtraction; mask drop | ✅ |
+| Load-time `deny_columns` validation against `TableRegistry` | ✅ |
 
 ---
 

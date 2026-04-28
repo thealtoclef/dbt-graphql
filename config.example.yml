@@ -117,28 +117,46 @@ serve:
 #
 #   # Access policies - Each entry's `when` is a simpleeval expression
 #   # against `jwt`; `tables` declares per-table column/row rules. Multiple
-#   # entries are merged OR-style (most-permissive wins for columns/rows;
+#   # matching entries merge OR-style (most-permissive wins for columns/rows;
 #   # masks must agree across matching policies). Default-deny: any table
-#   # not listed under a matching policy raises FORBIDDEN_TABLE.
+#   # not listed under a matching allow rule raises FORBIDDEN_TABLE.
+#   #
+#   # `effect` (REQUIRED, no default — XACML / AWS IAM convention):
+#   #   allow - additive grant. `tables[*]` uses column_level and/or row_filter.
+#   #   deny  - subtractive prohibition; precedence over every allow.
+#   #           `tables[*]` uses deny_all and/or deny_columns.
+#   #
+#   # Evaluation:
+#   #   1. Allows merge into a single ResolvedPolicy (union of columns, OR
+#   #      of row filters, agreement-only masks).
+#   #   2. Any matching deny with `deny_all: true` short-circuits to
+#   #      FORBIDDEN_TABLE — even if an allow would have granted access.
+#   #   3. `deny_columns` from every matching deny are subtracted from the
+#   #      allowed set and added to blocked_columns; the strict-column check
+#   #      then rejects queries that select them.
 #   #
 #   # `when` operators: and, or, not, in, not in, ==, !=, >=, <=, >, <
 #   # jwt fields: jwt.sub, jwt.email, jwt.groups (list), jwt.claims.<key>
 #   #
-#   # column_level:
+#   # column_level (allow-effect only):
 #   #   include_all (bool)  - allow all columns; mutually exclusive with includes
 #   #   includes (list)     - explicit column allow-list
 #   #   excludes (list)     - columns to strip from results
 #   #   mask (dict)         - col: "SQL expression" referencing the column directly;
 #   #                         use ~ (YAML null) to emit SQL NULL
 #   #
-#   # row_filter (mapping)  - structured boolean DSL.
+#   # row_filter (allow-effect only) - structured boolean DSL.
 #   #   Logical ops: _and, _or, _not.
 #   #   Comparison: _eq, _ne, _lt, _lte, _gt, _gte, _in, _is_null.
 #   #   RHS values are literals or { jwt: "<dotted.path>" } references.
+#   #
+#   # deny_all (deny-effect only)     - bool; deny the whole table.
+#   # deny_columns (deny-effect only) - list[str]; deny named columns.
 #   policies:
 #     # Full access — data admins see everything with no row restrictions.
 #     # Table wildcards aren't supported; list each table explicitly.
 #     - name: admin
+#       effect: allow
 #       when: "'data-admins' in jwt.groups"
 #       tables:
 #         orders:
@@ -150,6 +168,7 @@ serve:
 #
 #     # Analysts see their org's data; PII columns are masked.
 #     - name: analyst
+#       effect: allow
 #       when: "'analysts' in jwt.groups"
 #       tables:
 #         orders:
@@ -173,6 +192,7 @@ serve:
 #
 #     # Finance team — row-restricted to their region; level gate.
 #     - name: finance
+#       effect: allow
 #       when: "'finance' in jwt.groups and jwt.claims.level >= 3"
 #       tables:
 #         orders:
@@ -182,6 +202,7 @@ serve:
 #
 #     # Unauthenticated users see only the public product catalogue.
 #     - name: anon
+#       effect: allow
 #       when: "jwt.sub == None"
 #       tables:
 #         products:
@@ -189,6 +210,17 @@ serve:
 #             includes: [product_id, name, category, price]
 #           row_filter:
 #             published: { _eq: true }
+#
+#     # Cross-cutting deny: contractors never see PII on customers, regardless
+#     # of which other groups they're in. Deny precedence > any allow.
+#     - name: contractors_no_pii
+#       effect: deny
+#       when: "'contractors' in jwt.groups"
+#       tables:
+#         customers:
+#           deny_columns: [email, phone, ssn]
+#         orders:
+#           deny_all: true                    # contractors can't read orders at all
 
 # -----------------------------------------------------------------------------
 # cache (optional) — result cache + singleflight between HTTP and the warehouse.
