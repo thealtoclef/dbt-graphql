@@ -139,6 +139,44 @@ class TestQueryShape:
         errors = _validate(q, max_depth=3, max_fields=50)
         assert MAX_DEPTH_CODE in _codes(errors)
 
+    def test_introspection_fragment_skips_depth_check(self):
+        # GraphiQL / Apollo-Studio introspection queries declare fragments on
+        # ``__Type`` and recursively spread ``ofType`` to ~8 levels. The walk
+        # is over the meta-schema, not user data — depth must not apply.
+        q = """
+            query IntrospectionQuery {
+              __schema {
+                types { ...FullType }
+              }
+            }
+            fragment FullType on __Type {
+              kind
+              name
+              fields { type { ...TypeRef } }
+            }
+            fragment TypeRef on __Type {
+              kind
+              name
+              ofType {
+                kind
+                name
+                ofType { kind name ofType { kind name ofType { kind name } } }
+              }
+            }
+        """
+        assert _validate(q, max_depth=5, max_fields=50) == []
+
+    def test_data_fragment_still_subject_to_depth(self):
+        # A fragment on a non-introspection type must still be walked.
+        q = """
+            query Q { customers { ...Deep } }
+            fragment Deep on Customer {
+              orders { line_items { product { supplier { warehouse { name } } } } }
+            }
+        """
+        errors = _validate(q, max_depth=3, max_fields=50)
+        assert MAX_DEPTH_CODE in _codes(errors)
+
     def test_invalid_syntax_is_caller_responsibility(self):
         # Validation rules don't catch parse errors — graphql-core's parse()
         # raises before the rules run. Guards are only for well-formed docs.

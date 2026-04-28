@@ -37,9 +37,9 @@ Standard GraphQL `IntrospectionQuery` only exposes a fixed set of fields on `__T
 
 - **Primary keys** are emitted with the built-in `ID` scalar — no custom `@id` directive is needed. `ID` is wire-compatible with `String` per the spec.
 - **dbt descriptions** on tables and columns are emitted as triple-quoted blocks above the type / field, so they show up directly in `__Type.description` and `__Field.description`.
-- **`@masked` / `@filtered`** are declared directives carried in the printed `db.graphql` artefact only. They will be set per principal once policy-aware introspection is wired (see `docs/policy-aware-introspection-plan.md`); today the flags exist on `ColumnDef.masked` / `TableDef.filtered` as scaffolding and are not populated at runtime.
+- **`@masked` / `@filtered`** are emitted in the printed `db.graphql` artefact when the corresponding flags are set. They will be set per principal once policy-aware introspection is wired (see `docs/policy-aware-introspection-plan.md`); today `ColumnDef.masked` / `TableDef.filtered` exist as scaffolding and are not populated at runtime.
 
-The remaining custom directives (`@table`, `@column`, `@relation`, `@unique`) appear only in the printed `db.graphql` artefact (`--output` mode); they do not reach introspection clients. The introspection-carrier decision for those is tracked in the plan doc above.
+The remaining custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) appear only in the printed `db.graphql` artefact (`--output` mode); they do not reach introspection clients. The introspection-carrier decision for surfacing these signals to standard introspection is tracked in the plan doc above.
 
 ---
 

@@ -130,6 +130,14 @@ def make_query_guard_rules(
         def enter_fragment_definition(
             self, node: FragmentDefinitionNode, *_: object
         ) -> None:
+            # Introspection fragments (e.g. `fragment TypeRef on __Type`)
+            # walk the meta-schema graph, not the data graph: the recursive
+            # ``__Type.ofType`` chain hits arbitrary depth even though no
+            # user-data is touched. Skip entirely when the type condition
+            # names an introspection type.
+            type_name = node.type_condition.name.value
+            if type_name.startswith("__"):
+                return
             self._check(node, node.selection_set)
 
         def _check(self, node: object, sel: SelectionSetNode | None) -> None:

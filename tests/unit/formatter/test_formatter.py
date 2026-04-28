@@ -54,17 +54,17 @@ class TestDbGraphQL:
         assert "type stg_orders" not in gj.db_graphql
         assert "type customers" in gj.db_graphql
 
-    def test_starts_with_directive_declarations(self):
+    def test_starts_without_directive_declarations(self):
         project = _make_project()
         gj = format_graphql(project)
-        first_line = gj.db_graphql.splitlines()[0]
-        assert first_line.startswith("directive @")
+        # First non-empty line is either a description block or a type.
+        first_line = next(ln for ln in gj.db_graphql.splitlines() if ln.strip())
+        assert not first_line.lstrip().startswith("directive ")
 
-    def test_declares_masked_and_filtered_directives(self):
+    def test_no_directive_declarations(self):
         project = _make_project()
         gj = format_graphql(project)
-        assert "directive @masked on FIELD_DEFINITION" in gj.db_graphql
-        assert "directive @filtered on OBJECT" in gj.db_graphql
+        assert "directive @" not in gj.db_graphql
 
 
 def _sdl_col(
@@ -257,14 +257,7 @@ class TestNoRelationships:
         assert len(project.relationships) == 0
 
         gj = format_graphql(project)
-        # The directive *declaration* lives at the head of every SDL.
-        # What must be absent is any *applied* @relation directive on a field.
-        applied_lines = [
-            ln
-            for ln in gj.db_graphql.splitlines()
-            if "@relation(" in ln and not ln.lstrip().startswith("directive ")
-        ]
-        assert applied_lines == []
+        assert "@relation" not in gj.db_graphql
 
 
 class TestTableDirectives:

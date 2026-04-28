@@ -147,23 +147,10 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
 # ---------------------------------------------------------------------------
 
 
-_DIRECTIVE_DECLARATIONS = """\
-directive @table(database: String, schema: String, name: String) on OBJECT
-directive @column(type: String!, size: String) on FIELD_DEFINITION
-directive @unique on FIELD_DEFINITION
-directive @relation(
-  type: String!, field: String, fields: [String!], toFields: [String!],
-  origin: String, confidence: String, name: String, description: String
-) on FIELD_DEFINITION
-directive @masked on FIELD_DEFINITION
-directive @filtered on OBJECT
-"""
-
-
 def _registry_to_sdl(registry: TableRegistry) -> str:
     """Serialise a TableRegistry to db.graphql SDL format."""
     blocks = [_table_to_sdl(t) for t in registry]
-    return _DIRECTIVE_DECLARATIONS + "\n" + "\n".join(blocks).rstrip() + "\n"
+    return "\n".join(blocks).rstrip() + "\n"
 
 
 def _description_block(text: str, indent: str = "") -> str:
