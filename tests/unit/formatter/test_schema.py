@@ -11,7 +11,7 @@ type customers @table(database: mydb, schema: main, name: customers) {
 }
 
 type orders @table(database: mydb, schema: main, name: orders) {
-  order_id: Integer! @column(type: "INTEGER") @id
+  order_id: ID! @column(type: "INTEGER")
   customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, field: customer_id)
   order_date: Date @column(type: "DATE")
   status: Varchar @column(type: "VARCHAR")

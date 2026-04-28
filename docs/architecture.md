@@ -76,7 +76,7 @@ A few opinions shaped the code. When in doubt, these are the tiebreakers.
 
 ### 3.1 The dbt project is the source of truth
 
-We do not ask users to author a second modeling layer. If dbt has a `relationships` test, it is an edge in the graph. If dbt has a `unique` test, it is a `@unique` directive. If dbt has `primary_key` constraints, it is `@id`. The cost of adopting dbt-graphql is approximately zero beyond "keep your dbt project clean."
+We do not ask users to author a second modeling layer. If dbt has a `relationships` test, it is an edge in the graph. If dbt has a `unique` test, it is a `@unique` directive. If dbt has `primary_key` constraints, they are emitted as the built-in `ID` scalar. The cost of adopting dbt-graphql is approximately zero beyond "keep your dbt project clean."
 
 Consequence: dbt-graphql **cannot** invent metadata the dbt project doesn't have. Missing descriptions stay missing. Missing relationships stay missing. The tool's correctness is bounded by the quality of your dbt project.
 
@@ -149,7 +149,7 @@ Steps 1–2 only, then `_registry_to_sdl()` writes `db.graphql` and `build_linea
 
 ## 6. Cross-cutting design notes
 
-1. **Directives encode metadata the SDL readers need.** `@column`, `@id`, `@unique`, `@relation`, `@table` — together they make `db.graphql` self-sufficient at runtime.
+1. **Directives encode metadata the SDL readers need.** `@column`, `@unique`, `@relation`, `@table` — together they make `db.graphql` self-sufficient at runtime.
 2. **Correlated subqueries over LATERAL.** Portable to Apache Doris and older engines. See [compiler.md § 2](compiler.md#2-why-correlated-subqueries-not-lateral-joins).
 3. **Standard scalars + `@column`.** Familiar GraphQL types, exact warehouse types preserved in directives. See principle 3.4.
 4. **Next-steps hint pattern.** Each MCP tool response includes `_meta.next_steps`. See [mcp.md](mcp.md).

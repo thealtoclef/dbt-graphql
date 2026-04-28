@@ -55,7 +55,7 @@ Four Pydantic models carry the full dbt semantics into the rest of the system:
 
 Two deliberate choices:
 
-- **`primary_keys` lives on the model, not on columns.** A primary key is a table-level constraint. Storing PK membership per-column would duplicate information and invite drift. When the formatter needs to decide whether a column gets `@id`, it asks `len(model.primary_keys) == 1 and col.name in model.primary_keys`.
+- **`primary_keys` lives on the model, not on columns.** A primary key is a table-level constraint. Storing PK membership per-column would duplicate information and invite drift.
 - **`type` is required, no default.** An empty `type` produces a broken SDL. Required-at-construction surfaces the problem at the source.
 
 ### Lineage types
@@ -168,7 +168,6 @@ type orders @table(database: "mydb", schema: "public", name: "orders") {
 For each column:
 
 - `@column(type: "...", size: "...")` — **always present.** Preserves the raw SQL type and any size/precision.
-- `@id` — only on a *sole-column* primary key. Composite PK parts do not get `@id`.
 - `@unique` — column has a `unique` test and is not already the sole PK.
 - `@relation(type: TargetModel, field: target_col)` — foreign key.
 

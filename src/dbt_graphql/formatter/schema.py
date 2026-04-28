@@ -162,9 +162,7 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
 
     for directive in field_node.directives or []:
         dname = directive.name.value
-        if dname == "id":
-            col.is_pk = True
-        elif dname == "unique":
+        if dname == "unique":
             col.is_unique = True
         elif dname == "masked":
             col.masked = True
