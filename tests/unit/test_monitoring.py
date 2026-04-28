@@ -18,6 +18,8 @@ def _make_otel_mocks():
         "opentelemetry.sdk.resources": sdk_resources,
         "opentelemetry.sdk.trace": MagicMock(),
         "opentelemetry.sdk.trace.export": MagicMock(),
+        "opentelemetry.instrumentation": MagicMock(),
+        "opentelemetry.instrumentation.httpx": MagicMock(),
     }
 
 

@@ -501,7 +501,7 @@ The two primary references for the policy engine:
 | `build_registry(project)` — direct `ProjectInfo → TableRegistry` (no SDL roundtrip) | ✅ |
 | `GraphQLBundle` shared with MCP (same schema, same per-request context) | ✅ |
 | Streamable HTTP MCP transport via FastMCP | ✅ |
-| Single `serve.run()` Granian entry — GraphQL always, MCP opt-in | ✅ |
+| Single `serve.run()` uvicorn entry — GraphQL always, MCP opt-in | ✅ |
 | Unified auth + policy for GraphQL and MCP (`run_graphql` tool replaces raw SQL) | ✅ |
 | `api`/`mcp` optional extras collapsed into core deps | ✅ |
 | `redis` optional extra for Redis cache backend | ✅ |

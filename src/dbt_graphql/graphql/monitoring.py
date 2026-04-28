@@ -98,11 +98,59 @@ def instrument_sqlalchemy(engine) -> None:
     SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
 
 
+_http_status_counter = None
+
+
+def _get_http_status_counter():
+    """Lazy-init HTTP status code counter."""
+    global _http_status_counter
+    if _http_status_counter is None:
+        from opentelemetry import metrics
+
+        _meter = metrics.get_meter("dbt_graphql.http")
+        _http_status_counter = _meter.create_counter(
+            name="http.server.responses",
+            description="HTTP response count by status code",
+            unit="1",
+        )
+    return _http_status_counter
+
+
 def instrument_starlette(app) -> None:
-    """Attach Starlette OTel instrumentation to the app."""
+    """Attach Starlette OTel instrumentation to the app.
+
+    Adds a response counter by status code on top of the standard
+    ``http.server.duration`` histogram and ``http.server.active_requests``
+    counter that ``StarletteInstrumentor`` emits automatically.
+    """
     from opentelemetry.instrumentation.starlette import StarletteInstrumentor
 
-    StarletteInstrumentor().instrument_app(app)
+    status_counter = _get_http_status_counter()
+
+    def _client_response_hook(span, scope, event):
+        # The hook fires for every ASGI send (http.response.start, .body, …);
+        # only response.start carries `status`, so anything else would
+        # falsely register as 200.
+        if event.get("type") != "http.response.start":
+            return
+        status_code = event.get("status")
+        if not isinstance(status_code, int):
+            return
+        if 200 <= status_code < 300:
+            status_group = "2xx"
+        elif 400 <= status_code < 500:
+            status_group = "4xx"
+        elif 500 <= status_code < 600:
+            status_group = "5xx"
+        else:
+            status_group = f"{status_code // 100}xx"
+        status_counter.add(
+            1, {"http.status_code": status_code, "http.status_group": status_group}
+        )
+
+    StarletteInstrumentor().instrument_app(
+        app, client_response_hook=_client_response_hook
+    )
 
 
 def build_graphql_http_handler():

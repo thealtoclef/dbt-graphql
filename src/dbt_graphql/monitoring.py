@@ -223,10 +223,15 @@ def configure_monitoring(config: MonitoringConfig | None = None) -> None:
             MeterProvider(resource=resource, metric_readers=[reader])
         )
 
-    # 5. Loguru patcher: inject trace context into every log record
+    # 5. HTTPX instrumentation — trace all outbound HTTP calls (JWKS fetches, etc.)
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    HTTPXClientInstrumentor().instrument()
+
+    # 6. Loguru patcher: inject trace context into every log record
     _instrument_loguru()
 
-    # 6. OTLP log sink (only when endpoint configured; stderr sink always runs)
+    # 7. OTLP log sink (only when endpoint configured; stderr sink always runs)
     if config.logs.endpoint:
         _add_otlp_log_sink(config, resource)
 

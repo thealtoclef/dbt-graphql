@@ -17,7 +17,7 @@ dbt-graphql --config config.yml [--output DIR]
 
 **Generate mode** (`--output` present): parse dbt artifacts, write schema files, exit. No database connection required.
 
-**Serve mode** (no `--output`): parse dbt artifacts, then start the server. GraphQL is always mounted at `/graphql`. MCP additionally mounts at `/mcp` when `serve.mcp_enabled: true`. Both share one Granian process, one JWT auth middleware, and one access policy.
+**Serve mode** (no `--output`): parse dbt artifacts, then start the server. GraphQL is always mounted at `/graphql`. MCP additionally mounts at `/mcp` when `serve.mcp_enabled: true`. Both share one uvicorn process, one JWT auth middleware, and one access policy.
 
 ---
 
@@ -76,7 +76,7 @@ HTTP server bind config. Required when running in serve mode.
 | `mcp_enabled` | bool | `false` | Mount the MCP server at `/mcp` (Streamable HTTP) in addition to GraphQL. Off by default — opt in to expose schema discovery + `run_graphql` to LLM agents. |
 | `graphql_introspection` | bool | `false` | Allow GraphQL schema introspection queries. **Off by default** — production should keep it off so the schema isn't enumerable. Enable in dev for tooling like GraphQL Playground / Apollo Studio. |
 
-GraphQL is always mounted at `/graphql` in serve mode. When `mcp_enabled: true`, the MCP server co-mounts at `/mcp` under the same Granian process — sharing the JWT auth middleware, the connection pool, and the access policy. The MCP `run_graphql` tool re-executes queries through the same engine, so column allow-lists, masks, and row filters apply uniformly to both transports.
+GraphQL is always mounted at `/graphql` in serve mode. When `mcp_enabled: true`, the MCP server co-mounts at `/mcp` under the same uvicorn process — sharing the JWT auth middleware, the connection pool, and the access policy. The MCP `run_graphql` tool re-executes queries through the same engine, so column allow-lists, masks, and row filters apply uniformly to both transports.
 
 ### Operating the pool admission 503
 

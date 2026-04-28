@@ -23,6 +23,16 @@ _pool_wait_hist = _meter.create_histogram(
     description="Time spent waiting on pool checkout (ms)",
     unit="ms",
 )
+_query_duration_hist = _meter.create_histogram(
+    name="db.client.queries.duration",
+    description="SQL query execution time (ms)",
+    unit="ms",
+)
+_query_counter = _meter.create_counter(
+    name="db.client.queries.count",
+    description="Total number of SQL queries executed",
+    unit="1",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -104,36 +114,44 @@ class DatabaseManager:
         """Execute a SQLAlchemy Core selectable and return rows as dicts."""
         if self._engine is None:
             raise RuntimeError("DatabaseManager is not connected")
-        start = time.perf_counter()
+        pool_start = time.perf_counter()
+        query_start = time.perf_counter()
+        _query_counter.add(1, {"db.type": self.dialect_name})
         try:
             async with self._engine.connect() as conn:
-                _pool_wait_hist.record(
-                    (time.perf_counter() - start) * 1000, {"outcome": "acquired"}
-                )
+                pool_wait_ms = (time.perf_counter() - pool_start) * 1000
+                _pool_wait_hist.record(pool_wait_ms, {"outcome": "acquired"})
                 result = await conn.execute(query)
+                query_duration_ms = (time.perf_counter() - query_start) * 1000
+                _query_duration_hist.record(
+                    query_duration_ms, {"db.type": self.dialect_name}
+                )
                 return [dict(row._mapping) for row in result]
         except SAPoolTimeoutError:
-            _pool_wait_hist.record(
-                (time.perf_counter() - start) * 1000, {"outcome": "timeout"}
-            )
+            pool_wait_ms = (time.perf_counter() - pool_start) * 1000
+            _pool_wait_hist.record(pool_wait_ms, {"outcome": "timeout"})
             raise
 
     async def execute_text(self, sql: str) -> list[dict]:
         """Execute a raw SQL string and return rows as dicts."""
         if self._engine is None:
             raise RuntimeError("DatabaseManager is not connected")
-        start = time.perf_counter()
+        pool_start = time.perf_counter()
+        query_start = time.perf_counter()
+        _query_counter.add(1, {"db.type": self.dialect_name})
         try:
             async with self._engine.connect() as conn:
-                _pool_wait_hist.record(
-                    (time.perf_counter() - start) * 1000, {"outcome": "acquired"}
-                )
+                pool_wait_ms = (time.perf_counter() - pool_start) * 1000
+                _pool_wait_hist.record(pool_wait_ms, {"outcome": "acquired"})
                 result = await conn.execute(text(sql))
+                query_duration_ms = (time.perf_counter() - query_start) * 1000
+                _query_duration_hist.record(
+                    query_duration_ms, {"db.type": self.dialect_name}
+                )
                 return [dict(row._mapping) for row in result]
         except SAPoolTimeoutError:
-            _pool_wait_hist.record(
-                (time.perf_counter() - start) * 1000, {"outcome": "timeout"}
-            )
+            pool_wait_ms = (time.perf_counter() - pool_start) * 1000
+            _pool_wait_hist.record(pool_wait_ms, {"outcome": "timeout"})
             raise
 
     @property

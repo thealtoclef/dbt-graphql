@@ -1,8 +1,8 @@
 # GraphQL HTTP API
 
-The HTTP interface for running GraphQL queries against the warehouse. Built on Starlette + Ariadne, served via Granian (Rust ASGI).
+The HTTP interface for running GraphQL queries against the warehouse. Built on Starlette + Ariadne, served via uvicorn.
 
-**Source:** [`src/dbt_graphql/graphql/`](../src/dbt_graphql/graphql/) (sub-app + resolvers + auth + policy) and [`src/dbt_graphql/serve/`](../src/dbt_graphql/serve/) (Starlette composition + Granian runner)
+**Source:** [`src/dbt_graphql/graphql/`](../src/dbt_graphql/graphql/) (sub-app + resolvers + auth + policy) and [`src/dbt_graphql/serve/`](../src/dbt_graphql/serve/) (Starlette composition + uvicorn runner)
 
 The SQL compilation engine lives in [compiler.md](compiler.md). This document covers the HTTP layer: schema assembly, lifecycle, resolvers, auth, and observability.
 
@@ -42,7 +42,7 @@ The `@asynccontextmanager` lifespan:
 1. Enters the MCP app's lifespan (if co-mounted) via `AsyncExitStack`.
 2. Connects `DatabaseManager` (only if GraphQL is enabled) and instruments the SQLAlchemy engine with OTel.
 3. Sets up the result cache (if configured).
-4. Yields — Granian serves requests.
+4. Yields — uvicorn serves requests.
 5. Tears down in reverse order on shutdown.
 
 State that resolvers need (`TableRegistry`, `DatabaseManager`, JWT payload, `PolicyEngine`, `CacheConfig`) is passed through `info.context` — never captured in closures, never module-global.
@@ -73,18 +73,29 @@ See [security.md](security.md) for the full JWT configuration reference and key-
 
 ## 5. Observability
 
-OTel is bundled with `dbt-graphql[api]`. Three layers activate automatically:
+OTel is bundled with `dbt-graphql`. Four auto-instrumentation layers activate automatically:
 
-- **Starlette** (`opentelemetry-instrumentation-starlette`) — HTTP request spans.
+- **Starlette/ASGI** (`opentelemetry-instrumentation-starlette`, which wraps `opentelemetry-instrumentation-asgi`) — HTTP request spans, plus the standard ASGI metrics (`http.server.duration`, `http.server.active_requests`, request/response size histograms).
+- **httpx** (`opentelemetry-instrumentation-httpx`) — outbound HTTP spans (e.g. JWKS key fetches).
 - **Ariadne** (`ariadne.contrib.tracing.opentelemetry.OpenTelemetryExtension`) — GraphQL operation and per-resolver spans.
-- **SQLAlchemy** (`opentelemetry-instrumentation-sqlalchemy`) — per-query spans, attached to the engine after connect.
+- **SQLAlchemy** (`opentelemetry-instrumentation-sqlalchemy`) — per-query spans (engine pool depth is auto-emitted via `db.client.connections.usage`).
 
-Configure via the `monitoring` block in `config.yml` (see [configuration.md](configuration.md)).
+Additionally, custom metrics are emitted by application code:
+
+- `graphql.operation.count` / `graphql.operation.duration` / `graphql.operation.errors` — per operation, recorded by `GraphQLMetricsExtension`.
+- `db.client.connections.wait_time` — pool checkout wait time, recorded in `DatabaseManager`.
+- `db.client.queries.count` / `db.client.queries.duration` — per SQL query, recorded in `DatabaseManager`.
+- `http.server.responses` — HTTP response count grouped by status code (2xx/4xx/5xx), recorded via the Starlette response hook.
+- `jwt.verification.outcomes` — JWT verification results.
+- `cache.result.outcomes` — cache hit/miss/error.
+- `mcp.tool.calls` / `mcp.tool.duration` — per MCP tool, recorded by the `_instrument_tool` wrapper.
+
+See [configuration.md](configuration.md) for the `monitoring` block reference.
 
 ---
 
 ## 6. Co-mounting with MCP
 
-GraphQL is always mounted at `/graphql` in serve mode. When `serve.mcp_enabled: true` in config, the MCP HTTP app is co-mounted at `/mcp` under the same Starlette + Granian process. The MCP app's lifespan is composed into the Starlette lifespan via `AsyncExitStack`; the same `AuthenticationMiddleware` runs above both mounts and the same OTel instrumentation covers both endpoints.
+GraphQL is always mounted at `/graphql` in serve mode. When `serve.mcp_enabled: true` in config, the MCP HTTP app is co-mounted at `/mcp` under the same Starlette + uvicorn process. The MCP app's lifespan is composed into the Starlette lifespan via `AsyncExitStack`; the same `AuthenticationMiddleware` runs above both mounts and the same OTel instrumentation covers both endpoints.
 
 `create_app` passes the `GraphQLBundle` into the MCP factory so the MCP `run_graphql` tool re-executes queries through the same Ariadne schema with the same per-request context — column allow-lists, masks, and row filters apply structurally to MCP traffic the same way they do to direct GraphQL. See [mcp.md § Authorization model](mcp.md#authorization-model).

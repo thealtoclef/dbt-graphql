@@ -1,4 +1,4 @@
-"""Single Granian entry point for the unified ASGI app."""
+"""Single uvicorn entry point for the unified ASGI app."""
 
 from __future__ import annotations
 
@@ -20,14 +20,12 @@ def run(
     project,
     access_policy: AccessPolicy | None = None,
 ) -> None:
-    """Build the ASGI app and run it under Granian.
+    """Build the ASGI app and run it under uvicorn.
 
     GraphQL always mounts at ``/graphql``. MCP additionally mounts at
     ``/mcp`` when ``config.serve.mcp_enabled`` is true.
     """
-    from granian import Granian
-    from granian.constants import Interfaces
-    from granian.log import LogLevels
+    import uvicorn
 
     if config.serve is None:
         raise ValueError("config.serve is required to run the serve layer")
@@ -53,15 +51,14 @@ def run(
 
     host = config.serve.host
     port = config.serve.port
-    log_level = LogLevels(config.monitoring.logs.level.lower())
+    log_level = config.monitoring.logs.level.lower()
 
     endpoints = "/graphql" + (" + /mcp" if config.serve.mcp_enabled else "")
     logger.info("listening on http://{}:{} — serving {}", host, port, endpoints)
 
-    Granian(
-        target=f"{__name__}:_asgi_app",
-        address=host,
+    uvicorn.run(
+        app=f"{__name__}:_asgi_app",
+        host=host,
         port=port,
-        interface=Interfaces.ASGI,
         log_level=log_level,
-    ).serve()
+    )

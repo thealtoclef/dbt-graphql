@@ -163,7 +163,7 @@ Special value: **`ttl: 0` = realtime + minimal coalescing window.** The cache st
 | Burst of distinct queries → warehouse pool exhaustion | **Not mitigated.** SQLAlchemy pool sizing applies; the (N+1)th request blocks on pool checkout. Acceptable: clients see latency, server stays up. |
 | Slow client + long warehouse query → connection held | Asyncio handles thousands of idle waiters cheaply. Client timeout is the client's responsibility. |
 | Lock-holder crash mid-query | `lock_safety_timeout` (default `10`) auto-releases the lock. |
-| Memory growth from queued waiters | Bounded by the HTTP server's max in-flight requests (Granian's worker concurrency). |
+| Memory growth from queued waiters | Bounded by the HTTP server's max in-flight requests (uvicorn's worker / event-loop concurrency). |
 | Cache poisoning via crafted JWT | Key embeds bound row-filter values directly (§ 4). |
 
 **Tuning the lock safety timeout.** Two constraints:

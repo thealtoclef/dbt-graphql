@@ -31,7 +31,7 @@ dbt-graphql --config config.yml
 
 GraphQL is always mounted at `/graphql` in serve mode. Set
 `serve.mcp_enabled: true` in `config.yml` to additionally co-mount the
-MCP server at `/mcp`. Both transports share one Granian process, one
+MCP server at `/mcp`. Both transports share one uvicorn process, one
 JWT auth middleware, one connection pool, and one access policy — the
 MCP `run_graphql` tool runs through the same engine, so column
 allow-lists, masks, and row filters apply uniformly to both.

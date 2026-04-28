@@ -64,7 +64,7 @@ There is no raw-SQL tool. `run_graphql` is the only data-read tool, by design â€
 
 ## Transport
 
-The MCP server uses **Streamable HTTP transport** (FastMCP's default). It mounts at `/mcp` when `serve.mcp_enabled: true` in `config.yml`, alongside the always-on GraphQL endpoint at `/graphql`. Both share one Granian process, one auth middleware, and one connection pool.
+The MCP server uses **Streamable HTTP transport** (FastMCP's default). It mounts at `/mcp` when `serve.mcp_enabled: true` in `config.yml`, alongside the always-on GraphQL endpoint at `/graphql`. Both share one uvicorn process, one auth middleware, and one connection pool.
 
 MCP input arrives as `POST /mcp`; server-to-client events stream via `GET /mcp` (SSE).
 

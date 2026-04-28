@@ -132,7 +132,7 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
     """DBT_GRAPHQL__ENRICHMENT__BUDGET env var must override config.yml enrichment.budget."""
     import dbt_graphql.compiler.connection as conn_mod
     import dbt_graphql.mcp.server as mcp_server_mod
-    import granian as granian_mod
+    import uvicorn
 
     captured = {}
 
@@ -144,15 +144,11 @@ def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
 
         return _factory
 
-    class _FakeGranian:
-        def __init__(self, **_kw):
-            pass
-
-        def serve(self):
-            raise SystemExit(0)
+    def _fake_uvicorn_run(**_kw):
+        raise SystemExit(0)
 
     monkeypatch.setattr(mcp_server_mod, "build_mcp_factory", _fake_build_mcp_factory)
-    monkeypatch.setattr(granian_mod, "Granian", _FakeGranian)
+    monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
     monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
     monkeypatch.setenv("DBT_GRAPHQL__ENRICHMENT__BUDGET", "7")
 
@@ -178,16 +174,12 @@ def test_cli_warns_when_security_disabled(tmp_path, monkeypatch, capsys):
     """
     from dbt_graphql import cli as cli_mod
     from dbt_graphql.compiler import connection as conn_mod
-    import granian as granian_mod
+    import uvicorn
 
-    class _FakeGranian:
-        def __init__(self, **_kw):
-            pass
+    def _fake_uvicorn_run(**_kw):
+        raise SystemExit(0)
 
-        def serve(self):
-            raise SystemExit(0)
-
-    monkeypatch.setattr(granian_mod, "Granian", _FakeGranian)
+    monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
     monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
 
     config_file = tmp_path / "config.yml"

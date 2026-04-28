@@ -87,7 +87,55 @@ class TestInstrumentStarlette:
             reload(tel)
             tel.instrument_starlette(app)
 
-        mock_instrumentor.instrument_app.assert_called_once_with(app)
+        mock_instrumentor.instrument_app.assert_called_once()
+        call_args = mock_instrumentor.instrument_app.call_args
+        assert call_args.args == (app,)
+        assert "client_response_hook" in call_args.kwargs
+        assert callable(call_args.kwargs["client_response_hook"])
+
+    def test_response_hook_counts_only_response_start(self):
+        """Hook must skip http.response.body / lifespan events to avoid inflating 2xx."""
+        from importlib import reload
+        import dbt_graphql.graphql.monitoring as tel
+
+        captured_hook = {}
+
+        def _capture_instrument_app(app, client_response_hook):
+            captured_hook["fn"] = client_response_hook
+
+        mock_instrumentor = MagicMock()
+        mock_instrumentor.instrument_app.side_effect = _capture_instrument_app
+        mock_instrumentor_class = MagicMock(return_value=mock_instrumentor)
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "opentelemetry.instrumentation.starlette": MagicMock(
+                    StarletteInstrumentor=mock_instrumentor_class
+                )
+            },
+        ):
+            reload(tel)
+            mock_counter = MagicMock()
+            with patch.object(
+                tel, "_get_http_status_counter", return_value=mock_counter
+            ):
+                tel.instrument_starlette(MagicMock())
+
+        hook = captured_hook["fn"]
+        # Body event — must NOT record.
+        hook(MagicMock(), {}, {"type": "http.response.body"})
+        assert mock_counter.add.call_count == 0
+        # response.start with 200 — records once with 2xx group.
+        hook(MagicMock(), {}, {"type": "http.response.start", "status": 200})
+        assert mock_counter.add.call_count == 1
+        attrs = mock_counter.add.call_args[0][1]
+        assert attrs["http.status_code"] == 200
+        assert attrs["http.status_group"] == "2xx"
+        # response.start with 503 — 5xx group.
+        hook(MagicMock(), {}, {"type": "http.response.start", "status": 503})
+        attrs = mock_counter.add.call_args[0][1]
+        assert attrs["http.status_group"] == "5xx"
 
 
 class TestBuildGraphqlHttpHandler:
