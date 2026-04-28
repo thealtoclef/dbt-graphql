@@ -17,6 +17,7 @@ from graphql import GraphQLSchema
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
 from ..config import GraphQLConfig
+from ..formatter.graphql import _description_block
 from ..formatter.schema import TableRegistry
 from .auth import JWTPayload
 from .guards import make_query_guard_rules
@@ -34,27 +35,35 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     that Ariadne's schema builder doesn't understand. This function builds a clean
     SDL with custom types declared as scalars, per-table WhereInput types, and a
     Query type for all tables.
+
+    Primary-key columns are emitted with the built-in ``ID`` scalar so the
+    PK signal reaches standard introspection without a custom directive.
+    dbt descriptions are emitted as triple-quoted blocks above types and
+    fields so GraphiQL / Apollo Studio / codegen all see them via standard
+    introspection.
     """
     custom_scalars: set[str] = set()
     type_blocks: list[str] = []
     where_input_defs: list[str] = []
 
     for table_def in registry:
-        lines = [f"type {table_def.name} {{"]
+        type_block = _description_block(table_def.description)
+        type_block += f"type {table_def.name} {{\n"
         input_lines = [f"input {table_def.name}WhereInput {{"]
         for col in table_def.columns:
-            type_name = col.gql_type
+            type_name = "ID" if col.is_pk else col.gql_type
             if type_name and type_name not in _STANDARD_GQL_SCALARS:
                 custom_scalars.add(type_name)
             wrapped = f"[{type_name}]" if col.is_array else type_name
             if col.not_null:
                 wrapped += "!"
-            lines.append(f"  {col.name}: {wrapped}")
+            type_block += _description_block(col.description, indent="  ")
+            type_block += f"  {col.name}: {wrapped}\n"
             if not col.is_array:
                 input_lines.append(f"  {col.name}: {type_name}")
-        lines.append("}")
+        type_block += "}"
         input_lines.append("}")
-        type_blocks.append("\n".join(lines))
+        type_blocks.append(type_block)
         where_input_defs.append("\n".join(input_lines))
 
     query_fields = [

@@ -236,6 +236,22 @@ dbt-graphql allowlist add --query "{ ... }" # manually add a query
 
 ---
 
+### Policy-Aware Introspection — Pass 2
+
+Pass 1 landed: live-DB enrichment removed from MCP, PKs emitted as `ID`, dbt descriptions emitted as triple-quoted blocks, `@masked` / `@filtered` directives declared and the matching `ColumnDef.masked` / `TableDef.filtered` flags wired through SDL serialization + parser. Plan: [`docs/policy-aware-introspection-plan.md`](docs/policy-aware-introspection-plan.md).
+
+Deferred to pass 2 (single umbrella entry — each item depends on the introspection-carrier decision):
+
+| Item | Status |
+|---|---|
+| `filter_registry_for(registry, engine, jwt)` helper — copies registry, drops denied tables/columns, sets `masked` / `filtered` per principal; shared by HTTP + MCP | 🔲 |
+| Per-request executable schema build — replace startup-singleton `make_executable_schema`; drop `introspection: bool` flag (always-on, bounded by per-principal schema) | 🔲 |
+| MCP unification — replace per-call `_is_visible` / `_column_visible` with one `filter_registry_for` at top of each tool | 🔲 |
+| Introspection carrier decision for `@unique` / `@column(type,size)` / `@table(...)` / `@relation` / `@masked` / `@filtered` (description prefix vs. `Query._schema_sdl` vs. side endpoint) | 🔲 |
+| OTel histogram `graphql.schema_build.duration` once per-request build is in place | 🔲 |
+
+---
+
 ## P1 — Soon
 
 ### Few-Shot Q→GraphQL Example Store

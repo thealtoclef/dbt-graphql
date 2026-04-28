@@ -54,11 +54,17 @@ class TestDbGraphQL:
         assert "type stg_orders" not in gj.db_graphql
         assert "type customers" in gj.db_graphql
 
-    def test_starts_with_type(self):
+    def test_starts_with_directive_declarations(self):
         project = _make_project()
         gj = format_graphql(project)
         first_line = gj.db_graphql.splitlines()[0]
-        assert first_line.startswith("type ")
+        assert first_line.startswith("directive @")
+
+    def test_declares_masked_and_filtered_directives(self):
+        project = _make_project()
+        gj = format_graphql(project)
+        assert "directive @masked on FIELD_DEFINITION" in gj.db_graphql
+        assert "directive @filtered on OBJECT" in gj.db_graphql
 
 
 def _sdl_col(
@@ -176,16 +182,18 @@ class TestParseSqlType:
 
 
 class TestColumnDirectives:
-    def test_id_directive_on_primary_key(self):
+    def test_pk_emitted_as_id_scalar(self):
         line = _sdl_col("id", "INTEGER", not_null=True, is_pk=True)
-        assert "@id" in line
+        assert "id: ID!" in line
+        # @id directive is gone — the ID scalar carries the PK signal.
+        assert "@id" not in line
 
-    def test_composite_pk_parts_do_not_get_id_directive(self):
+    def test_composite_pk_parts_keep_native_scalar(self):
+        # Non-PK members of a composite key keep their native scalar.
         for col_name in ("order_id", "item_id"):
             line = _sdl_col(col_name, "INTEGER", not_null=True, is_pk=False)
-            assert "@id" not in line, (
-                f"composite PK column {col_name} should not get @id"
-            )
+            assert ": Int" in line
+            assert "@id" not in line
 
     def test_unique_directive(self):
         line = _sdl_col("email", "VARCHAR", is_unique=True)
@@ -193,8 +201,26 @@ class TestColumnDirectives:
 
     def test_pk_column_does_not_get_unique_directive(self):
         line = _sdl_col("id", "INTEGER", not_null=True, is_pk=True, is_unique=False)
-        assert "@id" in line
+        assert "id: ID!" in line
         assert "@unique" not in line
+
+    def test_masked_directive_emitted_when_flag_set(self):
+        from dbt_graphql.formatter.graphql import _column_to_sdl
+        from dbt_graphql.formatter.schema import ColumnDef
+
+        col = ColumnDef(
+            name="email", gql_type="String", sql_type="VARCHAR", masked=True
+        )
+        line = _column_to_sdl(col)
+        assert "@masked" in line
+
+    def test_masked_directive_absent_by_default(self):
+        from dbt_graphql.formatter.graphql import _column_to_sdl
+        from dbt_graphql.formatter.schema import ColumnDef
+
+        col = ColumnDef(name="email", gql_type="String", sql_type="VARCHAR")
+        line = _column_to_sdl(col)
+        assert "@masked" not in line
 
     def test_sql_directive_preserves_size(self):
         line = _sdl_col("price", "NUMERIC(10,2)")
@@ -231,7 +257,56 @@ class TestNoRelationships:
         assert len(project.relationships) == 0
 
         gj = format_graphql(project)
-        assert "@relation" not in gj.db_graphql
+        # The directive *declaration* lives at the head of every SDL.
+        # What must be absent is any *applied* @relation directive on a field.
+        applied_lines = [
+            ln
+            for ln in gj.db_graphql.splitlines()
+            if "@relation(" in ln and not ln.lstrip().startswith("directive ")
+        ]
+        assert applied_lines == []
+
+
+class TestTableDirectives:
+    def test_filtered_directive_emitted_when_flag_set(self):
+        from dbt_graphql.formatter.graphql import _table_to_sdl
+        from dbt_graphql.formatter.schema import TableDef
+
+        sdl = _table_to_sdl(TableDef(name="X", filtered=True))
+        assert "@filtered" in sdl
+
+    def test_filtered_directive_absent_by_default(self):
+        from dbt_graphql.formatter.graphql import _table_to_sdl
+        from dbt_graphql.formatter.schema import TableDef
+
+        sdl = _table_to_sdl(TableDef(name="X"))
+        assert "@filtered" not in sdl
+
+
+class TestDescriptionEmission:
+    def test_table_description_emitted_as_block(self):
+        from dbt_graphql.formatter.graphql import _table_to_sdl
+        from dbt_graphql.formatter.schema import TableDef
+
+        sdl = _table_to_sdl(TableDef(name="X", description="Customer accounts."))
+        assert '"""' in sdl
+        assert "Customer accounts." in sdl
+
+    def test_column_description_emitted_as_block(self):
+        from dbt_graphql.formatter.graphql import _column_to_sdl, _table_to_sdl
+        from dbt_graphql.formatter.schema import ColumnDef, TableDef
+
+        col = ColumnDef(
+            name="email",
+            gql_type="String",
+            sql_type="VARCHAR",
+            description="User email.",
+        )
+        # _column_to_sdl is the field-line-only renderer; the description
+        # comes from _table_to_sdl which composes the block above the field.
+        sdl = _table_to_sdl(TableDef(name="X", columns=[col]))
+        assert "User email." in sdl
+        assert _column_to_sdl(col) in sdl
 
 
 class TestRelationDirectiveMetadata:

@@ -52,6 +52,10 @@ class ColumnDef:
     sql_type: str = ""  # raw SQL type from @sql directive
     sql_size: str = ""  # size/precision from @sql directive
     relation: RelationDef | None = None
+    description: str = ""
+    # Set per-request by the policy filter when a column-level mask
+    # applies to the caller. Drives the @masked SDL directive.
+    masked: bool = False
 
 
 @dataclass
@@ -61,6 +65,10 @@ class TableDef:
     schema: str = ""
     table: str = ""  # physical table name (may differ from GraphQL type name)
     columns: list[ColumnDef] = field(default_factory=list)
+    description: str = ""
+    # Set per-request by the policy filter when a row filter applies to
+    # the caller. Drives the @filtered SDL directive.
+    filtered: bool = False
 
 
 @dataclass
@@ -136,13 +144,21 @@ def _unwrap_type(node) -> tuple[str, bool, bool]:
 
 def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
     gql_type, not_null, is_array = _unwrap_type(field_node.type)
+    description = field_node.description.value if field_node.description else ""
 
     col = ColumnDef(
         name=field_node.name.value,
         gql_type=gql_type,
         is_array=is_array,
         not_null=not_null,
+        description=description,
     )
+
+    # PK signal carried by the built-in ID scalar. Parser preserves
+    # gql_type as-is for the SDL round-trip; ``is_pk`` is the canonical
+    # flag downstream consumers read.
+    if gql_type == "ID":
+        col.is_pk = True
 
     for directive in field_node.directives or []:
         dname = directive.name.value
@@ -150,6 +166,8 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
             col.is_pk = True
         elif dname == "unique":
             col.is_unique = True
+        elif dname == "masked":
+            col.masked = True
         elif dname == "column":
             args = _directive_args(directive)
             col.sql_type = str(args.get("type", ""))
@@ -203,14 +221,20 @@ def parse_db_graphql(sdl: str) -> tuple[SchemaInfo, TableRegistry]:
         if not isinstance(defn, ObjectTypeDefinitionNode):
             continue
 
-        table = TableDef(name=defn.name.value)
+        table = TableDef(
+            name=defn.name.value,
+            description=defn.description.value if defn.description else "",
+        )
 
         for directive in defn.directives or []:
             args = _directive_args(directive)
-            if directive.name.value == "table":
+            dname = directive.name.value
+            if dname == "table":
                 table.database = str(args.get("database", ""))
                 table.schema = str(args.get("schema", ""))
                 table.table = str(args.get("name", ""))
+            elif dname == "filtered":
+                table.filtered = True
 
         if not table.table:
             table.table = table.name

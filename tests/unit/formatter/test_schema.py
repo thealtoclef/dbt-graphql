@@ -153,6 +153,84 @@ class TestCompositeRelationDirective:
         assert col.relation.to_columns == ["tenant_id", "id"]
 
 
+class TestDescriptionRoundTrip:
+    """SDL with triple-quoted descriptions parses back into description fields."""
+
+    SDL_WITH_DESCRIPTIONS = '''\
+"""
+Customer accounts and contact info.
+"""
+type customers @table(database: db, schema: main, name: customers) {
+  """The primary key."""
+  customer_id: ID! @column(type: "INTEGER")
+  """User's email address."""
+  email: String @column(type: "VARCHAR")
+}
+'''
+
+    def test_table_description_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_WITH_DESCRIPTIONS)
+        assert info.tables[0].description == "Customer accounts and contact info."
+
+    def test_column_description_parsed(self):
+        info, _ = parse_db_graphql(self.SDL_WITH_DESCRIPTIONS)
+        cols = {c.name: c for c in info.tables[0].columns}
+        assert cols["customer_id"].description == "The primary key."
+        assert cols["email"].description == "User's email address."
+
+
+class TestPkAsIdRoundTrip:
+    """A column emitted with the built-in ID scalar is recognised as PK on parse."""
+
+    SDL_PK_AS_ID = """\
+type customers @table(database: db, schema: main, name: customers) {
+  customer_id: ID! @column(type: "INTEGER")
+  name: String @column(type: "VARCHAR")
+}
+"""
+
+    def test_id_scalar_marks_pk(self):
+        info, _ = parse_db_graphql(self.SDL_PK_AS_ID)
+        col = next(c for c in info.tables[0].columns if c.name == "customer_id")
+        assert col.is_pk is True
+
+    def test_non_id_column_not_pk(self):
+        info, _ = parse_db_graphql(self.SDL_PK_AS_ID)
+        col = next(c for c in info.tables[0].columns if c.name == "name")
+        assert col.is_pk is False
+
+
+class TestMaskedFilteredRoundTrip:
+    """SDL with @masked / @filtered directives sets the corresponding flags."""
+
+    SDL_FLAGGED = """\
+type customers @table(database: db, schema: main, name: customers) @filtered {
+  customer_id: ID! @column(type: "INTEGER")
+  email: String @column(type: "VARCHAR") @masked
+  name: String @column(type: "VARCHAR")
+}
+"""
+
+    def test_filtered_flag_set_on_table(self):
+        info, _ = parse_db_graphql(self.SDL_FLAGGED)
+        assert info.tables[0].filtered is True
+
+    def test_masked_flag_set_on_column(self):
+        info, _ = parse_db_graphql(self.SDL_FLAGGED)
+        col = next(c for c in info.tables[0].columns if c.name == "email")
+        assert col.masked is True
+
+    def test_unmasked_column_default_false(self):
+        info, _ = parse_db_graphql(self.SDL_FLAGGED)
+        col = next(c for c in info.tables[0].columns if c.name == "name")
+        assert col.masked is False
+
+    def test_filtered_default_false(self):
+        sdl = 'type t @table(database: d, schema: s, name: t) { id: ID! @column(type: "INT") }'
+        info, _ = parse_db_graphql(sdl)
+        assert info.tables[0].filtered is False
+
+
 class TestRegistry:
     def test_get_existing(self):
         _, reg = _parse()

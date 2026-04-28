@@ -126,16 +126,10 @@ class McpTools:
         *,
         bundle: GraphQLBundle | None = None,
         project=None,
-        db=None,
         policy_engine: PolicyEngine | None = None,
-        enrichment=None,
     ) -> None:
-        if db is None and bundle is not None:
-            db = bundle.db
         self._project = project
-        self._discovery = SchemaDiscovery(
-            registry, project=project, db=db, enrichment=enrichment
-        )
+        self._discovery = SchemaDiscovery(registry, project=project)
         self._bundle = bundle
         self._policy_engine = policy_engine
 
@@ -205,21 +199,19 @@ class McpTools:
             },
         }
 
-    async def describe_table(self, name: str) -> dict[str, Any]:
+    def describe_table(self, name: str) -> dict[str, Any]:
         """Get column details for a table, filtered by the caller's policy."""
         ctx = _current_jwt()
         try:
             resolved = self._resolve(name, ctx)
         except PolicyError as exc:
             return {"error": str(exc), "_meta": {}}
-        detail = await self._discovery.describe_table(name)
+        detail = self._discovery.describe_table(name)
         if detail is None:
             return {"error": f"Table '{name}' not found.", "_meta": {}}
         return {
             "name": detail.name,
             "description": detail.description,
-            "row_count": detail.row_count,
-            "sample_rows": detail.sample_rows,
             "columns": [
                 {
                     "name": c.name,
@@ -228,7 +220,6 @@ class McpTools:
                     "is_unique": c.is_unique,
                     "description": c.description,
                     "enum_values": c.enum_values,
-                    "value_summary": c.value_summary,
                 }
                 for c in detail.columns
                 if self._column_visible(resolved, c.name)
@@ -513,7 +504,6 @@ def create_mcp_server(
     bundle: GraphQLBundle | None = None,
     project=None,
     policy_engine: PolicyEngine | None = None,
-    enrichment=None,
 ):
     """Build and return a fastmcp Server with all tools registered.
 
@@ -528,7 +518,6 @@ def create_mcp_server(
         bundle=bundle,
         project=project,
         policy_engine=policy_engine,
-        enrichment=enrichment,
     )
     mcp = FastMCP("dbt-graphql")
 
@@ -563,7 +552,7 @@ def create_mcp_server(
     return mcp
 
 
-def build_mcp_factory(project, *, enrichment=None):
+def build_mcp_factory(project):
     """Return a factory that builds the MCP HTTP sub-app from a GraphQL bundle.
 
     The serve layer calls this once with the GraphQL bundle, so the MCP
@@ -579,7 +568,6 @@ def build_mcp_factory(project, *, enrichment=None):
             bundle=bundle,
             project=project,
             policy_engine=bundle.policy_engine,
-            enrichment=enrichment,
         )
         return server.http_app()
 

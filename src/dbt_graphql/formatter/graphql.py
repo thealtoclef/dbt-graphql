@@ -102,6 +102,7 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
             database=model.database,
             schema=model.schema_,
             table=model.relation_name,
+            description=model.description,
         )
         for col in model.columns:
             base, size, is_array = _parse_sql_type(col.type)
@@ -119,6 +120,7 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
                 is_unique=is_unique,
                 sql_type=base,
                 sql_size=size,
+                description=col.description,
             )
             rel = rel_map.get((model.name, (col.name,)))
             if rel:
@@ -145,38 +147,84 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
 # ---------------------------------------------------------------------------
 
 
+_DIRECTIVE_DECLARATIONS = """\
+directive @table(database: String, schema: String, name: String) on OBJECT
+directive @column(type: String!, size: String) on FIELD_DEFINITION
+directive @unique on FIELD_DEFINITION
+directive @relation(
+  type: String!, field: String, fields: [String!], toFields: [String!],
+  origin: String, confidence: String, name: String, description: String
+) on FIELD_DEFINITION
+directive @masked on FIELD_DEFINITION
+directive @filtered on OBJECT
+"""
+
+
 def _registry_to_sdl(registry: TableRegistry) -> str:
     """Serialise a TableRegistry to db.graphql SDL format."""
     blocks = [_table_to_sdl(t) for t in registry]
-    return "\n".join(blocks).rstrip() + "\n"
+    return _DIRECTIVE_DECLARATIONS + "\n" + "\n".join(blocks).rstrip() + "\n"
+
+
+def _description_block(text: str, indent: str = "") -> str:
+    (
+        """Render a dbt description as a GraphQL triple-quoted block.
+
+    Returns "" when the description is empty so callers can prepend
+    unconditionally without producing blank `"""
+        """` blocks.
+    """
+    )
+    if not text:
+        return ""
+    # Escape any embedded triple quotes so the block stays well-formed.
+    safe = text.replace('"""', '\\"""')
+    return f'{indent}"""\n{indent}{safe}\n{indent}"""\n'
+
+
+def _gql_field_type(col: ColumnDef) -> str:
+    """Return the GraphQL type for a column. PKs are emitted as ID so
+    the primary-key signal reaches standard introspection natively."""
+    base = "ID" if col.is_pk else col.gql_type
+    if col.is_array:
+        base = f"[{base}]"
+    if col.not_null:
+        base += "!"
+    return base
 
 
 def _table_to_sdl(table: TableDef) -> str:
-    directive = (
+    directives = [
         f'@table(database: "{table.database}", schema: "{table.schema}",'
         f' name: "{table.table}")'
-    )
-    lines = [f"type {table.name} {directive} {{"]
+    ]
+    if table.filtered:
+        directives.append("@filtered")
+    header = f"type {table.name} {' '.join(directives)} {{"
+
+    out = _description_block(table.description)
+    out += header + "\n"
     for col in table.columns:
-        lines.append("  " + _column_to_sdl(col))
-    lines.append("}")
-    return "\n".join(lines)
+        col_desc = _description_block(col.description, indent="  ")
+        if col_desc:
+            out += col_desc
+        out += "  " + _column_to_sdl(col) + "\n"
+    out += "}"
+    return out
 
 
 def _column_to_sdl(col: ColumnDef) -> str:
-    gql_type = f"[{col.gql_type}]" if col.is_array else col.gql_type
-    if col.not_null:
-        gql_type += "!"
+    gql_type = _gql_field_type(col)
 
     sql_args = f'type: "{col.sql_type}"'
     if col.sql_size:
         sql_args += f', size: "{col.sql_size}"'
 
     directives: list[str] = [f"@column({sql_args})"]
-    if col.is_pk:
-        directives.append("@id")
     if col.is_unique:
         directives.append("@unique")
+    if col.masked:
+        directives.append("@masked")
 
     if col.relation:
         r = col.relation

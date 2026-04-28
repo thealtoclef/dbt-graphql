@@ -126,34 +126,28 @@ class TestUsageGuide:
 class TestDescribeTable:
     def test_returns_columns(self):
         tools = _make_tools()
-        result = asyncio.run(tools.describe_table("customers"))
+        result = tools.describe_table("customers")
         col_names = {c["name"] for c in result["columns"]}
         assert "customer_id" in col_names
 
     def test_column_has_required_fields(self):
         tools = _make_tools()
-        result = asyncio.run(tools.describe_table("orders"))
+        result = tools.describe_table("orders")
         for col in result["columns"]:
             assert "name" in col
             assert "sql_type" in col
             assert "not_null" in col
             assert "is_unique" in col
-            assert "value_summary" in col
-
-    def test_no_db_row_count_is_none(self):
-        tools = _make_tools()
-        result = asyncio.run(tools.describe_table("customers"))
-        assert result["row_count"] is None
-        assert result["sample_rows"] == []
+            assert "enum_values" in col
 
     def test_missing_table_returns_error(self):
         tools = _make_tools()
-        result = asyncio.run(tools.describe_table("no_such_table"))
+        result = tools.describe_table("no_such_table")
         assert "error" in result
 
     def test_has_next_steps(self):
         tools = _make_tools()
-        result = asyncio.run(tools.describe_table("customers"))
+        result = tools.describe_table("customers")
         assert len(result["_meta"]["next_steps"]) > 0
 
 
@@ -282,14 +276,14 @@ class TestPolicyFiltering:
 
     def test_describe_table_filters_blocked_columns(self):
         tools = _make_policy_tools()
-        result = asyncio.run(tools.describe_table("customers"))
+        result = tools.describe_table("customers")
         cols = {c["name"] for c in result["columns"]}
         assert "customer_id" in cols
         assert "email" not in cols
 
     def test_describe_table_denied_returns_error(self):
         tools = _make_policy_tools()
-        result = asyncio.run(tools.describe_table("orders"))
+        result = tools.describe_table("orders")
         assert "error" in result
 
     def test_find_path_unauthorized_endpoint_returns_not_found(self):

@@ -128,46 +128,6 @@ def test_cli_relative_paths_resolved_from_config_dir(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_env_var_overrides_enrichment_budget(monkeypatch, tmp_path):
-    """DBT_GRAPHQL__ENRICHMENT__BUDGET env var must override config.yml enrichment.budget."""
-    import dbt_graphql.compiler.connection as conn_mod
-    import dbt_graphql.mcp.server as mcp_server_mod
-    import uvicorn
-
-    captured = {}
-
-    def _fake_build_mcp_factory(_project, *, enrichment=None, **_kwargs):
-        captured["enrichment"] = enrichment
-
-        def _factory(_bundle):
-            return None
-
-        return _factory
-
-    def _fake_uvicorn_run(**_kw):
-        raise SystemExit(0)
-
-    monkeypatch.setattr(mcp_server_mod, "build_mcp_factory", _fake_build_mcp_factory)
-    monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
-    monkeypatch.setattr(conn_mod, "DatabaseManager", lambda **_kw: None)
-    monkeypatch.setenv("DBT_GRAPHQL__ENRICHMENT__BUDGET", "7")
-
-    config_file = tmp_path / "config.yml"
-    config_file.write_text(
-        f"dbt:\n  catalog: {CATALOG}\n  manifest: {MANIFEST}\n"
-        "dev_mode: true\n"
-        "db:\n  type: postgres\n  host: localhost\n  dbname: test\n"
-        "serve:\n  host: 0.0.0.0\n  port: 8080\n"
-        "  mcp_enabled: true\n"
-        "enrichment:\n  budget: 100\n"
-    )
-
-    with pytest.raises(SystemExit):
-        main(["--config", str(config_file)])
-
-    assert captured["enrichment"].budget == 7
-
-
 def test_cli_warns_in_dev_mode(tmp_path, monkeypatch, capsys):
     """``dev_mode: true`` bypasses authn/authz; the server logs a warning."""
     from dbt_graphql import cli as cli_mod

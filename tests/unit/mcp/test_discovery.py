@@ -1,6 +1,5 @@
-"""Tests for SchemaDiscovery (no live DB required)."""
+"""Tests for SchemaDiscovery (manifest-only)."""
 
-import asyncio
 from pathlib import Path
 
 from dbt_graphql.formatter.graphql import build_registry
@@ -52,26 +51,16 @@ class TestListTables:
 class TestDescribeTable:
     def test_returns_columns(self):
         d = _make_discovery()
-        detail = asyncio.run(d.describe_table("customers"))
+        detail = d.describe_table("customers")
         assert detail is not None
         col_names = {c.name for c in detail.columns}
         assert "customer_id" in col_names
 
     def test_missing_table_returns_none(self):
         d = _make_discovery()
-        assert asyncio.run(d.describe_table("nonexistent")) is None
+        assert d.describe_table("nonexistent") is None
 
-    def test_no_db_returns_null_enrichment(self):
-        d = _make_discovery()
-        detail = asyncio.run(d.describe_table("customers"))
-        assert detail is not None
-        assert detail.row_count is None
-        assert detail.sample_rows == []
-        for col in detail.columns:
-            if col.enum_values is None:
-                assert col.value_summary is None
-
-    def test_enum_column_gets_value_summary_without_db(self):
+    def test_enum_values_carried_from_manifest(self):
         col = ColumnInfo(
             name="status", type="VARCHAR", enum_values=["placed", "shipped"]
         )
@@ -80,19 +69,10 @@ class TestDescribeTable:
             project_name="test", adapter_type="postgres", models=[model]
         )
         d = _discovery_from(project)
-        detail = asyncio.run(d.describe_table("orders"))
+        detail = d.describe_table("orders")
         assert detail is not None
         status_col = next(c for c in detail.columns if c.name == "status")
-        assert status_col.value_summary == {
-            "kind": "enum",
-            "values": ["placed", "shipped"],
-        }
-
-    def test_result_is_cached(self):
-        d = _make_discovery()
-        detail1 = asyncio.run(d.describe_table("customers"))
-        detail2 = asyncio.run(d.describe_table("customers"))
-        assert detail1 is detail2
+        assert status_col.enum_values == ["placed", "shipped"]
 
 
 class TestFindPath:
@@ -220,108 +200,3 @@ class TestFindPathDiamond:
         )
         d = _discovery_from(project)
         assert d.find_path("A", "D") == []
-
-
-class TestEnrichmentBudget:
-    """Budget counter limits how many live DB queries are made per call."""
-
-    def _make_mock_db(self, call_log: list):
-        """Return a fake DB that records every call and returns minimal data."""
-
-        class _MockDb:
-            dialect_name = "postgresql"
-
-            async def execute_text(self, sql: str):
-                call_log.append(sql)
-                if "COUNT(*)" in sql:
-                    return [{"cnt": 0}]
-                if "MIN(" in sql:
-                    return [{"mn": None, "mx": None}]
-                return []
-
-        return _MockDb()
-
-    def test_budget_zero_skips_column_enrichment(self):
-        from dbt_graphql.config import EnrichmentConfig
-
-        calls: list = []
-        db = self._make_mock_db(calls)
-
-        cols = [ColumnInfo(name=f"col{i}", type="VARCHAR") for i in range(5)]
-        model = ModelInfo(name="t", database="db", schema="main", columns=cols)
-        project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
-        enrichment = EnrichmentConfig(budget=0)
-        d = _discovery_from(project, db=db, enrichment=enrichment)
-        detail = asyncio.run(d.describe_table("t"))
-        assert detail is not None
-        # row_count + sample_rows are NOT counted against budget
-        assert detail.row_count == 0
-        # No column queries should have fired
-        col_queries = [q for q in calls if "DISTINCT" in q or "MIN(" in q]
-        assert col_queries == []
-        for col in detail.columns:
-            assert col.value_summary is None
-
-    def test_budget_limits_total_column_queries(self):
-        from dbt_graphql.config import EnrichmentConfig
-
-        calls: list = []
-        db = self._make_mock_db(calls)
-
-        cols = [ColumnInfo(name=f"col{i}", type="VARCHAR") for i in range(10)]
-        model = ModelInfo(name="t", database="db", schema="main", columns=cols)
-        project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
-        enrichment = EnrichmentConfig(budget=3)
-        d = _discovery_from(project, db=db, enrichment=enrichment)
-        asyncio.run(d.describe_table("t"))
-        col_queries = [q for q in calls if "DISTINCT" in q or "MIN(" in q]
-        assert len(col_queries) == 3
-
-    def test_cache_prevents_db_calls_on_second_call(self):
-        calls: list = []
-        db = self._make_mock_db(calls)
-        cols = [ColumnInfo(name="x", type="VARCHAR")]
-        model = ModelInfo(name="t", database="db", schema="main", columns=cols)
-        project = ProjectInfo(project_name="p", adapter_type="postgres", models=[model])
-        d = _discovery_from(project, db=db)
-        asyncio.run(d.describe_table("t"))
-        calls.clear()
-        asyncio.run(d.describe_table("t"))
-        assert calls == [], "cached result must not re-issue DB queries"
-
-
-class TestDistinctValuesKeyMismatch:
-    """_get_distinct_values must not rely on the result dict key matching the IR column name.
-
-    Some adapters normalise identifier case differently from what dbt stores in
-    catalog.json; using the first value in the result row is always correct.
-    """
-
-    def _make_mismatched_key_db(self):
-        class _MockDb:
-            dialect_name = "postgresql"
-
-            async def execute_text(self, sql: str) -> list[dict]:
-                if "COUNT(*)" in sql:
-                    return [{"cnt": 0}]
-                if "DISTINCT" in sql:
-                    # Simulate DB returning lowercase key; IR name is mixed case.
-                    return [{"customerid": "Alice"}, {"customerid": "Bob"}]
-                return []
-
-        return _MockDb()
-
-    def test_returns_values_when_result_key_differs_from_column_name(self):
-        db = self._make_mismatched_key_db()
-        col = ColumnInfo(name="customerID", type="VARCHAR")
-        model = ModelInfo(name="t", database="db", schema="main", columns=[col])
-        project = ProjectInfo(
-            project_name="p", adapter_type="postgresql", models=[model]
-        )
-        d = _discovery_from(project, db=db)
-        detail = asyncio.run(d.describe_table("t"))
-        assert detail is not None
-        vs = detail.columns[0].value_summary
-        assert vs is not None
-        assert vs["kind"] == "distinct"
-        assert vs["values"] == ["Alice", "Bob"]

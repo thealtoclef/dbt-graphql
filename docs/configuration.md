@@ -92,20 +92,6 @@ When the warehouse is overloaded, the connection pool reaches capacity (`size + 
 
 ---
 
-## `enrichment` (optional)
-
-Controls live DB queries issued by `describe_table` in the MCP server. Defaults are defined in [`defaults.py`](../src/dbt_graphql/defaults.py).
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `budget` | int | `20` | Max live DB queries fired per `describe_table` call. Row count and sample rows are excluded from this count; budget applies to per-column value enrichment only. |
-| `distinct_values_limit` | int | `50` | Max values returned in a `distinct` value summary. |
-| `distinct_values_max_cardinality` | int | `500` | If a column's distinct count exceeds this, skip the distinct summary entirely. |
-
-Any field can be overridden at runtime via env var without editing the config file. See the **Environment variables** section below.
-
----
-
 ## `graphql` (optional)
 
 Query guard limits applied to all incoming GraphQL operations — both HTTP `/graphql` and MCP `run_graphql`. Guards are checked *before* the query is executed; exceeding a limit returns a 400 response (HTTP) or an error dict (MCP) without touching the database.
@@ -240,7 +226,6 @@ All config fields can be overridden via `DBT_GRAPHQL__` prefixed env vars. Neste
 ```
 DBT_GRAPHQL__DB__HOST=myhost
 DBT_GRAPHQL__DB__PASSWORD=secret
-DBT_GRAPHQL__ENRICHMENT__BUDGET=5
 DBT_GRAPHQL__MONITORING__LOGS__LEVEL=DEBUG
 DBT_GRAPHQL__MONITORING__TRACES__ENDPOINT=http://collector:4317
 DBT_GRAPHQL__MONITORING__TRACES__PROTOCOL=grpc
@@ -260,12 +245,12 @@ So **env > file > defaults**. The order is enforced by `AppConfig.settings_custo
 
 ```yaml
 # config.yml
-enrichment:
-  budget: 100
+db:
+  host: file-host
 ```
 
 ```bash
-DBT_GRAPHQL__ENRICHMENT__BUDGET=7 dbt-graphql --config config.yml
+DBT_GRAPHQL__DB__HOST=env-host dbt-graphql --config config.yml
 ```
 
-Effective `enrichment.budget` is `7`. The env var wins; the file value is shadowed; the in-code default (`20`) is shadowed by the file value before that.
+Effective `db.host` is `env-host`. The env var wins; the file value is shadowed; the in-code default is shadowed by the file value before that.

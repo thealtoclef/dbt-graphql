@@ -34,7 +34,7 @@ def run(
     if config.serve.mcp_enabled:
         from ..mcp.server import build_mcp_factory
 
-        mcp_factory = build_mcp_factory(project, enrichment=config.enrichment)
+        mcp_factory = build_mcp_factory(project)
 
     global _asgi_app
     _asgi_app = create_app(

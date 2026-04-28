@@ -3,35 +3,19 @@
 Structure (tables, columns, types, FK relationships) is derived from the
 GraphQL ``TableRegistry`` — i.e. *the same view the API serves*. The dbt
 ``ProjectInfo`` is optional and contributes *enrichment only*: human
-descriptions and enum values that don't survive into the GraphQL SDL.
+descriptions and declared enum values that don't survive into the
+GraphQL SDL.
 
 This is deliberate: MCP must not be able to surface a table or column
 that GraphQL won't expose. The registry is the contract; project is
-metadata.
+metadata. Discovery is **manifest-only** — no live warehouse queries.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
-from typing import Any
 
-from dbt_graphql.config import EnrichmentConfig
 from dbt_graphql.formatter.schema import TableDef, TableRegistry
-
-
-def _is_date_type(sql_type: str) -> bool:
-    """Return True for date/time SQL types across common adapters."""
-    t = sql_type.lower().split("(")[0].strip()
-    return t in {
-        "date",
-        "datetime",
-        "time",
-        "timestamp",
-        "timestamptz",
-        "timestamp with time zone",
-        "timestamp without time zone",
-    }
 
 
 @dataclass
@@ -42,7 +26,6 @@ class ColumnDetail:
     is_unique: bool = False
     description: str = ""
     enum_values: list[str] | None = None
-    value_summary: dict | None = None
 
 
 @dataclass
@@ -59,8 +42,6 @@ class TableDetail:
     description: str = ""
     columns: list[ColumnDetail] = field(default_factory=list)
     relationships: list[str] = field(default_factory=list)
-    row_count: int | None = None
-    sample_rows: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -109,9 +90,9 @@ class _Enrichment:
 class SchemaDiscovery:
     """Discover schema structure from the GraphQL ``TableRegistry``.
 
-    Live row counts, sample rows, and value summaries are layered on
-    when a DB connection is provided. dbt descriptions and enum values
-    are layered on when a ``ProjectInfo`` is provided.
+    dbt descriptions and declared enum values are layered on when a
+    ``ProjectInfo`` is provided. No live DB access — the manifest is
+    the single source of truth.
     """
 
     def __init__(
@@ -119,15 +100,9 @@ class SchemaDiscovery:
         registry: TableRegistry,
         *,
         project=None,
-        db=None,
-        enrichment=None,
     ) -> None:
         self._registry = registry
         self._meta = _Enrichment(project)
-        self._db = db
-        self._enrichment = enrichment or EnrichmentConfig()
-        self._cache: dict[str, TableDetail] = {}
-        self._preparer_cached: Any = None
 
         # Build adjacency from registry — outgoing edges live on each
         # column's ``relation``; incoming edges are the reverse.
@@ -161,18 +136,11 @@ class SchemaDiscovery:
             for t in self._registry
         ]
 
-    async def describe_table(self, name: str) -> TableDetail | None:
-        """Return full column + enrichment detail for a table.
-
-        Cached for the lifetime of this instance. Live enrichment runs
-        only when a DB connection is provided.
-        """
+    def describe_table(self, name: str) -> TableDetail | None:
+        """Return full column detail for a table from the manifest."""
         tdef = self._registry.get(name)
         if tdef is None:
             return None
-
-        if name in self._cache:
-            return self._cache[name]
 
         columns = [
             ColumnDetail(
@@ -188,23 +156,12 @@ class SchemaDiscovery:
         ]
         relationships = self._format_relationships(tdef)
 
-        detail = TableDetail(
+        return TableDetail(
             name=name,
             description=self._meta.table_descriptions.get(name, ""),
             columns=columns,
             relationships=relationships,
         )
-
-        # Static enum summaries — no DB needed.
-        for col in detail.columns:
-            if col.enum_values is not None:
-                col.value_summary = {"kind": "enum", "values": col.enum_values}
-
-        if self._db is not None:
-            await self._enrich(detail)
-
-        self._cache[name] = detail
-        return detail
 
     def _format_relationships(self, tdef: TableDef) -> list[str]:
         out: list[str] = []
@@ -289,85 +246,3 @@ class SchemaDiscovery:
                     )
                 )
         return result
-
-    # ---- live enrichment (only called when db is set) ----
-
-    @property
-    def _preparer(self) -> Any:
-        if self._preparer_cached is None:
-            assert self._db is not None
-            from sqlalchemy.dialects import registry as _dialect_reg
-
-            self._preparer_cached = _dialect_reg.load(
-                self._db.dialect_name
-            )().identifier_preparer
-        return self._preparer_cached
-
-    async def _enrich(self, detail: TableDetail) -> None:
-        """Populate live fields on ``detail`` in-place."""
-        assert self._db is not None
-
-        cfg = self._enrichment
-        qi = self._preparer.quote_identifier
-
-        detail.row_count = await self._get_row_count(detail.name, qi)
-        detail.sample_rows = await self._get_sample_rows(detail.name, qi, limit=3)
-
-        remaining = [cfg.budget]
-
-        async def _enrich_col(col: ColumnDetail) -> None:
-            if col.enum_values is not None:
-                return
-            # Budget check-and-decrement is atomic in single-threaded
-            # asyncio (no await between check and decrement).
-            if remaining[0] <= 0:
-                return
-            remaining[0] -= 1
-
-            if _is_date_type(col.sql_type):
-                mn, mx = await self._get_date_range(detail.name, col.name, qi)
-                if mn is not None:
-                    col.value_summary = {"kind": "range", "min": mn, "max": mx}
-            else:
-                values = await self._get_distinct_values(
-                    detail.name,
-                    col.name,
-                    qi,
-                    limit=cfg.distinct_values_max_cardinality + 1,
-                )
-                if len(values) <= cfg.distinct_values_max_cardinality:
-                    col.value_summary = {
-                        "kind": "distinct",
-                        "values": values[: cfg.distinct_values_limit],
-                    }
-
-        await asyncio.gather(*(_enrich_col(c) for c in detail.columns))
-
-    async def _get_row_count(self, table: str, qi) -> int | None:
-        qt = qi(table)
-        rows = await self._db.execute_text(f"SELECT COUNT(*) AS cnt FROM {qt}")
-        return rows[0]["cnt"] if rows else None
-
-    async def _get_distinct_values(
-        self, table: str, column: str, qi, limit: int = 50
-    ) -> list:
-        qt, qc = qi(table), qi(column)
-        rows = await self._db.execute_text(
-            f"SELECT DISTINCT {qc} FROM {qt} LIMIT {limit}"
-        )
-        return [next(iter(r.values())) for r in rows]
-
-    async def _get_date_range(
-        self, table: str, column: str, qi
-    ) -> tuple[str | None, str | None]:
-        qt, qc = qi(table), qi(column)
-        rows = await self._db.execute_text(
-            f"SELECT MIN({qc}) AS mn, MAX({qc}) AS mx FROM {qt}"
-        )
-        if not rows:
-            return None, None
-        return str(rows[0]["mn"]), str(rows[0]["mx"])
-
-    async def _get_sample_rows(self, table: str, qi, limit: int = 5) -> list[dict]:
-        qt = qi(table)
-        return await self._db.execute_text(f"SELECT * FROM {qt} LIMIT {limit}")

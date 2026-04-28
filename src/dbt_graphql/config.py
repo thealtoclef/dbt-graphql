@@ -84,14 +84,6 @@ class MonitoringConfig(BaseModel):
     logs: LogsConfig = LogsConfig()
 
 
-class EnrichmentConfig(BaseModel):
-    budget: int = defaults.ENRICHMENT_BUDGET
-    distinct_values_limit: int = defaults.ENRICHMENT_DISTINCT_VALUES_LIMIT
-    distinct_values_max_cardinality: int = (
-        defaults.ENRICHMENT_DISTINCT_VALUES_MAX_CARDINALITY
-    )
-
-
 class GraphQLConfig(BaseModel):
     """Query guard limits applied to all incoming GraphQL operations."""
 
@@ -168,7 +160,6 @@ class AppConfig(BaseSettings):
     db: DbConfig | None = None
     serve: ServeConfig | None = None
     monitoring: MonitoringConfig = MonitoringConfig()
-    enrichment: EnrichmentConfig = EnrichmentConfig()
     graphql: GraphQLConfig = GraphQLConfig()
     security: SecurityConfig = SecurityConfig()
     cache: CacheConfig = CacheConfig()

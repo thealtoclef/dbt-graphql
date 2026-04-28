@@ -23,13 +23,23 @@ See [architecture.md](architecture.md) for the design principles that govern thi
 
 ## 1. Schema assembly (`_build_ariadne_sdl`)
 
-`db.graphql` uses custom directives (`@table`, `@column`, `@relation`, `@id`, `@unique`) that Ariadne's schema builder doesn't understand. At serve time, `_build_ariadne_sdl(registry: TableRegistry)` derives a clean executable schema directly from the `TableRegistry`:
+`db.graphql` uses custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) that Ariadne's schema builder doesn't understand. At serve time, `_build_ariadne_sdl(registry: TableRegistry)` derives a clean executable schema directly from the `TableRegistry`:
 
 1. For each `TableDef`: emits a `type` block with standard GraphQL scalars, and a `XxxWhereInput` input type for filtering.
 2. Collects any non-standard scalar names and emits `scalar X` declarations.
 3. Builds a `Query` type with one field per table, each accepting `limit: Int`, `offset: Int`, `where: XxxWhereInput`.
 
 **`TableRegistry` is the input — not `db.graphql`.** The serve path never reads or parses a file; it operates on the Python object built by `build_registry()` directly from dbt artifacts.
+
+### Introspection signals
+
+Standard GraphQL `IntrospectionQuery` only exposes a fixed set of fields on `__Type` / `__Field`; applied directives are not in that set. To make policy- and structure-relevant signals visible to GraphiQL / Apollo Studio / codegen, the executable SDL routes them through native introspection carriers wherever possible:
+
+- **Primary keys** are emitted with the built-in `ID` scalar — no custom `@id` directive is needed. `ID` is wire-compatible with `String` per the spec.
+- **dbt descriptions** on tables and columns are emitted as triple-quoted blocks above the type / field, so they show up directly in `__Type.description` and `__Field.description`.
+- **`@masked` / `@filtered`** are declared directives carried in the printed `db.graphql` artefact only. They will be set per principal once policy-aware introspection is wired (see `docs/policy-aware-introspection-plan.md`); today the flags exist on `ColumnDef.masked` / `TableDef.filtered` as scaffolding and are not populated at runtime.
+
+The remaining custom directives (`@table`, `@column`, `@relation`, `@unique`) appear only in the printed `db.graphql` artefact (`--output` mode); they do not reach introspection clients. The introspection-carrier decision for those is tracked in the plan doc above.
 
 ---
 
