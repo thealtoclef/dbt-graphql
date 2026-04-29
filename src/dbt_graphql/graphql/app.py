@@ -78,22 +78,20 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         "  _sdl(tables: [String!]): String!"
     )
     query_fields.append(
-        '  "Names, descriptions, and tags of tables visible to this caller after '
-        'policy pruning. Use as the cheap index before drilling in via `_sdl(tables: ...)`."\n'
+        '  "Names and descriptions of tables visible to this caller after policy '
+        'pruning. Use as the cheap index before drilling in via `_sdl(tables: ...)`."\n'
         "  _tables: [_TableInfo!]!"
     )
     query_block = "type Query {\n" + "\n".join(query_fields) + "\n}"
 
     table_info_block = (
-        '"""Summary of a single table — the index-page projection. Description and '
-        "tags come from the dbt manifest; structure (columns, relations) belongs to "
+        '"""Summary of a single table — the index-page projection. Description '
+        "comes from the dbt manifest; structure (columns, relations) belongs to "
         '`_sdl`."""\n'
         "type _TableInfo {\n"
         "  name: String!\n"
         '  "dbt-authored description; empty string when none is set."\n'
         "  description: String!\n"
-        '  "dbt manifest tags; empty list when none."\n'
-        "  tags: [String!]!\n"
         "}"
     )
 

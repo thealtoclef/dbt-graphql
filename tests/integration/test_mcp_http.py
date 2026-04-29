@@ -291,12 +291,12 @@ class TestMCPlistTablesHTTP:
         assert "orders" in names
 
     def test_list_tables_entries_have_summary_shape(self, mcp_client):
-        """Each entry carries name, description, tags — the index projection."""
+        """Each entry carries name and description — the index projection."""
         with mcp_client() as client:
             result = _mcp_call_tool(client, "list_tables")
         for t in result["tables"]:
-            assert set(t.keys()) >= {"name", "description", "tags"}
-            assert isinstance(t["tags"], list)
+            assert set(t.keys()) >= {"name", "description"}
+            assert isinstance(t["description"], str)
 
     def test_list_tables_filter(self, mcp_client):
         with mcp_client() as client:

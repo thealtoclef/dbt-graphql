@@ -165,19 +165,18 @@ class McpTools:
     def list_tables(self, filter: str | None = None) -> dict[str, Any]:
         """List tables the caller's access policy authorizes.
 
-        Each entry carries ``name``, ``description``, and ``tags`` — the
-        index-page projection an agent uses to triage candidates before
-        drilling in via ``describe_tables``. Structural detail (columns,
-        relations) is intentionally omitted; it belongs to
-        ``describe_tables(names)``.
+        Each entry carries ``name`` and ``description`` — the index-page
+        projection an agent uses to triage candidates before drilling in
+        via ``describe_tables``. Structural detail (columns, relations) is
+        intentionally omitted; it belongs to ``describe_tables(names)``.
 
         Args:
-            filter: Optional case-insensitive substring match against name,
-                description, or any tag. Visibility is enforced upstream by
-                the GraphQL ``_tables`` resolver — denied tables are never
+            filter: Optional case-insensitive substring match against name
+                or description. Visibility is enforced upstream by the
+                GraphQL ``_tables`` resolver — denied tables are never
                 returned regardless of whether they would match the filter.
         """
-        result = self._exec_graphql("{ _tables { name description tags } }")
+        result = self._exec_graphql("{ _tables { name description } }")
         tables: list[dict[str, Any]] = list(result.get("_tables") or [])
         if filter is not None:
             f = filter.lower()
@@ -186,7 +185,6 @@ class McpTools:
                 for t in tables
                 if f in t["name"].lower()
                 or f in (t.get("description") or "").lower()
-                or any(f in tag.lower() for tag in (t.get("tags") or []))
             ]
         return {
             "tables": tables,

@@ -67,14 +67,12 @@ class TestListTables:
         result = tools.list_tables()
         assert {"customers", "orders"} <= _names(result)
 
-    def test_each_entry_has_name_description_tags(self):
+    def test_each_entry_has_name_and_description(self):
         tools = _make_tools()
         result = tools.list_tables()
         for t in result["tables"]:
             assert isinstance(t["name"], str) and t["name"]
             assert isinstance(t["description"], str)  # may be ""
-            assert isinstance(t["tags"], list)
-            assert all(isinstance(tag, str) for tag in t["tags"])
 
     def test_has_next_steps(self):
         tools = _make_tools()
@@ -98,18 +96,6 @@ class TestListTables:
         result = tools.list_tables(filter="CUSTOMER")
         assert "customers" in _names(result)
 
-    def test_filter_matches_tag(self):
-        """Filter matches tags, not just name/description."""
-        project = extract_project(CATALOG, MANIFEST)
-        next(m for m in project.models if m.name == "orders").tags = ["finance"]
-        registry = build_registry(project)
-        bundle = create_graphql_subapp(
-            registry=registry,
-            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
-        )
-        tools = McpTools(registry, bundle=bundle, project=project)
-        result = tools.list_tables(filter="finance")
-        assert _names(result) == {"orders"}
 
 
 class TestUsageGuide:

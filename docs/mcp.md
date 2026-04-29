@@ -22,7 +22,7 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 
 | Tool                                | Purpose                                                              |
 |-------------------------------------|----------------------------------------------------------------------|
-| `list_tables(filter?)`              | Index-page summary of tables the caller's policy authorizes — `name`, `description`, and `tags` per entry, no structural detail. Optional case-insensitive `filter` matches name, description, or any tag. Backed by GraphQL `_tables`. |
+| `list_tables(filter?)`              | Index-page summary of tables the caller's policy authorizes — `name` and `description` per entry, no structural detail. Optional case-insensitive `filter` matches name or description. Backed by GraphQL `_tables`. |
 | `describe_tables(names)`            | Effective `db.graphql` SDL slice for one or more tables — full custom directives (`@table`, `@column`, `@relation`, `@masked`, `@filtered`). Names the caller cannot see (denied or nonexistent) are silently skipped, so existence cannot be probed. Backed by GraphQL `_sdl(tables: ...)`. |
 | `find_path(from_table, to_table)`   | Shortest join path(s) via BFS on the relationship graph.             |
 | `explore_relationships(table_name)` | Authorized tables related to the given one (outgoing / incoming).    |
