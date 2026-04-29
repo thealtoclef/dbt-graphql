@@ -1,4 +1,4 @@
-"""Tests for SchemaDiscovery (manifest-only)."""
+"""Tests for SchemaDiscovery (graph adjacency for path-finding tools)."""
 
 from pathlib import Path
 
@@ -26,53 +26,11 @@ MANIFEST = FIXTURES_DIR / "manifest.json"
 
 def _make_discovery():
     project = extract_project(CATALOG, MANIFEST)
-    return SchemaDiscovery(build_registry(project), project=project)
+    return SchemaDiscovery(build_registry(project))
 
 
-def _discovery_from(project: ProjectInfo, **kwargs) -> SchemaDiscovery:
-    return SchemaDiscovery(build_registry(project), project=project, **kwargs)
-
-
-class TestListTables:
-    def test_returns_all_tables(self):
-        d = _make_discovery()
-        tables = d.list_tables()
-        names = {t.name for t in tables}
-        assert "customers" in names
-        assert "orders" in names
-
-    def test_table_has_column_count(self):
-        d = _make_discovery()
-        tables = d.list_tables()
-        customers = next(t for t in tables if t.name == "customers")
-        assert customers.column_count > 0
-
-
-class TestDescribeTable:
-    def test_returns_columns(self):
-        d = _make_discovery()
-        detail = d.describe_table("customers")
-        assert detail is not None
-        col_names = {c.name for c in detail.columns}
-        assert "customer_id" in col_names
-
-    def test_missing_table_returns_none(self):
-        d = _make_discovery()
-        assert d.describe_table("nonexistent") is None
-
-    def test_enum_values_carried_from_manifest(self):
-        col = ColumnInfo(
-            name="status", type="VARCHAR", enum_values=["placed", "shipped"]
-        )
-        model = ModelInfo(name="orders", database="db", schema="main", columns=[col])
-        project = ProjectInfo(
-            project_name="test", adapter_type="postgres", models=[model]
-        )
-        d = _discovery_from(project)
-        detail = d.describe_table("orders")
-        assert detail is not None
-        status_col = next(c for c in detail.columns if c.name == "status")
-        assert status_col.enum_values == ["placed", "shipped"]
+def _discovery_from(project: ProjectInfo) -> SchemaDiscovery:
+    return SchemaDiscovery(build_registry(project))
 
 
 class TestFindPath:
@@ -156,7 +114,6 @@ class TestFindPathDiamond:
             _make_model("C", "d_id"),
             _make_model("D"),
         ]
-        # A→B, A→C, B→D, C→D
         rels = [
             _make_rel("A", "b_id", "B", "id"),
             _make_rel("A", "c_id", "C", "id"),

@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from pathlib import Path
 
@@ -86,10 +88,14 @@ def test_cli_missing_manifest_exits_nonzero(tmp_path):
     assert exc_info.value.code != 0
 
 
-def test_cli_no_config_shows_help():
+def test_cli_no_config_no_env_exits_nonzero(monkeypatch):
+    """Without --config and without DBT_GRAPHQL__DBT__* env vars, AppConfig
+    cannot be built (dbt is required) and the CLI must exit nonzero."""
+    for var in [v for v in os.environ if v.startswith("DBT_GRAPHQL")]:
+        monkeypatch.delenv(var, raising=False)
     with pytest.raises(SystemExit) as exc_info:
         main([])
-    assert exc_info.value.code == 0
+    assert exc_info.value.code != 0
 
 
 def test_cli_invalid_config_exits_nonzero(tmp_path):
@@ -101,19 +107,15 @@ def test_cli_invalid_config_exits_nonzero(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Relative path resolution in config
+# Env-only configuration (pydantic-settings)
 # ---------------------------------------------------------------------------
 
 
-def test_cli_relative_paths_resolved_from_config_dir(tmp_path):
-    """catalog/manifest given as relative paths must resolve from the config file's directory."""
-    import shutil
-
-    shutil.copy(CATALOG, tmp_path / "catalog.json")
-    shutil.copy(MANIFEST, tmp_path / "manifest.json")
-    cfg = tmp_path / "config.yml"
-    cfg.write_text("dbt:\n  catalog: catalog.json\n  manifest: manifest.json\n")
-    main(["--config", str(cfg), "--output", str(tmp_path / "out")])
+def test_cli_runs_from_env_vars_only(tmp_path, monkeypatch):
+    """Without --config, configuration is sourced from DBT_GRAPHQL__* env vars."""
+    monkeypatch.setenv("DBT_GRAPHQL__DBT__CATALOG", str(CATALOG))
+    monkeypatch.setenv("DBT_GRAPHQL__DBT__MANIFEST", str(MANIFEST))
+    main(["--output", str(tmp_path / "out")])
     assert (tmp_path / "out" / "db.graphql").exists()
 
 

@@ -265,7 +265,6 @@ class TestMCPHTTPtoolsList:
         names = {t["name"] for t in tools}
         expected = {
             "list_tables",
-            "describe_table",
             "describe_tables",
             "find_path",
             "explore_relationships",
@@ -274,6 +273,8 @@ class TestMCPHTTPtoolsList:
             "run_graphql",
         }
         assert expected.issubset(names), f"Missing tools: {expected - names}"
+        # Singular describe_table was removed in favour of describe_tables.
+        assert "describe_table" not in names
         # Usage guide is exposed as an MCP resource, not a tool.
         assert "get_usage_guide" not in names
 
@@ -285,17 +286,16 @@ class TestMCPlistTablesHTTP:
         with mcp_client() as client:
             result = _mcp_call_tool(client, "list_tables")
         assert "tables" in result
-        names = {t["name"] for t in result["tables"]}
+        names = set(result["tables"])
         assert "customers" in names
         assert "orders" in names
 
     def test_list_tables_filter(self, mcp_client):
         with mcp_client() as client:
             result = _mcp_call_tool(client, "list_tables", {"filter": "customer"})
-        names = {t["name"] for t in result["tables"]}
+        names = set(result["tables"])
         assert "customers" in names
-        # orders does not contain "customer"
-        assert all("customer" in t.lower() or t == "customers" for t in names)
+        assert all("customer" in t.lower() for t in names)
 
     def test_list_tables_has_meta_next_steps(self, mcp_client):
         with mcp_client() as client:
@@ -303,29 +303,6 @@ class TestMCPlistTablesHTTP:
         assert "_meta" in result
         assert "next_steps" in result["_meta"]
         assert len(result["_meta"]["next_steps"]) > 0
-
-
-class TestMCPdescribeTableHTTP:
-    """Exercise describe_table through the HTTP transport."""
-
-    def test_describe_table_returns_columns(self, mcp_client):
-        with mcp_client() as client:
-            result = _mcp_call_tool(client, "describe_table", {"name": "customers"})
-        assert "name" in result
-        assert result["name"] == "customers"
-        col_names = {c["name"] for c in result["columns"]}
-        assert "customer_id" in col_names
-
-    def test_describe_table_missing_table(self, mcp_client):
-        with mcp_client() as client:
-            result = _mcp_call_tool(client, "describe_table", {"name": "no_such_table"})
-        # Missing table returns an error dict, not an exception
-        assert "error" in result
-
-    def test_describe_table_has_relationships(self, mcp_client):
-        with mcp_client() as client:
-            result = _mcp_call_tool(client, "describe_table", {"name": "orders"})
-        assert "relationships" in result
 
 
 class TestMCPdescribeTablesHTTP:
@@ -359,13 +336,14 @@ class TestMCPdescribeTablesHTTP:
         assert "type orders " not in text
         assert "@table" in text
 
-    def test_unknown_name_is_error_without_existence_leak(self, mcp_client):
+    def test_unknown_name_silently_skipped(self, mcp_client):
         with mcp_client() as client:
             text, tool_result = self._call_text(client, ["nope_does_not_exist"])
-        assert tool_result.get("isError") is True
-        assert "unknown or unauthorized" in (text or "")
+        assert tool_result.get("isError") is not True
+        assert "nope_does_not_exist" not in (text or "")
+        assert "type customers " not in (text or "")
 
-    def test_policy_denied_table_same_error_shape_as_unknown(self, mcp_client):
+    def test_policy_denied_and_unknown_are_indistinguishable(self, mcp_client):
         policy = AccessPolicy(
             policies=[
                 PolicyEntry(
@@ -385,12 +363,11 @@ class TestMCPdescribeTablesHTTP:
             unknown_text, unknown_res = self._call_text(
                 client, ["definitely_not_a_table"]
             )
-        assert denied_res.get("isError") is True
-        assert unknown_res.get("isError") is True
-        # Both should match the same prefix — caller cannot distinguish
-        # "exists but denied" from "does not exist".
-        assert "unknown or unauthorized" in (denied_text or "")
-        assert "unknown or unauthorized" in (unknown_text or "")
+        # Silent skip — neither is an error, and neither leaks the name.
+        assert denied_res.get("isError") is not True
+        assert unknown_res.get("isError") is not True
+        assert "type orders " not in (denied_text or "")
+        assert "definitely_not_a_table" not in (unknown_text or "")
 
 
 class TestMCPbuildQueryHTTP:
@@ -516,6 +493,7 @@ class TestMCPGETEndpoint:
             result = _mcp_call_tool(client, "list_tables")
         assert "tables" in result
         assert len(result["tables"]) > 0
+        assert all(isinstance(t, str) for t in result["tables"])
 
 
 # ---------------------------------------------------------------------------
@@ -588,27 +566,42 @@ class TestMCPPolicyHTTP:
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
             result = _mcp_call_tool(client, "list_tables")
-        names = {t["name"] for t in result["tables"]}
-        # customers is allowed
+        names = set(result["tables"])
         assert "customers" in names
-        # orders is not in the policy
         assert "orders" not in names
 
-    def test_describe_table_filters_blocked_columns(self, mcp_client):
+    def test_describe_tables_filters_blocked_columns(self, mcp_client):
+        """describe_tables returns SDL; the excluded column must not appear."""
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
-            result = _mcp_call_tool(client, "describe_table", {"name": "customers"})
-        col_names = {c["name"] for c in result["columns"]}
-        assert "customer_id" in col_names
-        # email is explicitly excluded
-        assert "email" not in col_names
+            result = _mcp_post(
+                client,
+                _mcp_json_request(
+                    "tools/call",
+                    {"name": "describe_tables", "arguments": {"names": ["customers"]}},
+                ),
+            )
+        tool_result = result["result"]
+        text = (tool_result.get("content") or [{}])[0].get("text", "")
+        assert "customer_id" in text
+        assert "email" not in text
 
-    def test_describe_table_denied_for_unauthorized_table(self, mcp_client):
+    def test_describe_tables_silently_skips_unauthorized_table(self, mcp_client):
+        """A denied table is silently skipped — same shape as nonexistent."""
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
-            result = _mcp_call_tool(client, "describe_table", {"name": "orders"})
-        # orders is not covered by the policy → error dict
-        assert "error" in result
+            result = _mcp_post(
+                client,
+                _mcp_json_request(
+                    "tools/call",
+                    {"name": "describe_tables", "arguments": {"names": ["orders"]}},
+                ),
+            )
+        tool_result = result["result"]
+        text = (tool_result.get("content") or [{}])[0].get("text", "")
+        # Silent skip — denied table is indistinguishable from nonexistent.
+        assert tool_result.get("isError") is not True
+        assert "type orders " not in text
 
     def test_explore_relationships_hides_unauthorized_neighbors(self, mcp_client):
         """customers links to orders, but orders is outside the policy."""

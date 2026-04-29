@@ -3,18 +3,17 @@
 ## Recommended Workflow
 
 1. **Discover available tables** with `list_tables(filter=None)`.
-   The `filter` argument does a case-insensitive substring match on table name
-   and description, so you can narrow down a large warehouse without loading
-   everything into context.
+   Returns a flat list of table names visible to the caller. The `filter`
+   argument does a case-insensitive substring match on the name. Visibility
+   is enforced upstream by the GraphQL `_tables` field — denied tables are
+   never returned.
 
-2. **Inspect a table's columns** with `describe_table(name)`.
-   Returns column names, types, descriptions, and live-DB sample values — all
-   filtered to what your JWT authorizes you to see.
-
-   For full SDL with custom directives (`@table`, `@column`, `@relation`,
-   `@lineage`, `@masked`, `@filtered`) — the format the schema is authored
-   in — call `describe_tables(names: [str])` instead. The tool returns the effective
-   SDL slice for the named tables, suited for direct LLM consumption.
+2. **Inspect tables** with `describe_tables(names: [str])`.
+   Returns the effective `db.graphql` SDL slice for the named tables, with
+   full custom directives (`@table`, `@column`, `@relation`, `@lineage`,
+   `@masked`, `@filtered`) — the format the schema is authored in. Names
+   the caller cannot see (denied by policy or nonexistent) are silently
+   skipped, so the response shape cannot be used to probe for existence.
    **Do not use GraphQL `__schema` introspection** — `describe_tables`
    is the authoritative effective view with full directive metadata.
 
@@ -91,15 +90,16 @@ you cannot override them — the server enforces them on every execution.
 Every tool honours the caller's JWT payload. Depending on the deployed
 policy:
 
-- **Column-level**: `describe_table` and `build_query` strip blocked
-  columns; `run_graphql` rejects them with `FORBIDDEN_COLUMN`.
+- **Column-level**: `describe_tables` omits blocked columns from the SDL;
+  `build_query` strips them from generated queries; `run_graphql` rejects
+  them with `FORBIDDEN_COLUMN`.
 - **Row-level**: `run_graphql` silently injects row filters into every
   relevant table's resolver. You cannot bypass them.
-- **Table-level**: `list_tables`, `describe_table`, `describe_tables`,
-  `find_path`, `explore_relationships`, `trace_column_lineage` all filter
-  their output to authorized tables only. `describe_tables` rejects
-  unauthorized names with the same error shape as unknown names so the
-  caller cannot probe for table existence.
+- **Table-level**: `list_tables`, `describe_tables`, `find_path`,
+  `explore_relationships`, `trace_column_lineage` all filter their output
+  to authorized tables only. `describe_tables` silently skips unauthorized
+  names (same shape as nonexistent names) so the caller cannot probe for
+  table existence.
 
 ## `build_query` Generates Editable Templates
 

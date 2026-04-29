@@ -8,7 +8,6 @@ format-specific output.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Optional
 
 from .ir.models import (
@@ -28,37 +27,23 @@ from .dbt.processors.data_tests import build_relationships, preprocess_tests
 
 
 def extract_project(
-    catalog_path: str | Path,
-    manifest_path: str | Path,
+    catalog_path: str,
+    manifest_path: str,
     exclude_patterns: Optional[list[str]] = None,
 ) -> ProjectInfo:
     """Extract domain-neutral project information from a dbt project.
 
     Args:
-        catalog_path: Path to catalog.json.
-        manifest_path: Path to manifest.json.
+        catalog_path: fsspec-compatible URI to catalog.json (local path,
+            ``file://``, ``gs://``, ``s3://``, ``http(s)://``, ...).
+        manifest_path: fsspec-compatible URI to manifest.json.
         exclude_patterns: Regex patterns matched against model names; matching models excluded.
 
     Returns:
         ProjectInfo with models, relationships, enums, and lineage.
     """
-    catalog_path = Path(catalog_path)
-    manifest_path = Path(manifest_path)
-
-    # 1. Load catalog
-    if not catalog_path.exists():
-        raise FileNotFoundError(
-            f"catalog.json not found at {catalog_path}. Run 'dbt docs generate' first."
-        )
-    catalog = load_catalog(catalog_path)
-
-    # 2. Load manifest
-    if not manifest_path.exists():
-        raise FileNotFoundError(
-            f"manifest.json not found at {manifest_path}. "
-            "Run 'dbt compile' or 'dbt run' first."
-        )
-    manifest = load_manifest(manifest_path)
+    catalog = load_catalog(str(catalog_path))
+    manifest = load_manifest(str(manifest_path))
 
     # 3. Get project name and adapter type from manifest metadata
     project_name: str = manifest.metadata.project_name

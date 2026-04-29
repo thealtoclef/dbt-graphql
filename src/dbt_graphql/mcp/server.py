@@ -20,10 +20,8 @@ from graphql import ExecutionResult, execute, parse, validate
 from graphql.validation import specified_rules
 
 from ..formatter.schema import TableRegistry
-from ..formatter.sdl_view import effective_document, render_sdl
 from ..graphql.app import GraphQLBundle
 from ..graphql.auth import JWTPayload
-from ..graphql.effective import effective_registry
 from ..graphql.policy import PolicyEngine, PolicyError, ResolvedPolicy
 from .discovery import SchemaDiscovery
 
@@ -126,12 +124,12 @@ class McpTools:
         self,
         registry: TableRegistry,
         *,
-        bundle: GraphQLBundle | None = None,
+        bundle: GraphQLBundle,
         project=None,
         policy_engine: PolicyEngine | None = None,
     ) -> None:
         self._project = project
-        self._discovery = SchemaDiscovery(registry, project=project)
+        self._discovery = SchemaDiscovery(registry)
         self._bundle = bundle
         self._policy_engine = policy_engine
 
@@ -165,72 +163,25 @@ class McpTools:
     # ---- tools ----
 
     def list_tables(self, filter: str | None = None) -> dict[str, Any]:
-        """List tables the caller's access policy authorizes.
+        """List names of tables the caller's access policy authorizes.
 
         Args:
-            filter: If provided, only tables whose name or description contains
-                this substring (case-insensitive) are returned. Filter is applied
-                after visibility checks — tables the caller cannot see are never
-                returned regardless of whether they match the filter.
+            filter: Optional case-insensitive substring match on table name.
+                Visibility is enforced upstream by the GraphQL ``_tables``
+                resolver — denied tables are never returned regardless of
+                whether they would match the filter.
         """
-        ctx = _current_jwt()
-        tables = self._discovery.list_tables()
-        visible = [t for t in tables if self._is_visible(t.name, ctx)]
+        result = self._exec_graphql("{ _tables }")
+        names: list[str] = list(result.get("_tables") or [])
         if filter is not None:
             f = filter.lower()
-            visible = [
-                t
-                for t in visible
-                if f in t.name.lower() or (t.description and f in t.description.lower())
-            ]
+            names = [n for n in names if f in n.lower()]
         return {
-            "tables": [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "column_count": t.column_count,
-                    "relationship_count": t.relationship_count,
-                }
-                for t in visible
-            ],
+            "tables": names,
             "_meta": {
                 "next_steps": [
-                    "Call describe_table(name) to get full column details for a specific table.",
+                    "Call describe_tables(names) to get the SDL slice for one or more tables.",
                     "Call explore_relationships(table_name) to see how tables connect.",
-                ]
-            },
-        }
-
-    def describe_table(self, name: str) -> dict[str, Any]:
-        """Get column details for a table, filtered by the caller's policy."""
-        ctx = _current_jwt()
-        try:
-            resolved = self._resolve(name, ctx)
-        except PolicyError as exc:
-            return {"error": str(exc), "_meta": {}}
-        detail = self._discovery.describe_table(name)
-        if detail is None:
-            return {"error": f"Table '{name}' not found.", "_meta": {}}
-        return {
-            "name": detail.name,
-            "description": detail.description,
-            "columns": [
-                {
-                    "name": c.name,
-                    "sql_type": c.sql_type,
-                    "not_null": c.not_null,
-                    "is_unique": c.is_unique,
-                    "description": c.description,
-                    "enum_values": c.enum_values,
-                }
-                for c in detail.columns
-                if self._column_visible(resolved, c.name)
-            ],
-            "relationships": detail.relationships,
-            "_meta": {
-                "next_steps": [
-                    "Call find_path(from_table, to_table) to discover join paths.",
-                    "Call build_query(table, fields) to generate a GraphQL query.",
                 ]
             },
         }
@@ -240,31 +191,43 @@ class McpTools:
 
         The output is plain SDL — type definitions with full custom
         directives (``@table``, ``@column``, ``@relation``, ``@masked``,
-        ``@filtered``).
-
-        Empty input is rejected. Names not in the caller's effective
-        registry are rejected with a single error shape so the response
-        does not reveal whether the table exists at all.
+        ``@filtered``). Names the caller cannot see (denied by policy or
+        nonexistent) are silently skipped — the caller cannot probe for
+        existence by inspecting errors.
         """
-        if not names:
-            raise ValueError(
-                "describe_tables requires at least one table name. "
-                "Call list_tables first to choose candidates."
-            )
-        if self._bundle is None:
-            raise RuntimeError("describe_tables requires a configured GraphQL bundle.")
+        result = self._exec_graphql(
+            "query Q($t: [String!]) { _sdl(tables: $t) }",
+            variables={"t": list(names)},
+        )
+        return result["_sdl"]
 
+    def _exec_graphql(
+        self, query: str, *, variables: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Run an internal GraphQL query against the bundle's executable schema.
+
+        Used by discovery tools that route through ``_sdl`` / ``_tables``
+        so MCP and HTTP share a single policy-pruning code path.
+        """
         ctx = _current_jwt()
-        eff = effective_registry(self._bundle.registry, ctx, self._policy_engine)
-        visible = {t.name for t in eff}
-        unknown = [n for n in names if n not in visible]
-        if unknown:
-            raise ValueError(
-                f"unknown or unauthorized table(s): {sorted(set(unknown))}"
+        context_value = self._bundle.build_context(ctx)
+        result = execute(
+            self._bundle.schema,
+            parse(query),
+            context_value=context_value,
+            variable_values=variables,
+        )
+        if not isinstance(result, ExecutionResult):
+            raise RuntimeError(
+                "internal GraphQL execution returned a coroutine; "
+                "_sdl / _tables resolvers must be synchronous."
             )
-
-        doc = effective_document(self._bundle.source_doc, eff, restrict_to=set(names))
-        return render_sdl(doc)
+        if result.errors:
+            raise RuntimeError(
+                "internal GraphQL execution failed: "
+                + "; ".join(str(e) for e in result.errors)
+            )
+        return result.data or {}
 
     def find_path(self, from_table: str, to_table: str) -> dict[str, Any]:
         """Find the shortest join path(s) between two visible tables."""
@@ -534,15 +497,17 @@ def _format_execution_result(result: ExecutionResult) -> dict[str, Any]:
 def create_mcp_server(
     registry: TableRegistry,
     *,
-    bundle: GraphQLBundle | None = None,
+    bundle: GraphQLBundle,
     project=None,
     policy_engine: PolicyEngine | None = None,
 ):
     """Build and return a fastmcp Server with all tools registered.
 
     ``registry`` is the structural source (same one GraphQL serves);
-    ``project`` is optional and contributes only dbt enrichment metadata
-    (table/column descriptions, declared enums).
+    ``bundle`` is the executable GraphQL schema MCP routes discovery and
+    query execution through; ``project`` is optional and contributes
+    only dbt enrichment metadata (column lineage, enums) consumed by
+    ``trace_column_lineage``.
     """
     from fastmcp import FastMCP
 
@@ -555,9 +520,6 @@ def create_mcp_server(
     mcp = FastMCP("dbt-graphql")
 
     mcp.tool(name="list_tables")(_instrument_tool("list_tables", tools.list_tables))
-    mcp.tool(name="describe_table")(
-        _instrument_tool("describe_table", tools.describe_table)
-    )
     mcp.tool(name="describe_tables")(
         _instrument_tool("describe_tables", tools.describe_tables)
     )

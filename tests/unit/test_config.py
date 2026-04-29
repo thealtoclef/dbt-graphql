@@ -1,7 +1,5 @@
 """Unit tests for config loading and pydantic-settings env var overrides."""
 
-import shutil
-
 import pytest
 from pathlib import Path
 
@@ -99,8 +97,8 @@ class TestProtocolValidation:
 class TestDbtConfig:
     def test_catalog_and_manifest_fields(self, tmp_path):
         cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
-        assert cfg.dbt.catalog == _FIXTURES / "catalog.json"
-        assert cfg.dbt.manifest == _FIXTURES / "manifest.json"
+        assert cfg.dbt.catalog == str(_FIXTURES / "catalog.json")
+        assert cfg.dbt.manifest == str(_FIXTURES / "manifest.json")
 
     def test_exclude_defaults_to_empty_list(self, tmp_path):
         cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
@@ -117,23 +115,15 @@ class TestDbtConfig:
         assert "^stg_" in cfg.dbt.exclude
         assert "^int_" in cfg.dbt.exclude
 
-    def test_relative_paths_resolved_from_config_dir(self, tmp_path):
-        catalog_dst = tmp_path / "catalog.json"
-        manifest_dst = tmp_path / "manifest.json"
-        shutil.copy(_FIXTURES / "catalog.json", catalog_dst)
-        shutil.copy(_FIXTURES / "manifest.json", manifest_dst)
-
-        cfg_path = _write_config(
-            tmp_path, "dbt:\n  catalog: catalog.json\n  manifest: manifest.json\n"
+    def test_fsspec_uri_passes_through(self, tmp_path):
+        yaml = (
+            "dbt:\n"
+            "  catalog: gs://my-bucket/catalog.json\n"
+            "  manifest: s3://my-bucket/manifest.json\n"
         )
-        cfg = load_config(cfg_path)
-        assert cfg.dbt.catalog == catalog_dst
-        assert cfg.dbt.manifest == manifest_dst
-
-    def test_absolute_paths_unchanged(self, tmp_path):
-        cfg = load_config(_write_config(tmp_path, _MINIMAL_YAML))
-        assert cfg.dbt.catalog.is_absolute()
-        assert cfg.dbt.manifest.is_absolute()
+        cfg = load_config(_write_config(tmp_path, yaml))
+        assert cfg.dbt.catalog == "gs://my-bucket/catalog.json"
+        assert cfg.dbt.manifest == "s3://my-bucket/manifest.json"
 
 
 class TestServeConfig:

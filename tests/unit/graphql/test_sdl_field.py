@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from graphql import execute, parse
 
 from dbt_graphql.formatter.graphql import build_registry
@@ -133,3 +134,111 @@ def test_two_callers_same_boot_different_sdl():
     assert "type orders " in admin_sdl
     assert "type orders " not in user_sdl
     assert "type customers " in user_sdl
+
+
+def _exec_query(bundle, payload: JWTPayload, query: str):
+    ctx = bundle.build_context(payload)
+    result = execute(bundle.schema, parse(query), context_value=ctx)
+    if asyncio.iscoroutine(result):
+        result = asyncio.get_event_loop().run_until_complete(result)
+    assert result.errors is None, result.errors  # ty: ignore[unresolved-attribute]
+    return result.data  # ty: ignore[unresolved-attribute]
+
+
+def test_sdl_with_tables_arg_filters_to_subset():
+    bundle = _bundle()
+    data = _exec_query(
+        bundle,
+        JWTPayload({}),
+        '{ _sdl(tables: ["customers"]) }',
+    )
+    sdl = data["_sdl"]
+    parse(sdl)
+    assert "type customers " in sdl
+    assert "type orders " not in sdl
+
+
+def test_sdl_with_tables_arg_silently_skips_unknown_names():
+    bundle = _bundle()
+    data = _exec_query(
+        bundle,
+        JWTPayload({}),
+        '{ _sdl(tables: ["customers", "does_not_exist"]) }',
+    )
+    sdl = data["_sdl"]
+    parse(sdl)
+    assert "type customers " in sdl
+    assert "does_not_exist" not in sdl
+
+
+def test_sdl_with_tables_arg_silently_skips_policy_hidden_names():
+    policy = AccessPolicy(
+        policies=[
+            PolicyEntry(
+                name="cust-only",
+                effect=Effect.ALLOW,
+                when="True",
+                tables={
+                    "customers": TablePolicy(
+                        column_level=ColumnLevelPolicy(include_all=True),
+                    ),
+                },
+            )
+        ]
+    )
+    bundle = _bundle(access_policy=policy)
+    data = _exec_query(
+        bundle,
+        JWTPayload({}),
+        '{ _sdl(tables: ["customers", "orders"]) }',
+    )
+    sdl = data["_sdl"]
+    parse(sdl)
+    assert "type customers " in sdl
+    assert "type orders " not in sdl
+
+
+def test_sdl_with_empty_tables_arg_returns_empty_view():
+    bundle = _bundle()
+    data = _exec_query(bundle, JWTPayload({}), "{ _sdl(tables: []) }")
+    sdl = data["_sdl"]
+    assert "type customers " not in sdl
+    assert "type orders " not in sdl
+
+
+def test_tables_field_returns_visible_names():
+    bundle = _bundle()
+    data = _exec_query(bundle, JWTPayload({}), "{ _tables }")
+    assert set(data["_tables"]) >= {"customers", "orders"}
+
+
+def test_tables_field_reflects_caller_policy():
+    policy = AccessPolicy(
+        policies=[
+            PolicyEntry(
+                name="cust-only",
+                effect=Effect.ALLOW,
+                when="True",
+                tables={
+                    "customers": TablePolicy(
+                        column_level=ColumnLevelPolicy(include_all=True),
+                    ),
+                },
+            )
+        ]
+    )
+    bundle = _bundle(access_policy=policy)
+    data = _exec_query(bundle, JWTPayload({}), "{ _tables }")
+    assert data["_tables"] == ["customers"]
+
+
+def test_reserved_name_collision_rejects_tables_model():
+    project = extract_project(CATALOG, MANIFEST)
+    registry = build_registry(project)
+    # Force a collision by renaming an existing table to the reserved name.
+    next(iter(registry)).name = "_tables"
+    with pytest.raises(ValueError, match="_tables"):
+        create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )

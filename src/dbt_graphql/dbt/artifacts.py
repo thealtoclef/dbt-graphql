@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Union
 
+import fsspec
 from dbt_artifacts_parser.parser import (
     CatalogV1,
     ManifestV1,
@@ -39,11 +39,14 @@ DbtManifest = Union[
 ]
 
 
-def load_catalog(path: Path | str) -> DbtCatalog:
-    data = json.loads(Path(path).read_text())
-    return parse_catalog(data)
+def _read_json(uri: str) -> dict:
+    with fsspec.open(uri, "rb") as f:
+        return json.load(f)
 
 
-def load_manifest(path: Path | str) -> DbtManifest:
-    data = json.loads(Path(path).read_text())
-    return parse_manifest(data)
+def load_catalog(uri: str) -> DbtCatalog:
+    return parse_catalog(_read_json(uri))
+
+
+def load_manifest(uri: str) -> DbtManifest:
+    return parse_manifest(_read_json(uri))

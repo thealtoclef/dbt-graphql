@@ -140,8 +140,11 @@ class SecurityConfig(BaseModel):
 
 
 class DbtConfig(BaseModel):
-    catalog: Path
-    manifest: Path
+    # fsspec URIs: bare paths and ``file://`` resolve locally; remote schemes
+    # (``gs://``, ``s3://``, ``http(s)://``, ...) require the matching extra
+    # to be installed (``pip install dbt-graphql[gcs]`` / ``[s3]``).
+    catalog: str
+    manifest: str
     exclude: list[str] = []
 
 
@@ -198,23 +201,23 @@ class AppConfig(BaseSettings):
         return env_settings, init_settings, dotenv_settings, file_secret_settings
 
 
-def load_config(path: str | Path) -> AppConfig:
-    """Load config.yml and merge with DBT_GRAPHQL__* environment variables.
+def load_config(path: str | Path | None = None) -> AppConfig:
+    """Build :class:`AppConfig` from an optional YAML file plus env vars.
 
-    Env vars override file values. Example: DBT_GRAPHQL__ENRICHMENT__BUDGET=5
-    Relative paths for catalog and manifest are resolved against the config file's directory.
+    ``DBT_GRAPHQL__*`` environment variables are always read and take
+    precedence over file values (see ``settings_customise_sources``). When
+    ``path`` is ``None``, the file source is skipped and configuration is
+    sourced from env vars alone. Example:
+    ``DBT_GRAPHQL__DBT__CATALOG=gs://bkt/catalog.json``.
+
+    ``dbt.catalog`` and ``dbt.manifest`` are passed verbatim to fsspec, so
+    any supported URI works (``gs://``, ``s3://``, ``http(s)://``,
+    ``file://``, or a bare path interpreted as local).
     """
+    if path is None:
+        return AppConfig()  # type: ignore[ty:missing-argument]
     config_path = Path(path).resolve()
-    config_dir = config_path.parent
     data = yaml.safe_load(config_path.read_text())
     if not isinstance(data, dict):
         raise ValueError("config.yml must be a YAML mapping")
-    dbt = data.get("dbt", {})
-    if isinstance(dbt, dict):
-        for field in ("catalog", "manifest"):
-            if field in dbt and dbt[field]:
-                p = Path(str(dbt[field]))
-                if not p.is_absolute():
-                    dbt[field] = str(config_dir / p)
-        data["dbt"] = dbt
     return AppConfig(**data)

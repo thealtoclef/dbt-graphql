@@ -114,7 +114,9 @@ def build_catalog_schema(catalog: DbtCatalog) -> dict:
             if metadata is None:
                 continue
             db = getattr(metadata, "database", None)
-            sch = getattr(metadata, "schema_", None) or getattr(metadata, "schema", None)
+            sch = getattr(metadata, "schema_", None) or getattr(
+                metadata, "schema", None
+            )
             tbl = getattr(metadata, "name", None)
             if not (db and sch and tbl):
                 continue

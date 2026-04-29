@@ -25,7 +25,12 @@ def main(argv: list[str] | None = None) -> None:
         default=Path(os.environ["DBT_GRAPHQL_CONFIG"])
         if os.environ.get("DBT_GRAPHQL_CONFIG")
         else None,
-        help="Path to config.yml (required). Falls back to $DBT_GRAPHQL_CONFIG.",
+        help=(
+            "Path to config.yml (optional). DBT_GRAPHQL__* env vars are "
+            "always read and override file values; when --config is omitted "
+            "config is sourced from env vars alone. "
+            "Falls back to $DBT_GRAPHQL_CONFIG."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -35,10 +40,6 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     args = parser.parse_args(argv)
-
-    if not args.config:
-        parser.print_help()
-        sys.exit(0)
 
     from .config import load_config
 

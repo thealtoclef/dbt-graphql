@@ -30,20 +30,33 @@ def create_query_type(registry) -> QueryType:
         name = table_def.name
         query_type.set_field(name, _make_resolver(name))
     query_type.set_field("_sdl", _resolve_sdl)
+    query_type.set_field("_tables", _resolve_tables)
     return query_type
 
 
-def _resolve_sdl(_, info) -> str:
+def _resolve_sdl(_, info, tables: list[str] | None = None) -> str:
     """Return the effective db.graphql SDL for the current caller.
 
     Computed per-request from the caller's JWT and the active policy
-    engine; never cached across users.
+    engine; never cached across users. When ``tables`` is provided the
+    output is intersected with the caller's visible set — names not
+    visible (denied or nonexistent) are silently skipped.
     """
     ctx = info.context
     eff = effective_registry(
         ctx["registry"], ctx.get("jwt_payload"), ctx.get("policy_engine")
     )
-    return render_sdl(effective_document(ctx["source_doc"], eff))
+    restrict = set(tables) if tables is not None else None
+    return render_sdl(effective_document(ctx["source_doc"], eff, restrict_to=restrict))
+
+
+def _resolve_tables(_, info) -> list[str]:
+    """Return names of tables visible to the current caller after policy pruning."""
+    ctx = info.context
+    eff = effective_registry(
+        ctx["registry"], ctx.get("jwt_payload"), ctx.get("policy_engine")
+    )
+    return [t.name for t in eff]
 
 
 def _make_resolver(table_name: str):

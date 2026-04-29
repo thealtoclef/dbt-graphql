@@ -9,12 +9,17 @@ pip install dbt-graphql                    # core (generate + serve)
 pip install dbt-graphql[postgres]          # + asyncpg
 pip install dbt-graphql[mysql]             # + aiomysql
 pip install dbt-graphql[redis]             # + Redis-backed cache for multi-replica
+pip install dbt-graphql[gcs]               # + read catalog/manifest from gs://
+pip install dbt-graphql[s3]                # + read catalog/manifest from s3://
 ```
 
 ## Quick start
 
-The CLI takes a single `--config` flag pointing at `config.yml`. See
-[`config.example.yml`](config.example.yml) for a documented template.
+Configuration comes from a YAML file (optional, passed via `--config`)
+plus `DBT_GRAPHQL__*` environment variables (always read, take precedence).
+With `--config` omitted, all settings must come from env vars — handy for
+containerised deploys. See [`config.example.yml`](config.example.yml) for
+a documented template.
 
 **1. Generate schema files (no DB connection required)**
 

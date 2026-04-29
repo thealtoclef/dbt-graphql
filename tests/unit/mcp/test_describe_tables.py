@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import pytest
 from graphql import parse
 
 from dbt_graphql.formatter.graphql import build_registry
@@ -68,22 +67,25 @@ def test_multiple_tables():
     assert "type orders " in sdl
 
 
-def test_empty_list_rejected():
+def test_empty_list_returns_empty_sdl():
     tools = _tools()
-    with pytest.raises(ValueError, match="at least one table name"):
-        tools.describe_tables([])
+    sdl = tools.describe_tables([])
+    # No directive declarations or types — silent skip on empty input.
+    assert "type customers " not in sdl
+    assert "type orders " not in sdl
 
 
-def test_unknown_name_rejected_without_leaking_existence():
+def test_unknown_name_silently_skipped():
     tools = _tools()
-    with pytest.raises(ValueError, match="unknown or unauthorized"):
-        tools.describe_tables(["nope_does_not_exist"])
+    sdl = tools.describe_tables(["nope_does_not_exist"])
+    assert "nope_does_not_exist" not in sdl
+    assert "type customers " not in sdl
 
 
-def test_unauthorized_table_rejected_same_message_as_unknown():
-    """A table the caller's policy denies must surface the same error
-    shape as a table that genuinely does not exist — otherwise the
-    error itself leaks existence."""
+def test_unauthorized_and_unknown_are_indistinguishable():
+    """A table the caller's policy denies must produce the same output
+    shape as a table that genuinely does not exist — both are silently
+    skipped so the response cannot leak existence."""
     policy = AccessPolicy(
         policies=[
             PolicyEntry(
@@ -99,14 +101,10 @@ def test_unauthorized_table_rejected_same_message_as_unknown():
         ]
     )
     tools = _tools(access_policy=policy)
-    with pytest.raises(ValueError, match="unknown or unauthorized") as exc_real:
-        tools.describe_tables(["orders"])  # exists in registry, denied by policy
-    with pytest.raises(ValueError, match="unknown or unauthorized") as exc_fake:
-        tools.describe_tables(["nonexistent_xyz"])
-    # The error messages should be structurally identical except for the
-    # offending name — same prefix, no policy-vs-existence distinction.
-    assert "unknown or unauthorized" in str(exc_real.value)
-    assert "unknown or unauthorized" in str(exc_fake.value)
+    denied = tools.describe_tables(["orders"])
+    unknown = tools.describe_tables(["nonexistent_xyz"])
+    assert "type orders " not in denied
+    assert "nonexistent_xyz" not in unknown
 
 
 def test_masked_directive_present_when_policy_masks_column():

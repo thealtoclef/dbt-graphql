@@ -1,18 +1,18 @@
 # Configuration Reference
 
-All configuration is loaded from a single YAML file passed via `--config`. A documented template is shipped at [`config.example.yml`](../config.example.yml) — copy it to `config.yml` and edit. Default values for optional fields are defined as constants in [`src/dbt_graphql/defaults.py`](../src/dbt_graphql/defaults.py).
+Configuration is built from two layers, in increasing precedence: a YAML file (optional, passed via `--config`) and `DBT_GRAPHQL__*` environment variables (always read). When `--config` is omitted, configuration is sourced from env vars alone — useful for containerised deploys where the artifact paths and DB credentials all come from the orchestrator. A documented YAML template is shipped at [`config.example.yml`](../config.example.yml). Default values for optional fields are defined as constants in [`src/dbt_graphql/defaults.py`](../src/dbt_graphql/defaults.py).
 
 ---
 
 ## CLI
 
 ```
-dbt-graphql --config config.yml [--output DIR]
+dbt-graphql [--config config.yml] [--output DIR]
 ```
 
 | Flag | Description |
 |---|---|
-| `--config PATH` | Path to `config.yml` (required). |
+| `--config PATH` | Path to `config.yml` (optional). Falls back to `$DBT_GRAPHQL_CONFIG`. If neither is set, all configuration must come from `DBT_GRAPHQL__*` env vars. |
 | `--output DIR` | Write `db.graphql` to DIR and exit (generate mode). Omit to serve. |
 
 **Generate mode** (`--output` present): parse dbt artifacts, write schema files, exit. No database connection required.
@@ -23,12 +23,12 @@ dbt-graphql --config config.yml [--output DIR]
 
 ## `dbt` (required)
 
-Paths to dbt artifact files produced by `dbt docs generate`.
+Locations of the dbt artifact files produced by `dbt docs generate`. Both fields accept any [fsspec](https://filesystem-spec.readthedocs.io/)-compatible URI: bare paths and `file://` resolve locally (relative to the **process working directory**, not the config file); remote schemes (`gs://`, `s3://`, `http(s)://`, …) require the matching extra to be installed (`pip install dbt-graphql[gcs]` or `[s3]`).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `catalog` | Path | — | Path to `target/catalog.json`. Relative paths resolve from the config file's directory. |
-| `manifest` | Path | — | Path to `target/manifest.json`. Relative paths resolve from the config file's directory. |
+| `catalog` | string (URI) | — | URI to `catalog.json` — local path, `file://`, `gs://`, `s3://`, `http(s)://`, … |
+| `manifest` | string (URI) | — | URI to `manifest.json`, same scheme rules as `catalog`. |
 | `exclude` | list | `[]` | Regex patterns matched against model names; matching models are excluded (OR logic). |
 
 ---

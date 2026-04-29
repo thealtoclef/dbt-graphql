@@ -28,7 +28,9 @@ dev_mode: true   # this example is dev-friendly; set to false (or remove) in pro
 # dbt (required) — paths to dbt artifacts
 # -----------------------------------------------------------------------------
 dbt:
-  catalog: target/catalog.json    # relative to this file, or absolute
+  # fsspec URIs — bare paths resolve from the process CWD (not this file).
+  # Remote schemes (gs://, s3://, http(s)://) require the matching extra.
+  catalog: target/catalog.json
   manifest: target/manifest.json
   # exclude:                      # regex patterns to skip models (OR logic)
   #   - '^stg_'

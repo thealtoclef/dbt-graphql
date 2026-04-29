@@ -22,9 +22,8 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 
 | Tool                                | Purpose                                                              |
 |-------------------------------------|----------------------------------------------------------------------|
-| `list_tables(filter?)`              | Tables the caller's policy authorizes — name, description, counts. Optional case-insensitive `filter` substring matches name or description. |
-| `describe_table(name)`              | Column details for an authorized table; blocked columns are hidden.  |
-| `describe_tables(names)`            | Effective `db.graphql` SDL slice for one or more tables — full custom directives (`@table`, `@column`, `@relation`, `@masked`, `@filtered`). Unknown and policy-denied names raise the same error shape so existence is not leaked. |
+| `list_tables(filter?)`              | Names of tables the caller's policy authorizes (flat list of strings). Optional case-insensitive `filter` substring matches the name. Backed by GraphQL `_tables`. |
+| `describe_tables(names)`            | Effective `db.graphql` SDL slice for one or more tables — full custom directives (`@table`, `@column`, `@relation`, `@masked`, `@filtered`). Names the caller cannot see (denied or nonexistent) are silently skipped, so existence cannot be probed. Backed by GraphQL `_sdl(tables: ...)`. |
 | `find_path(from_table, to_table)`   | Shortest join path(s) via BFS on the relationship graph.             |
 | `explore_relationships(table_name)` | Authorized tables related to the given one (outgoing / incoming).    |
 | `trace_column_lineage(table, column)` | Upstream sources and downstream consumers for a column, derived from dbt's column-level lineage. Edges to unauthorized tables are stripped. |
@@ -37,29 +36,30 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 |---|---|
 | `dbt-graphql://usage-guide` | Markdown workflow guide for LLM agents — recommended call order, query-guard limits, `where`-arg semantics, and policy invariants. Exposed as an MCP **resource** (not a tool) so clients can stream it into agent context without burning a tool call. |
 
-Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_table` → `find_path` → `build_query` → `run_graphql`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
+Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_tables` → `find_path` → `build_query` → `run_graphql`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
 
 ### Authorization model
 
 The MCP server sits behind the same Starlette `AuthenticationMiddleware` as `/graphql`, so every request carries a verified JWT (or the empty anonymous payload). All tools honour the same `AccessPolicy` that gates GraphQL:
 
-- Discovery tools (`list_tables`, `describe_table`, `describe_tables`, `explore_relationships`, `trace_column_lineage`, `build_query`) **filter** their output to tables and columns the caller is authorized to see. There is no leak via "the schema lists a table I can't read." `describe_tables` additionally collapses "unknown name" and "policy-denied" into one error so the caller cannot probe for existence.
+- Discovery tools (`list_tables`, `describe_tables`, `explore_relationships`, `trace_column_lineage`, `build_query`) **filter** their output to tables and columns the caller is authorized to see. `list_tables` and `describe_tables` route through the GraphQL executable schema (`_tables` / `_sdl(tables: ...)`) so MCP and HTTP share a single policy-pruning code path with no risk of drift. `describe_tables` silently skips unknown / policy-denied names so the caller cannot probe for existence.
 - `run_graphql` re-executes the query through the **same Ariadne schema** with the **same per-request context** the HTTP layer would have built. Column allow-lists, masks, and row filters all apply structurally — there is no second authorization path to drift from the GraphQL one.
 
 There is no raw-SQL tool. `run_graphql` is the only data-read tool, by design — raw SQL cannot be policy-enforced without parsing arbitrary statements, and "let the LLM execute SQL it wrote" is exactly the bypass the access policy exists to prevent.
 
 ---
 
-## `SchemaDiscovery` — the engine behind the tools
+## `SchemaDiscovery` — the engine behind the relationship tools
 
 [`src/dbt_graphql/mcp/discovery.py`](../src/dbt_graphql/mcp/discovery.py)
 
-`SchemaDiscovery` derives **structure** (tables, columns, types, FK relationships) from the same `TableRegistry` that GraphQL serves. The dbt `ProjectInfo` is layered on as **manifest-only metadata** — table/column descriptions and declared enum values. Discovery never queries the warehouse: the manifest is the single source of truth. This means MCP cannot expose a table or column that GraphQL won't, and cannot leak data through "metadata" disguised as schema.
+`SchemaDiscovery` covers the relationship-graph tools (`find_path`, `explore_relationships`) — the operations that have no GraphQL equivalent. Adjacency is derived from the same `TableRegistry` that GraphQL serves. Discovery never queries the warehouse: the manifest is the single source of truth.
 
 - Builds a **bidirectional adjacency list** at construction time by walking the registry: every `RelationDef` on a column becomes two edges (outgoing from the owning table, incoming on the target).
 - `find_path()` runs BFS level-by-level, returning *all* shortest paths so the agent can choose between e.g. `orders → customers` and `orders → payments → customers`.
-- `describe_table()` returns column metadata derived from the manifest: SQL type, nullability, uniqueness, dbt description, and declared enum values when present.
 - `build_query()` validates the candidate query against the live GraphQL schema (`graphql.validate`) before returning, so an agent never receives a string that won't parse.
+
+Listing and SDL inspection (`list_tables`, `describe_tables`) are not part of `SchemaDiscovery`; they execute against the bundle's GraphQL executable schema (`_tables` / `_sdl(tables: ...)`) so policy pruning runs through the same code path as `/graphql`.
 
 ---
 

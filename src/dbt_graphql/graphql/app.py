@@ -72,8 +72,14 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         for t in registry
     ]
     query_fields.append(
-        '  "The effective db.graphql SDL for this caller, with full custom directives."\n'
-        "  _sdl: String!"
+        '  "The effective db.graphql SDL for this caller, with full custom directives.\\n'
+        "If `tables` is given, only those tables are emitted; names the caller cannot "
+        'see are silently skipped."\n'
+        "  _sdl(tables: [String!]): String!"
+    )
+    query_fields.append(
+        '  "Names of tables visible to this caller after policy pruning."\n'
+        "  _tables: [String!]!"
     )
     query_block = "type Query {\n" + "\n".join(query_fields) + "\n}"
 
@@ -123,11 +129,13 @@ def create_graphql_subapp(
     any co-mounted sub-apps (e.g. MCP). See
     ``dbt_graphql.serve.app.create_app``.
     """
-    if any(t.name == "_sdl" for t in registry):
-        raise ValueError(
-            "model name '_sdl' collides with the reserved Query._sdl field; "
-            "rename the model or exclude it via dbt.exclude."
-        )
+    _RESERVED = {"_sdl", "_tables"}
+    for t in registry:
+        if t.name in _RESERVED:
+            raise ValueError(
+                f"model name '{t.name}' collides with the reserved Query.{t.name} "
+                "field; rename the model or exclude it via dbt.exclude."
+            )
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
     source_doc = build_source_doc(registry)
     query_type = create_query_type(registry)

@@ -36,7 +36,7 @@ Each GraphQL **and MCP** request is evaluated against the policy using the
 `Authorization: Bearer <jwt>` header. Both transports share the same
 `AuthenticationMiddleware` and the same `AccessPolicy`, so a caller's
 column allow-list, masks, and row filters apply identically to direct
-`/graphql` calls and to MCP tools (`list_tables`, `describe_table`,
+`/graphql` calls and to MCP tools (`list_tables`, `describe_tables`,
 `run_graphql`, …). See [mcp.md § Authorization model](mcp.md#authorization-model).
 
 When `security.enabled` is false (the default), JWTs are not verified and

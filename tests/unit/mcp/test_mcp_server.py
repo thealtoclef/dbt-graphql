@@ -8,7 +8,6 @@ from dbt_graphql.graphql.app import create_graphql_subapp
 from dbt_graphql.graphql.policy import (
     AccessPolicy,
     ColumnLevelPolicy,
-    PolicyEngine,
     PolicyEntry,
     TablePolicy,
     Effect,
@@ -26,25 +25,50 @@ CATALOG = FIXTURES_DIR / "catalog.json"
 MANIFEST = FIXTURES_DIR / "manifest.json"
 
 
-def _make_tools() -> McpTools:
+class _FakeDB:
+    """Stand-in for DatabaseManager: records compiled SQL and returns canned rows."""
+
+    def __init__(self, rows=()):
+        self._rows = list(rows)
+        self.executed = []
+
+    @property
+    def dialect_name(self) -> str:
+        return "postgresql"
+
+    async def execute(self, stmt):
+        self.executed.append(stmt)
+        return list(self._rows)
+
+
+def _make_tools(access_policy=None) -> McpTools:
     project = extract_project(CATALOG, MANIFEST)
     registry = build_registry(project)
-    return McpTools(registry, project=project)
+    bundle = create_graphql_subapp(
+        registry=registry,
+        db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        access_policy=access_policy,
+    )
+    return McpTools(
+        registry,
+        bundle=bundle,
+        project=project,
+        policy_engine=bundle.policy_engine,
+    )
 
 
 class TestListTables:
     def test_returns_table_names(self):
         tools = _make_tools()
         result = tools.list_tables()
-        names = {t["name"] for t in result["tables"]}
+        names = set(result["tables"])
         assert "customers" in names
         assert "orders" in names
 
-    def test_each_table_has_column_count(self):
+    def test_returns_flat_list_of_strings(self):
         tools = _make_tools()
         result = tools.list_tables()
-        for t in result["tables"]:
-            assert t["column_count"] > 0
+        assert all(isinstance(t, str) for t in result["tables"])
 
     def test_has_next_steps(self):
         tools = _make_tools()
@@ -54,17 +78,9 @@ class TestListTables:
     def test_filter_returns_only_matching_tables(self):
         tools = _make_tools()
         result = tools.list_tables(filter="customer")
-        names = {t["name"] for t in result["tables"]}
+        names = set(result["tables"])
         assert "customers" in names
-        # "customer" should not match "orders" or "line_items"
         assert "orders" not in names
-
-    def test_filter_matches_description(self):
-        tools = _make_tools()
-        # Filter on a term likely in a description, not the name
-        result = tools.list_tables(filter="unique")
-        # At least one table should have "unique" in its description
-        assert len(result["tables"]) >= 0  # table may or may not exist with that term
 
     def test_filter_no_match_returns_empty(self):
         tools = _make_tools()
@@ -74,8 +90,7 @@ class TestListTables:
     def test_filter_is_case_insensitive(self):
         tools = _make_tools()
         result = tools.list_tables(filter="CUSTOMER")
-        names = {t["name"] for t in result["tables"]}
-        assert "customers" in names
+        assert "customers" in set(result["tables"])
 
 
 class TestUsageGuide:
@@ -95,7 +110,7 @@ class TestUsageGuide:
     def test_contains_workflow_sections(self):
         text = McpTools.usage_guide_text()
         assert "list_tables" in text
-        assert "describe_table" in text
+        assert "describe_tables" in text
         assert "build_query" in text
         assert "run_graphql" in text
 
@@ -105,14 +120,15 @@ class TestUsageGuide:
         assert "JWT" in text or "column" in text
 
     def test_registered_as_resource_not_tool(self):
-        """``get_usage_guide`` must NOT be registered as a tool."""
         from dbt_graphql.mcp.server import create_mcp_server
 
         project = extract_project(CATALOG, MANIFEST)
         registry = build_registry(project)
-        mcp = create_mcp_server(registry, project=project)
-        # FastMCP's tool registry is keyed by name; resources sit in a
-        # separate map. Walk both via the public introspection API.
+        bundle = create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )
+        mcp = create_mcp_server(registry, bundle=bundle, project=project)
         import asyncio
 
         tools = asyncio.run(mcp.list_tools())
@@ -121,34 +137,6 @@ class TestUsageGuide:
         assert "get_usage_guide" not in tool_names
         resource_uris = [str(getattr(r, "uri", "")) for r in resources]
         assert any("usage-guide" in u for u in resource_uris)
-
-
-class TestDescribeTable:
-    def test_returns_columns(self):
-        tools = _make_tools()
-        result = tools.describe_table("customers")
-        col_names = {c["name"] for c in result["columns"]}
-        assert "customer_id" in col_names
-
-    def test_column_has_required_fields(self):
-        tools = _make_tools()
-        result = tools.describe_table("orders")
-        for col in result["columns"]:
-            assert "name" in col
-            assert "sql_type" in col
-            assert "not_null" in col
-            assert "is_unique" in col
-            assert "enum_values" in col
-
-    def test_missing_table_returns_error(self):
-        tools = _make_tools()
-        result = tools.describe_table("no_such_table")
-        assert "error" in result
-
-    def test_has_next_steps(self):
-        tools = _make_tools()
-        result = tools.describe_table("customers")
-        assert len(result["_meta"]["next_steps"]) > 0
 
 
 class TestFindPath:
@@ -207,20 +195,17 @@ class TestBuildQuery:
         assert result["fields"] == fields
 
 
-class TestRunGraphqlNoBundle:
-    def test_returns_error_when_bundle_absent(self):
-        tools = _make_tools()
-        result = asyncio.run(tools.run_graphql("query { customers { customer_id } }"))
-        assert "errors" in result
-
-
 class TestMcpServerRegistration:
     def test_create_server_does_not_crash(self):
         from dbt_graphql.mcp.server import create_mcp_server
 
         project = extract_project(CATALOG, MANIFEST)
         registry = build_registry(project)
-        mcp = create_mcp_server(registry, project=project)
+        bundle = create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )
+        mcp = create_mcp_server(registry, bundle=bundle, project=project)
         assert mcp is not None
 
 
@@ -234,57 +219,53 @@ class TestMcpServerRegistration:
 # ---------------------------------------------------------------------------
 
 
-def _customers_only_engine() -> PolicyEngine:
+def _customers_only_policy() -> AccessPolicy:
     """An access policy that authorizes ``customers`` (with ``email``
-    blocked) and denies everything else. ``when: 'true'`` matches any
-    JWT, including the empty anonymous payload tests run under.
+    blocked) and denies everything else.
     """
-    return PolicyEngine(
-        AccessPolicy(
-            policies=[
-                PolicyEntry(
-                    effect=Effect.ALLOW,
-                    name="customers-only",
-                    when="True",
-                    tables={
-                        "customers": TablePolicy(
-                            column_level=ColumnLevelPolicy(
-                                include_all=True,
-                                excludes=["email"],
-                            ),
+    return AccessPolicy(
+        policies=[
+            PolicyEntry(
+                effect=Effect.ALLOW,
+                name="customers-only",
+                when="True",
+                tables={
+                    "customers": TablePolicy(
+                        column_level=ColumnLevelPolicy(
+                            include_all=True,
+                            excludes=["email"],
                         ),
-                    },
-                ),
-            ]
-        )
+                    ),
+                },
+            ),
+        ]
     )
 
 
 def _make_policy_tools() -> McpTools:
-    project = extract_project(CATALOG, MANIFEST)
-    registry = build_registry(project)
-    return McpTools(registry, project=project, policy_engine=_customers_only_engine())
+    return _make_tools(access_policy=_customers_only_policy())
 
 
 class TestPolicyFiltering:
     def test_list_tables_hides_unauthorized(self):
         tools = _make_policy_tools()
         result = tools.list_tables()
-        names = {t["name"] for t in result["tables"]}
+        names = set(result["tables"])
         assert "customers" in names
         assert "orders" not in names
 
-    def test_describe_table_filters_blocked_columns(self):
+    def test_describe_tables_filters_blocked_columns(self):
         tools = _make_policy_tools()
-        result = tools.describe_table("customers")
-        cols = {c["name"] for c in result["columns"]}
-        assert "customer_id" in cols
-        assert "email" not in cols
+        sdl = tools.describe_tables(["customers"])
+        # "email" is excluded by policy; the SDL slice must omit it.
+        assert "customer_id" in sdl
+        assert "email" not in sdl
 
-    def test_describe_table_denied_returns_error(self):
+    def test_describe_tables_silently_skips_denied_table(self):
         tools = _make_policy_tools()
-        result = tools.describe_table("orders")
-        assert "error" in result
+        sdl = tools.describe_tables(["orders"])
+        # Denied table is silently skipped — same shape as nonexistent.
+        assert "type orders " not in sdl
 
     def test_find_path_unauthorized_endpoint_returns_not_found(self):
         tools = _make_policy_tools()
@@ -315,25 +296,6 @@ class TestPolicyFiltering:
 # ---------------------------------------------------------------------------
 # run_graphql plumbing — bundle wired, real Ariadne schema, fake DB
 # ---------------------------------------------------------------------------
-
-
-class _FakeDB:
-    """Minimal stand-in for DatabaseManager: records compiled SQL and
-    returns canned rows. Lets us exercise the full GraphQL → SQL build
-    path without spinning up a Postgres pool for a unit test.
-    """
-
-    def __init__(self, rows):
-        self._rows = rows
-        self.executed = []
-
-    @property
-    def dialect_name(self) -> str:
-        return "postgresql"
-
-    async def execute(self, stmt):
-        self.executed.append(stmt)
-        return list(self._rows)
 
 
 def _bundle_with(rows, *, access_policy: AccessPolicy | None = None):
@@ -412,7 +374,11 @@ class TestTraceColumnLineage:
     def test_project_none_returns_error(self):
         # McpTools initialized without project has _project = None
         registry = build_registry(extract_project(CATALOG, MANIFEST))
-        tools = McpTools(registry)
+        bundle = create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )
+        tools = McpTools(registry, bundle=bundle)
         assert tools._project is None
         result = tools.trace_column_lineage("customers", "customer_id")
         assert "error" in result
@@ -433,5 +399,9 @@ class TestTraceColumnLineageRegistration:
 
         project = extract_project(CATALOG, MANIFEST)
         registry = build_registry(project)
-        mcp = create_mcp_server(registry, project=project)
+        bundle = create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )
+        mcp = create_mcp_server(registry, bundle=bundle, project=project)
         assert mcp is not None
