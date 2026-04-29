@@ -50,23 +50,39 @@ serve:
   graphql_introspection: false   # off in prod; on for dev tooling
 ```
 
-## Use with Claude Code
+## Use with LLM Agents (Claude Code, OpenCode)
 
 With `serve.mcp_enabled: true`, the server exposes MCP at `http://<host>:<port>/mcp`
-over Streamable HTTP. Register it as a Claude Code MCP server:
+over Streamable HTTP. The `--header` flag is required even for no-auth / dev-mode
+servers — agents probe `/.well-known/*` OAuth endpoints on every HTTP MCP
+connection; without an explicit header they treat a 404 as auth failure and refuse
+to connect. Any header value works; the server ignores it when `dev_mode: true`
+or `security.enabled: false`.
+
+Once connected, agents autoload the `dbt-graphql://usage-guide` resource and can
+call `list_tables`, `describe_tables`, `find_path`, `trace_column_lineage`, and
+`run_graphql` (with optional `validate_only`) against your warehouse — every call
+gated by the same `AccessPolicy` as `/graphql`.
+
+### Claude Code
 
 ```bash
-claude mcp add --transport http dbt-graphql http://localhost:9876/mcp
+claude mcp add --transport http dbt-graphql http://localhost:9876/mcp \
+  --header "X-No-Auth: true"
 # with auth:
 claude mcp add --transport http dbt-graphql http://localhost:9876/mcp \
   --header "Authorization: Bearer $JWT"
 ```
 
-Once connected, the agent autoloads the `dbt-graphql://usage-guide` resource
-and can call `list_tables`, `describe_tables`, `find_path`,
-`trace_column_lineage`, and `run_graphql` (with optional `validate_only`)
-against your warehouse — every call gated by the same `AccessPolicy` as
-`/graphql`.
+### OpenCode
+
+```bash
+opencode mcp add dbt-graphql http://localhost:9876/mcp \
+  --header "X-No-Auth: true"
+# with auth:
+opencode mcp add dbt-graphql http://localhost:9876/mcp \
+  --header "Authorization: Bearer $JWT"
+```
 
 ## Access policy
 

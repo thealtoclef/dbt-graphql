@@ -210,7 +210,7 @@ def mcp_client(project_registry, fake_db):
             project=project,
             policy_engine=bundle.policy_engine,
         )
-        mcp_http_app = mcp.http_app(path="/mcp", stateless_http=True)
+        mcp_http_app = mcp.http_app(path="/", stateless_http=True)
 
         from starlette.routing import Mount
         from starlette.applications import Starlette
@@ -233,10 +233,10 @@ def mcp_client(project_registry, fake_db):
                 finally:
                     await close_cache()
 
-        # Mount at root and pass lifespan so the MCP session manager initializes.
-        # The MCP app's internal route is /mcp, so the full endpoint path is /mcp.
+        # Mount at /mcp and pass lifespan so the MCP session manager initializes.
+        # The MCP app's internal route is /, so the full endpoint path is /mcp.
         app = Starlette(
-            routes=[Mount("/", app=mcp_http_app)],
+            routes=[Mount("/mcp", app=mcp_http_app)],
             middleware=[
                 Middleware(
                     AuthenticationMiddleware,

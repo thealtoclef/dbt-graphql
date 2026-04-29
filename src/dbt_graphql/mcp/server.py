@@ -574,6 +574,6 @@ def build_mcp_factory(project):
             project=project,
             policy_engine=bundle.policy_engine,
         )
-        return server.http_app()
+        return server.http_app(path="/")
 
     return _factory
