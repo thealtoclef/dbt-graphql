@@ -78,13 +78,29 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         "  _sdl(tables: [String!]): String!"
     )
     query_fields.append(
-        '  "Names of tables visible to this caller after policy pruning."\n'
-        "  _tables: [String!]!"
+        '  "Names, descriptions, and tags of tables visible to this caller after '
+        'policy pruning. Use as the cheap index before drilling in via `_sdl(tables: ...)`."\n'
+        "  _tables: [_TableInfo!]!"
     )
     query_block = "type Query {\n" + "\n".join(query_fields) + "\n}"
 
+    table_info_block = (
+        '"""Summary of a single table — the index-page projection. Description and '
+        "tags come from the dbt manifest; structure (columns, relations) belongs to "
+        '`_sdl`."""\n'
+        "type _TableInfo {\n"
+        "  name: String!\n"
+        '  "dbt-authored description; empty string when none is set."\n'
+        "  description: String!\n"
+        '  "dbt manifest tags; empty list when none."\n'
+        "  tags: [String!]!\n"
+        "}"
+    )
+
     scalar_defs = [f"scalar {s}" for s in sorted(custom_scalars)]
-    parts = scalar_defs + where_input_defs + type_blocks + [query_block]
+    parts = (
+        scalar_defs + where_input_defs + type_blocks + [table_info_block, query_block]
+    )
     return "\n\n".join(parts) + "\n"
 
 
@@ -129,12 +145,12 @@ def create_graphql_subapp(
     any co-mounted sub-apps (e.g. MCP). See
     ``dbt_graphql.serve.app.create_app``.
     """
-    _RESERVED = {"_sdl", "_tables"}
+    _RESERVED = {"_sdl", "_tables", "_TableInfo"}
     for t in registry:
         if t.name in _RESERVED:
             raise ValueError(
-                f"model name '{t.name}' collides with the reserved Query.{t.name} "
-                "field; rename the model or exclude it via dbt.exclude."
+                f"model name '{t.name}' collides with a reserved schema name "
+                f"({t.name}); rename the model or exclude it via dbt.exclude."
             )
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
     source_doc = build_source_doc(registry)

@@ -3,10 +3,14 @@
 ## Recommended Workflow
 
 1. **Discover available tables** with `list_tables(filter=None)`.
-   Returns a flat list of table names visible to the caller. The `filter`
-   argument does a case-insensitive substring match on the name. Visibility
-   is enforced upstream by the GraphQL `_tables` field — denied tables are
-   never returned.
+   Returns the index-page summary of tables visible to the caller — each
+   entry has `name`, `description` (dbt-authored), and `tags` (dbt manifest
+   tags). Use this to triage candidates *before* drilling in with
+   `describe_tables`. The `filter` argument is a case-insensitive substring
+   match against name, description, or any tag. Visibility is enforced
+   upstream by the GraphQL `_tables` field — denied tables are never
+   returned. Structural detail (columns, relations) is intentionally not
+   in this view; that's `describe_tables`'s job.
 
 2. **Inspect tables** with `describe_tables(names: [str])`.
    Returns the effective `db.graphql` SDL slice for the named tables, with

@@ -91,6 +91,7 @@ class ModelInfo(BaseModel):
     columns: list[ColumnInfo] = Field(default_factory=list)
     primary_keys: list[str] = Field(default_factory=list)
     description: str = ""
+    tags: list[str] = Field(default_factory=list)
     relationships: list[RelationshipInfo] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}

@@ -50,13 +50,22 @@ def _resolve_sdl(_, info, tables: list[str] | None = None) -> str:
     return render_sdl(effective_document(ctx["source_doc"], eff, restrict_to=restrict))
 
 
-def _resolve_tables(_, info) -> list[str]:
-    """Return names of tables visible to the current caller after policy pruning."""
+def _resolve_tables(_, info) -> list[dict]:
+    """Summary info for tables visible to the current caller.
+
+    Each entry is the index-page projection: ``name``, ``description``,
+    ``tags``. Structural detail (columns, relations) belongs to
+    ``_sdl(tables: ...)`` — keep this view cheap so an agent can enumerate
+    a 100-table warehouse without paying full-SDL cost.
+    """
     ctx = info.context
     eff = effective_registry(
         ctx["registry"], ctx.get("jwt_payload"), ctx.get("policy_engine")
     )
-    return [t.name for t in eff]
+    return [
+        {"name": t.name, "description": t.description, "tags": list(t.tags)}
+        for t in eff
+    ]
 
 
 def _make_resolver(table_name: str):

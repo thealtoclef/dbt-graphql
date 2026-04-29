@@ -123,6 +123,7 @@ def build_registry(project: ProjectInfo) -> TableRegistry:
             schema=model.schema_,
             table=model.relation_name,
             description=model.description,
+            tags=list(model.tags),
             lineage_sources=table_sources_by_target.get(model.name, []),
         )
         for col in model.columns:

@@ -57,18 +57,24 @@ def _make_tools(access_policy=None) -> McpTools:
     )
 
 
-class TestListTables:
-    def test_returns_table_names(self):
-        tools = _make_tools()
-        result = tools.list_tables()
-        names = set(result["tables"])
-        assert "customers" in names
-        assert "orders" in names
+def _names(result: dict) -> set[str]:
+    return {t["name"] for t in result["tables"]}
 
-    def test_returns_flat_list_of_strings(self):
+
+class TestListTables:
+    def test_returns_table_summaries(self):
         tools = _make_tools()
         result = tools.list_tables()
-        assert all(isinstance(t, str) for t in result["tables"])
+        assert {"customers", "orders"} <= _names(result)
+
+    def test_each_entry_has_name_description_tags(self):
+        tools = _make_tools()
+        result = tools.list_tables()
+        for t in result["tables"]:
+            assert isinstance(t["name"], str) and t["name"]
+            assert isinstance(t["description"], str)  # may be ""
+            assert isinstance(t["tags"], list)
+            assert all(isinstance(tag, str) for tag in t["tags"])
 
     def test_has_next_steps(self):
         tools = _make_tools()
@@ -78,7 +84,7 @@ class TestListTables:
     def test_filter_returns_only_matching_tables(self):
         tools = _make_tools()
         result = tools.list_tables(filter="customer")
-        names = set(result["tables"])
+        names = _names(result)
         assert "customers" in names
         assert "orders" not in names
 
@@ -90,7 +96,20 @@ class TestListTables:
     def test_filter_is_case_insensitive(self):
         tools = _make_tools()
         result = tools.list_tables(filter="CUSTOMER")
-        assert "customers" in set(result["tables"])
+        assert "customers" in _names(result)
+
+    def test_filter_matches_tag(self):
+        """Filter matches tags, not just name/description."""
+        project = extract_project(CATALOG, MANIFEST)
+        next(m for m in project.models if m.name == "orders").tags = ["finance"]
+        registry = build_registry(project)
+        bundle = create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )
+        tools = McpTools(registry, bundle=bundle, project=project)
+        result = tools.list_tables(filter="finance")
+        assert _names(result) == {"orders"}
 
 
 class TestUsageGuide:
@@ -250,7 +269,7 @@ class TestPolicyFiltering:
     def test_list_tables_hides_unauthorized(self):
         tools = _make_policy_tools()
         result = tools.list_tables()
-        names = set(result["tables"])
+        names = _names(result)
         assert "customers" in names
         assert "orders" not in names
 

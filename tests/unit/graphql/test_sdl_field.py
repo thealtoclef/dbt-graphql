@@ -206,10 +206,20 @@ def test_sdl_with_empty_tables_arg_returns_empty_view():
     assert "type orders " not in sdl
 
 
-def test_tables_field_returns_visible_names():
+def test_tables_field_returns_visible_summaries():
     bundle = _bundle()
-    data = _exec_query(bundle, JWTPayload({}), "{ _tables }")
-    assert set(data["_tables"]) >= {"customers", "orders"}
+    data = _exec_query(
+        bundle, JWTPayload({}), "{ _tables { name description tags } }"
+    )
+    rows = data["_tables"]
+    by_name = {r["name"]: r for r in rows}
+    assert {"customers", "orders"} <= by_name.keys()
+    # Every entry has the three fields with the right shapes.
+    for r in rows:
+        assert isinstance(r["name"], str) and r["name"]
+        assert isinstance(r["description"], str)  # may be empty
+        assert isinstance(r["tags"], list)
+        assert all(isinstance(t, str) for t in r["tags"])
 
 
 def test_tables_field_reflects_caller_policy():
@@ -228,8 +238,26 @@ def test_tables_field_reflects_caller_policy():
         ]
     )
     bundle = _bundle(access_policy=policy)
-    data = _exec_query(bundle, JWTPayload({}), "{ _tables }")
-    assert data["_tables"] == ["customers"]
+    data = _exec_query(bundle, JWTPayload({}), "{ _tables { name } }")
+    assert [r["name"] for r in data["_tables"]] == ["customers"]
+
+
+def test_tables_field_surfaces_dbt_tags():
+    """Tags from the dbt manifest reach `_tables.tags`."""
+    project = extract_project(CATALOG, MANIFEST)
+    # Inject tags onto a known model — fixture manifest has no tags by default.
+    customers = next(m for m in project.models if m.name == "customers")
+    customers.tags = ["pii", "core"]
+    registry = build_registry(project)
+    bundle = create_graphql_subapp(
+        registry=registry,
+        db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+    )
+    data = _exec_query(bundle, JWTPayload({}), "{ _tables { name tags } }")
+    by_name = {r["name"]: r for r in data["_tables"]}
+    assert by_name["customers"]["tags"] == ["pii", "core"]
+    # Untagged tables yield an empty list (not null).
+    assert by_name["orders"]["tags"] == []
 
 
 def test_reserved_name_collision_rejects_tables_model():

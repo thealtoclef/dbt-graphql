@@ -74,6 +74,7 @@ class TableDef:
     table: str = ""  # physical table name (may differ from GraphQL type name)
     columns: list[ColumnDef] = field(default_factory=list)
     description: str = ""
+    tags: list[str] = field(default_factory=list)
     # Set per-request by the policy filter when a row filter applies to
     # the caller. Drives the @filtered SDL directive.
     filtered: bool = False

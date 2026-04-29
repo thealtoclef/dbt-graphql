@@ -286,16 +286,24 @@ class TestMCPlistTablesHTTP:
         with mcp_client() as client:
             result = _mcp_call_tool(client, "list_tables")
         assert "tables" in result
-        names = set(result["tables"])
+        names = {t["name"] for t in result["tables"]}
         assert "customers" in names
         assert "orders" in names
+
+    def test_list_tables_entries_have_summary_shape(self, mcp_client):
+        """Each entry carries name, description, tags — the index projection."""
+        with mcp_client() as client:
+            result = _mcp_call_tool(client, "list_tables")
+        for t in result["tables"]:
+            assert set(t.keys()) >= {"name", "description", "tags"}
+            assert isinstance(t["tags"], list)
 
     def test_list_tables_filter(self, mcp_client):
         with mcp_client() as client:
             result = _mcp_call_tool(client, "list_tables", {"filter": "customer"})
-        names = set(result["tables"])
+        names = {t["name"] for t in result["tables"]}
         assert "customers" in names
-        assert all("customer" in t.lower() for t in names)
+        assert all("customer" in n.lower() for n in names)
 
     def test_list_tables_has_meta_next_steps(self, mcp_client):
         with mcp_client() as client:
@@ -493,7 +501,7 @@ class TestMCPGETEndpoint:
             result = _mcp_call_tool(client, "list_tables")
         assert "tables" in result
         assert len(result["tables"]) > 0
-        assert all(isinstance(t, str) for t in result["tables"])
+        assert all(isinstance(t, dict) and "name" in t for t in result["tables"])
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +574,7 @@ class TestMCPPolicyHTTP:
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
             result = _mcp_call_tool(client, "list_tables")
-        names = set(result["tables"])
+        names = {t["name"] for t in result["tables"]}
         assert "customers" in names
         assert "orders" not in names
 

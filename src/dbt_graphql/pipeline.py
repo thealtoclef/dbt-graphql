@@ -119,9 +119,10 @@ def extract_project(
         schema = catalog_node.metadata.schema_
         database = catalog_node.metadata.database or schema
 
-        # Get alias and description from manifest node
+        # Get alias, description, and tags from manifest node
         model_alias = manifest_node.alias if manifest_node else None
         description = manifest_node.description if manifest_node else ""
+        tags = list(getattr(manifest_node, "tags", None) or []) if manifest_node else []
 
         models.append(
             ModelInfo(
@@ -132,6 +133,7 @@ def extract_project(
                 columns=columns,
                 primary_keys=pk_cols,
                 description=description,
+                tags=tags,
             )  # type: ignore[ty:missing-argument]
         )
 
