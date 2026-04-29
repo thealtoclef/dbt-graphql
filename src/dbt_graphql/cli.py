@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -21,7 +22,10 @@ def main(argv: list[str] | None = None) -> None:
         "--config",
         type=Path,
         metavar="PATH",
-        help="Path to config.yml (required).",
+        default=Path(os.environ["DBT_GRAPHQL_CONFIG"])
+        if os.environ.get("DBT_GRAPHQL_CONFIG")
+        else None,
+        help="Path to config.yml (required). Falls back to $DBT_GRAPHQL_CONFIG.",
     )
     parser.add_argument(
         "--output",
