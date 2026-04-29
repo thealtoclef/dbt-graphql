@@ -133,7 +133,6 @@ def create_graphql_subapp(
     access_policy: AccessPolicy | None = None,
     cache_config: CacheConfig = CacheConfig(),
     graphql_config: GraphQLConfig = GraphQLConfig(),
-    introspection: bool = False,
 ) -> GraphQLBundle:
     """Build the Ariadne GraphQL ASGI sub-app.
 
@@ -142,6 +141,10 @@ def create_graphql_subapp(
     ``dbt_graphql.cache.setup_cache(cache_config)``), auth middleware, and
     any co-mounted sub-apps (e.g. MCP). See
     ``dbt_graphql.serve.app.create_app``.
+
+    Standard ``__schema`` introspection is always enabled — the
+    authoritative caller-effective view lives in the policy-pruned
+    ``Query._sdl`` field, which is what auth-sensitive clients should use.
     """
     _RESERVED = {"_sdl", "_tables", "_TableInfo"}
     for t in registry:
@@ -177,7 +180,7 @@ def create_graphql_subapp(
         context_value=lambda req, _data=None: build_context(req.user.payload, req),
         validation_rules=validation_rules,
         http_handler=build_graphql_http_handler(),
-        introspection=introspection,
+        introspection=True,
     )
     return GraphQLBundle(
         asgi=asgi,

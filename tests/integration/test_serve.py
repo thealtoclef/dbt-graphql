@@ -66,19 +66,6 @@ def client(serve_adapter_env):
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
         security_enabled=True,
-        introspection=True,
-    )
-    with TestClient(app, raise_server_exceptions=True) as c:
-        yield c
-
-
-@pytest.fixture
-def client_no_introspection(serve_adapter_env):
-    app = create_app(
-        registry=serve_adapter_env["registry"],
-        db_url=serve_adapter_env["db_url"],
-        jwt_config=make_test_jwt_config(),
-        security_enabled=True,
     )
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -93,7 +80,6 @@ def client_with_tiny_limits(serve_adapter_env):
         jwt_config=make_test_jwt_config(),
         security_enabled=True,
         graphql_config=GraphQLConfig(query_max_depth=2, query_max_fields=3),
-        introspection=True,
     )
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -180,18 +166,6 @@ class TestGraphQLHTTP:
         type_names = {t["name"] for t in resp.json()["data"]["__schema"]["types"]}
         assert "customersWhereInput" in type_names
         assert "ordersWhereInput" in type_names
-
-    def test_introspection_disabled_by_default(self, client_no_introspection):
-        """When create_app is called without ``introspection=True``, schema
-        introspection queries are rejected. This is the production default —
-        the dev fixture above opts in explicitly."""
-        resp = client_no_introspection.post(
-            "/graphql",
-            json={"query": "{ __schema { types { name } } }"},
-        )
-        body = resp.json()
-        assert "errors" in body and body["errors"]
-        assert "introspection" in body["errors"][0]["message"].lower()
 
     def test_where_filter_end_to_end(self, client):
         resp = client.post(

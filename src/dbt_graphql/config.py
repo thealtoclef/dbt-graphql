@@ -155,9 +155,11 @@ class AppConfig(BaseSettings):
     )
 
     # ``dev_mode`` is the single profile switch. When true: authn/authz are
-    # bypassed (every request is anonymous, no policy evaluation) and GraphQL
-    # introspection is enabled. Default false → secure-by-default; forgetting
-    # to configure ``security.jwt`` then fails at startup, not silently.
+    # bypassed (every request is anonymous, no policy evaluation). Default
+    # false → secure-by-default; forgetting to configure ``security.jwt``
+    # then fails at startup, not silently. (Standard ``__schema``
+    # introspection is always on regardless of dev_mode — the auth-aware
+    # view is the policy-pruned ``Query._sdl`` field.)
     dev_mode: bool = False
     dbt: DbtConfig
     db: DbConfig | None = None

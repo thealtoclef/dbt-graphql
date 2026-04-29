@@ -40,7 +40,6 @@ def create_app(
     graphql_config: GraphQLConfig = GraphQLConfig(),
     jwt_config: JWTConfig,
     security_enabled: bool = False,
-    introspection: bool = False,
     pool_config: PoolConfig | None = None,
     mcp_factory=None,
 ) -> Starlette:
@@ -65,7 +64,6 @@ def create_app(
         access_policy=access_policy,
         cache_config=cache_config,
         graphql_config=graphql_config,
-        introspection=introspection,
     )
     mcp_http_app = mcp_factory(bundle) if mcp_factory is not None else None
     auth_backend, owned_http = build_auth_backend(jwt_config, enabled=security_enabled)

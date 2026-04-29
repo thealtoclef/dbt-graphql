@@ -45,7 +45,6 @@ def run(
         graphql_config=config.graphql,
         jwt_config=config.security.jwt,
         security_enabled=not config.dev_mode,
-        introspection=config.dev_mode,
         mcp_factory=mcp_factory,
     )
 

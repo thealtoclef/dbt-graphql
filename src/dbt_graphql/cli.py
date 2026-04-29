@@ -106,9 +106,9 @@ def _run_serve(project, config) -> None:
 
     if config.dev_mode:
         logger.warning(
-            "starting with dev_mode=true — authn/authz are bypassed, every "
-            "request is treated as anonymous, and GraphQL introspection is "
-            "enabled. Do not run this configuration in production."
+            "starting with dev_mode=true — authn/authz are bypassed and every "
+            "request is treated as anonymous. Do not run this configuration in "
+            "production."
         )
 
     from .formatter.graphql import build_registry
