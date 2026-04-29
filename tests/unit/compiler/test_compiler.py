@@ -7,7 +7,12 @@ when compiled against different SQLAlchemy dialects.
 import pytest
 from sqlalchemy.dialects import mysql, postgresql
 
-from dbt_graphql.compiler.query import compile_query
+from dbt_graphql.compiler.query import (
+    agg_fields_for_table,
+    compile_aggregate_query,
+    compile_group_query,
+    compile_query,
+)
 from dbt_graphql.formatter.schema import (
     ColumnDef,
     RelationDef,
@@ -124,16 +129,78 @@ class TestWhereFilter:
     def test_equality_filter(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(customers, [fn], registry, where={"customer_id": 1})
+        stmt = compile_query(
+            customers, [fn], registry, where={"customer_id": {"_eq": 1}}
+        )
         sql = _sql(stmt, postgresql)
         assert "WHERE" in sql
         assert "1" in sql
 
-    def test_unknown_column_raises(self):
+    def test_neq_filter(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        with pytest.raises(ValueError, match="nonexistent"):
-            compile_query(customers, [fn], registry, where={"nonexistent": 1})
+        stmt = compile_query(
+            customers, [fn], registry, where={"customer_id": {"_neq": 1}}
+        )
+        sql = _sql(stmt, postgresql)
+        assert "WHERE" in sql
+
+    def test_in_filter(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        stmt = compile_query(
+            customers, [fn], registry, where={"customer_id": {"_in": [1, 2, 3]}}
+        )
+        sql = _sql(stmt, postgresql)
+        assert "IN" in sql.upper()
+
+    def test_is_null_filter(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("first_name")])
+        stmt = compile_query(
+            customers, [fn], registry, where={"first_name": {"_is_null": True}}
+        )
+        sql = _sql(stmt, postgresql)
+        assert "IS NULL" in sql.upper()
+
+    def test_and_combinator(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        stmt = compile_query(
+            customers,
+            [fn],
+            registry,
+            where={
+                "_and": [{"customer_id": {"_eq": 1}}, {"first_name": {"_eq": "Alice"}}]
+            },
+        )
+        sql = _sql(stmt, postgresql)
+        assert "AND" in sql.upper()
+
+    def test_or_combinator(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        stmt = compile_query(
+            customers,
+            [fn],
+            registry,
+            where={"_or": [{"customer_id": {"_eq": 1}}, {"customer_id": {"_eq": 2}}]},
+        )
+        sql = _sql(stmt, postgresql)
+        assert "OR" in sql.upper()
+
+    def test_not_combinator(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        stmt = compile_query(
+            customers,
+            [fn],
+            registry,
+            where={"_not": {"customer_id": {"_eq": 1}}},
+        )
+        sql = _sql(stmt, postgresql)
+        # SQLAlchemy may optimize NOT (col = x) → col != x; either form is correct.
+        assert "WHERE" in sql and "customer_id" in sql
 
     def test_empty_where_does_not_raise(self):
         customers, registry = _make_registry()
@@ -141,6 +208,195 @@ class TestWhereFilter:
         stmt = compile_query(customers, [fn], registry, where={})
         sql = _sql(stmt, postgresql)
         assert "WHERE" not in sql
+
+
+class TestOrderBy:
+    def test_asc_order(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        stmt = compile_query(
+            customers, [fn], registry, order_by=[{"customer_id": "asc"}]
+        )
+        sql = _sql(stmt, postgresql)
+        assert "ORDER BY" in sql.upper()
+        assert "ASC" in sql.upper()
+
+    def test_desc_order(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        stmt = compile_query(
+            customers, [fn], registry, order_by=[{"customer_id": "desc"}]
+        )
+        sql = _sql(stmt, postgresql)
+        assert "DESC" in sql.upper()
+
+    def test_invalid_direction_raises_nulls_variant(self):
+        # nulls_first/last variants are PostgreSQL-only and not supported.
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        with pytest.raises(ValueError, match="Unknown order_by"):
+            compile_query(
+                customers, [fn], registry, order_by=[{"customer_id": "desc_nulls_last"}]
+            )
+
+    def test_multi_column_order(self):
+        customers, registry = _make_registry()
+        fn = _field_node(
+            "customers", [_field_node("customer_id"), _field_node("first_name")]
+        )
+        stmt = compile_query(
+            customers,
+            [fn],
+            registry,
+            order_by=[{"first_name": "asc"}, {"customer_id": "desc"}],
+        )
+        sql = _sql(stmt, postgresql)
+        assert "first_name" in sql
+        assert "customer_id" in sql
+
+    def test_invalid_direction_raises(self):
+        customers, registry = _make_registry()
+        fn = _field_node("customers", [_field_node("customer_id")])
+        with pytest.raises(ValueError, match="Unknown order_by"):
+            compile_query(
+                customers, [fn], registry, order_by=[{"customer_id": "sideways"}]
+            )
+
+
+def _agg_table() -> TableDef:
+    """A small Invoice-like table with mixed column types for aggregate testing."""
+    return TableDef(
+        name="Invoice",
+        database="mydb",
+        schema="main",
+        table="Invoice",
+        columns=[
+            ColumnDef(name="InvoiceId", gql_type="Int", not_null=True, is_pk=True),
+            ColumnDef(name="CustomerId", gql_type="Int"),
+            ColumnDef(name="BillingState", gql_type="String"),
+            ColumnDef(name="Total", gql_type="Float"),
+        ],
+    )
+
+
+class TestAggFieldsForTable:
+    def test_count_first(self):
+        fields = agg_fields_for_table(_agg_table())
+        assert fields[0] == ("count", "Int")
+
+    def test_numeric_columns_get_full_set(self):
+        fields = dict(agg_fields_for_table(_agg_table()))
+        # Float column gets sum/avg/stddev/var (all Float) + min/max (Float).
+        assert fields["sum_Total"] == "Float"
+        assert fields["avg_Total"] == "Float"
+        assert fields["stddev_Total"] == "Float"
+        assert fields["var_Total"] == "Float"
+        assert fields["min_Total"] == "Float"
+        assert fields["max_Total"] == "Float"
+        # Int column: min/max preserve Int.
+        assert fields["min_CustomerId"] == "Int"
+        assert fields["max_CustomerId"] == "Int"
+
+    def test_non_numeric_only_min_max(self):
+        fields = dict(agg_fields_for_table(_agg_table()))
+        assert fields["min_BillingState"] == "String"
+        assert fields["max_BillingState"] == "String"
+        # No sum_/avg_ for String — would be invalid SQL.
+        assert "sum_BillingState" not in fields
+        assert "avg_BillingState" not in fields
+
+
+class TestCompileAggregateQuery:
+    def test_count_only(self):
+        stmt = compile_aggregate_query(_agg_table(), {"count"})
+        sql = _sql(stmt, postgresql)
+        assert "count(" in sql.lower()
+        assert "sum(" not in sql.lower()
+
+    def test_subset_of_aggregates(self):
+        stmt = compile_aggregate_query(_agg_table(), {"count", "sum_Total"})
+        sql = _sql(stmt, postgresql).lower()
+        assert "count(" in sql
+        assert "sum(" in sql
+        # Unselected aggregates are not projected.
+        assert "avg(" not in sql
+        assert "min(" not in sql
+
+    def test_unknown_field_silently_skipped(self):
+        # Unknown column inside _sum_<col> doesn't crash; it's just dropped.
+        stmt = compile_aggregate_query(_agg_table(), {"sum_NotAColumn"})
+        sql = _sql(stmt, postgresql).lower()
+        # Empty projection set falls back to _count.
+        assert "count(" in sql
+
+    def test_with_where(self):
+        stmt = compile_aggregate_query(
+            _agg_table(),
+            {"count"},
+            where={"BillingState": {"_eq": "CA"}},
+        )
+        sql = _sql(stmt, postgresql)
+        assert "WHERE" in sql.upper()
+        assert "CA" in sql
+
+
+class TestCompileGroupQuery:
+    def _select(self, *names):
+        return _field_node("Invoice_group", [_field_node(n) for n in names])
+
+    def test_groups_by_dimension(self):
+        stmt = compile_group_query(
+            _agg_table(), [self._select("BillingState", "count")]
+        )
+        sql = _sql(stmt, postgresql).upper()
+        assert "GROUP BY" in sql
+        assert "BILLINGSTATE" in sql
+        assert "COUNT(" in sql
+
+    def test_no_dimension_no_group_by(self):
+        # Selecting only aggregates → grand total, no GROUP BY.
+        stmt = compile_group_query(_agg_table(), [self._select("count", "sum_Total")])
+        sql = _sql(stmt, postgresql).upper()
+        assert "GROUP BY" not in sql
+        assert "COUNT(" in sql
+        assert "SUM(" in sql
+
+    def test_multi_dimension(self):
+        stmt = compile_group_query(
+            _agg_table(),
+            [self._select("BillingState", "CustomerId", "count")],
+        )
+        sql = _sql(stmt, postgresql).upper()
+        assert "GROUP BY" in sql
+        assert "BILLINGSTATE" in sql
+        assert "CUSTOMERID" in sql
+
+    def test_order_by_aggregate_alias(self):
+        stmt = compile_group_query(
+            _agg_table(),
+            [self._select("BillingState", "count", "sum_Total")],
+            order_by=[{"sum_Total": "desc"}],
+        )
+        sql = _sql(stmt, postgresql).upper()
+        assert "ORDER BY" in sql
+        assert "SUM_TOTAL" in sql
+
+    def test_order_by_dimension(self):
+        stmt = compile_group_query(
+            _agg_table(),
+            [self._select("BillingState", "count")],
+            order_by=[{"BillingState": "asc"}],
+        )
+        sql = _sql(stmt, postgresql).upper()
+        assert "ORDER BY" in sql
+
+    def test_invalid_order_by_direction(self):
+        with pytest.raises(ValueError, match="Unknown order_by"):
+            compile_group_query(
+                _agg_table(),
+                [self._select("BillingState", "count")],
+                order_by=[{"BillingState": "sideways"}],
+            )
 
 
 def _three_table_registry():

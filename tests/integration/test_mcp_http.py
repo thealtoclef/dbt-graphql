@@ -385,12 +385,12 @@ class TestMCPrunGraphqlHTTP:
             result = _mcp_call_tool(
                 client,
                 "run_graphql",
-                {"query": "query { customers { customer_id first_name } }"},
+                {"query": "query { customers { nodes { customer_id first_name } } }"},
             )
         assert "data" in result or "errors" in result
         if "data" in result:
             assert "customers" in result["data"]
-            assert result["data"]["customers"] == rows
+            assert result["data"]["customers"]["nodes"] == rows
 
     def test_run_graphql_invalid_query(self, mcp_client):
         with mcp_client(rows=[]) as client:
@@ -409,7 +409,7 @@ class TestMCPrunGraphqlHTTP:
                 client,
                 "run_graphql",
                 {
-                    "query": "query { customers { customer_id } }",
+                    "query": "query { customers { nodes { customer_id } } }",
                     "validate_only": True,
                 },
             )
@@ -641,7 +641,7 @@ class TestMCPPolicyHTTP:
             result = _mcp_call_tool(
                 client,
                 "run_graphql",
-                {"query": "query { customers { customer_id first_name } }"},
+                {"query": "query { customers { nodes { customer_id first_name } } }"},
                 headers=_bearer({"sub": "u1", "claims": {"cust_id": 1}}),
             )
         # Verify the SQL was compiled with the row filter

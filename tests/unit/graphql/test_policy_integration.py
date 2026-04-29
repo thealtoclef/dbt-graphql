@@ -421,11 +421,67 @@ def test_row_filter_combined_with_user_where():
             fields,
             registry,
             resolve_policy=_resolver(engine, JWTPayload({"claims": {"org_id": 42}})),
-            where={"customer_id": 1},
+            where={"customer_id": {"_eq": 1}},
         )
     )
     assert "org_id" in sql
     assert "customer_id" in sql
+
+
+def test_where_on_unauthorized_column_raises():
+    """Filtering on a column the policy excludes must raise — otherwise a
+    caller could probe the *value* of a hidden column via boolean side-
+    channels (``where: { ssn: { _eq: '...' } }`` returning rows or none)."""
+    customers, registry = _customers_registry()
+    engine = _engine(
+        PolicyEntry(
+            effect=Effect.ALLOW,
+            name="analyst",
+            when="True",
+            tables={
+                "customers": TablePolicy(
+                    column_level=ColumnLevelPolicy(include_all=True, excludes=["ssn"])
+                )
+            },
+        )
+    )
+    fields = _nodes("{ customers { customer_id } }")
+    with pytest.raises(ColumnAccessDenied) as exc:
+        compile_query(
+            customers,
+            fields,
+            registry,
+            resolve_policy=_resolver(engine, JWTPayload({})),
+            where={"ssn": {"_eq": "123-45-6789"}},
+        )
+    assert exc.value.columns == ["ssn"]
+
+
+def test_order_by_on_unauthorized_column_raises():
+    """ORDER BY also leaks ordering signals; must enforce column policy."""
+    customers, registry = _customers_registry()
+    engine = _engine(
+        PolicyEntry(
+            effect=Effect.ALLOW,
+            name="analyst",
+            when="True",
+            tables={
+                "customers": TablePolicy(
+                    column_level=ColumnLevelPolicy(include_all=True, excludes=["ssn"])
+                )
+            },
+        )
+    )
+    fields = _nodes("{ customers { customer_id } }")
+    with pytest.raises(ColumnAccessDenied) as exc:
+        compile_query(
+            customers,
+            fields,
+            registry,
+            resolve_policy=_resolver(engine, JWTPayload({})),
+            order_by=[{"ssn": "asc"}],
+        )
+    assert exc.value.columns == ["ssn"]
 
 
 def test_no_policy_compiles_identically_to_no_argument():

@@ -70,7 +70,8 @@ async def test_pool_exhaustion_returns_503_with_retry_after(
                     "/graphql",
                     json={
                         "query": (
-                            f"{{ customers(offset: {offset}) {{ customer_id }} }}"
+                            f"{{ customers {{ nodes(offset: {offset})"
+                            " { customer_id } } }"
                         )
                     },
                 )

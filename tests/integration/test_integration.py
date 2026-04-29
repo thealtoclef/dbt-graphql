@@ -75,7 +75,7 @@ class TestE2E:
             adapter_env.registry["customers"],
             [fn],
             adapter_env.registry,
-            where={"customer_id": 1},
+            where={"customer_id": {"_eq": 1}},
         )
         rows = await adapter_env.db.execute(stmt)
         assert len(rows) == 1

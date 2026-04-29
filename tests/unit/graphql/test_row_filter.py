@@ -55,7 +55,9 @@ def test_validate_unknown_logical_operator_rejected():
 
 def test_validate_unknown_comparison_operator_rejected():
     with pytest.raises(RowFilterError, match="unknown comparison operator"):
-        validate_row_filter({"id": {"_like": "%foo"}}, allowed_columns=_TABLE_COLUMNS)
+        validate_row_filter(
+            {"id": {"_similar": "%foo"}}, allowed_columns=_TABLE_COLUMNS
+        )
 
 
 def test_validate_in_requires_non_empty_list():
@@ -250,7 +252,7 @@ def test_compile_lt_lte_gt_gte():
     assert set(params.values()) == {100, 200, 0, 1}
 
 
-def test_compile_ne():
-    sql, params = _render(compile_row_filter({"status": {"_ne": "deleted"}}, _ctx()))
+def test_compile_neq():
+    sql, params = _render(compile_row_filter({"status": {"_neq": "deleted"}}, _ctx()))
     assert "status !=" in sql
     assert params == {"p_0": "deleted"}

@@ -14,7 +14,7 @@ from graphql import GraphQLError
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from dbt_graphql.cache import CacheConfig
-from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE, _make_resolver
+from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE, _make_nodes_resolver
 from dbt_graphql.config import PoolConfig
 
 
@@ -43,12 +43,12 @@ def _make_info(db, registry):
 async def test_resolver_translates_pool_timeout_to_graphql_error(
     monkeypatch, fresh_cache
 ):
-    """``db.execute`` raises ``TimeoutError`` → resolver raises GraphQLError
+    """``db.execute`` raises ``TimeoutError`` → nodes resolver raises GraphQLError
     with ``extensions.code == POOL_TIMEOUT`` and the configured retry-after."""
     del fresh_cache  # fixture configures cashews — production lifespan equivalent
-    # Stub compile_query so we don't need a real registry/table def.
+    # Stub compile_nodes_query so we don't need a real registry/table def.
     monkeypatch.setattr(
-        "dbt_graphql.graphql.resolvers.compile_query",
+        "dbt_graphql.graphql.resolvers.compile_nodes_query",
         lambda **_: MagicMock(name="stmt"),
     )
 
@@ -69,14 +69,15 @@ async def test_resolver_translates_pool_timeout_to_graphql_error(
     registry = _FakeRegistry(tdef)
     info = _make_info(db, registry)
 
-    resolver = _make_resolver("customers")
+    # The carrier dict (normally returned by the root resolver)
+    parent = {"where": None}
+    resolver = _make_nodes_resolver("customers")
 
     with pytest.raises(GraphQLError) as exc_info:
-        await resolver(None, info)
+        await resolver(parent, info)
 
     err = exc_info.value
     assert err.extensions is not None
     assert err.extensions["code"] == POOL_TIMEOUT_CODE
     assert err.extensions["retry_after"] == 3
-    # message is operator-readable
     assert "pool exhausted" in str(err).lower()

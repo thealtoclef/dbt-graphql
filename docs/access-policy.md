@@ -154,8 +154,8 @@ trusted; **do not populate it from untrusted sources.**
 ### `row_filter`
 
 A structured boolean-expression tree. The operator vocabulary
-(`_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`,
-`_and`, `_or`, `_not`) is taken directly from
+(`_eq`, `_neq`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_nin`, `_is_null`,
+`_like`, `_nlike`, `_ilike`, `_nilike`, `_and`, `_or`, `_not`) is taken directly from
 [Hasura's permission-rule DSL](https://hasura.io/docs/latest/auth/authorization/permissions/row-level-permissions/),
 which is the de-facto standard for declarative row-level filters in the
 GraphQL data-API ecosystem (PostGraphile, GraphJin, and Postgrest all
@@ -169,11 +169,14 @@ named parameters, and there is no template engine in the data-access
 path.
 
 **Logical operators:** `_and`, `_or`, `_not`. **Comparison operators:**
-`_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`. RHS values
-are either:
+`_eq`, `_neq`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_nin`, `_is_null`,
+`_like`, `_nlike`, `_ilike`, `_nilike`. The same operator vocabulary is
+shared with the GraphQL `{T}_bool_exp` filter — both call sites dispatch
+through `dbt_graphql.sql_ops.apply_comparison`, the single source of
+truth for Hasura-vocab → SQLAlchemy translation. RHS values are either:
 
 - a literal scalar (`str`, `int`, `float`, `bool`),
-- a non-empty list of literals (for `_in`), or
+- a non-empty list of literals (for `_in` / `_nin`), or
 - a JWT reference: `{ jwt: <dotted.path> }`, resolved per request.
 
 ```yaml
@@ -354,6 +357,8 @@ the comparison operator.
 | `status: { _in: [active, pending] }` | `status IN (:p_0, :p_1)` | each element bound |
 | `owner_id: { _is_null: true }` | `owner_id IS NULL` | no bind |
 | `_not: { status: { _eq: deleted } }` | `status != :p_0` | SA collapses |
+| `name: { _like: "Acme%" }` | `name LIKE :p_0` | bound; case-sensitive |
+| `name: { _ilike: "acme%" }` | `name ILIKE :p_0` | case-insensitive (PG); MySQL falls back to LIKE |
 
 Because values are bound via SQLAlchemy `bindparam`, SQL injection via
 JWT claims is structurally impossible — even a claim containing

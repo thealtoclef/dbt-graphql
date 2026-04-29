@@ -16,6 +16,7 @@ from graphql import DocumentNode, GraphQLSchema
 
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
+from ..compiler.query import agg_fields_for_table
 from ..config import GraphQLConfig
 from ..formatter.graphql import _description_block, build_source_doc
 from ..formatter.schema import TableRegistry
@@ -27,29 +28,81 @@ from .resolvers import create_query_type
 
 _STANDARD_GQL_SCALARS = {"String", "Int", "Float", "Boolean", "ID"}
 
+_GQL_SCALAR_TO_CMP_EXP: dict[str, str] = {
+    "String": "String_comparison_exp",
+    "Int": "Int_comparison_exp",
+    "Float": "Float_comparison_exp",
+    "Boolean": "Boolean_comparison_exp",
+    "ID": "Int_comparison_exp",
+}
+
+_COMPARISON_EXP_TYPES = """\
+input String_comparison_exp {
+  _eq: String  _neq: String
+  _gt: String  _gte: String
+  _lt: String  _lte: String
+  _in: [String!]  _nin: [String!]
+  _is_null: Boolean
+  _like: String  _nlike: String
+  _ilike: String  _nilike: String
+}
+
+input Int_comparison_exp {
+  _eq: Int  _neq: Int
+  _gt: Int  _gte: Int
+  _lt: Int  _lte: Int
+  _in: [Int!]  _nin: [Int!]
+  _is_null: Boolean
+}
+
+input Float_comparison_exp {
+  _eq: Float  _neq: Float
+  _gt: Float  _gte: Float
+  _lt: Float  _lte: Float
+  _in: [Float!]  _nin: [Float!]
+  _is_null: Boolean
+}
+
+input Boolean_comparison_exp {
+  _eq: Boolean
+  _is_null: Boolean
+}"""
+
+_ORDER_BY_ENUM = """\
+enum order_by {
+  asc
+  desc
+}"""
+
 
 def _build_ariadne_sdl(registry: TableRegistry) -> str:
     """Build a standard GraphQL SDL (without db.graphql custom directives) for Ariadne.
 
-    The db.graphql format uses custom directives (@table, @column, @relation, etc.)
-    that Ariadne's schema builder doesn't understand. This function builds a clean
-    SDL with custom types declared as scalars, per-table WhereInput types, and a
-    Query type for all tables.
+    Emits per-table:
+    - ``type {T}`` — row type (unchanged from db.graphql)
+    - ``type {T}Result`` — result envelope with ``nodes``, aggregate fields, ``group``
+    - ``type {T}_group`` — GROUP BY row: dimensions + flat aggregate fields
+    - ``input {T}_bool_exp`` — recursive bool_exp WHERE filter
+    - ``input {T}_order_by`` — ORDER BY for ``nodes``
+    - ``input {T}_group_order_by`` — flat ORDER BY for ``group``
 
-    Primary-key columns are emitted with the built-in ``ID`` scalar so the
-    PK signal reaches standard introspection without a custom directive.
-    dbt descriptions are emitted as triple-quoted blocks above types and
-    fields so GraphiQL / Apollo Studio / codegen all see them via standard
-    introspection.
+    Shared types (comparison_exp variants, order_by enum) are emitted once.
     """
     custom_scalars: set[str] = set()
     type_blocks: list[str] = []
-    where_input_defs: list[str] = []
+    result_type_blocks: list[str] = []
+    group_type_blocks: list[str] = []
+    bool_exp_defs: list[str] = []
+    order_by_defs: list[str] = []
+    group_order_by_defs: list[str] = []
 
     for table_def in registry:
+        name = table_def.name
+        agg_fields = agg_fields_for_table(table_def)
+
+        # --- type {T} ---
         type_block = _description_block(table_def.description)
-        type_block += f"type {table_def.name} {{\n"
-        input_lines = [f"input {table_def.name}WhereInput {{"]
+        type_block += f"type {name} {{\n"
         for col in table_def.columns:
             type_name = "ID" if col.is_pk else col.gql_type
             if type_name and type_name not in _STANDARD_GQL_SCALARS:
@@ -59,16 +112,69 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
                 wrapped += "!"
             type_block += _description_block(col.description, indent="  ")
             type_block += f"  {col.name}: {wrapped}\n"
-            if not col.is_array:
-                input_lines.append(f"  {col.name}: {type_name}")
         type_block += "}"
-        input_lines.append("}")
         type_blocks.append(type_block)
-        where_input_defs.append("\n".join(input_lines))
+
+        # --- input {T}_bool_exp ---
+        lines = [
+            f"input {name}_bool_exp {{",
+            f"  _and: [{name}_bool_exp!]",
+            f"  _or:  [{name}_bool_exp!]",
+            f"  _not: {name}_bool_exp",
+        ]
+        for col in table_def.columns:
+            if col.is_array:
+                continue
+            cmp_exp = _GQL_SCALAR_TO_CMP_EXP.get(col.gql_type, "String_comparison_exp")
+            lines.append(f"  {col.name}: {cmp_exp}")
+        lines.append("}")
+        bool_exp_defs.append("\n".join(lines))
+
+        # --- input {T}_order_by ---
+        lines = [f"input {name}_order_by {{"]
+        for col in table_def.columns:
+            if not col.is_array:
+                lines.append(f"  {col.name}: order_by")
+        lines.append("}")
+        order_by_defs.append("\n".join(lines))
+
+        # --- input {T}_group_order_by (flat: dimensions + aggregate fields) ---
+        lines = [f"input {name}_group_order_by {{"]
+        for col in table_def.columns:
+            if not col.is_array:
+                lines.append(f"  {col.name}: order_by")
+        for fname, _ in agg_fields:
+            lines.append(f"  {fname}: order_by")
+        lines.append("}")
+        group_order_by_defs.append("\n".join(lines))
+
+        # --- type {T}Result ---
+        lines = [f"type {name}Result {{"]
+        lines.append(
+            f"  nodes(order_by: [{name}_order_by!], limit: Int, offset: Int): [{name}!]!"
+        )
+        for fname, ftype in agg_fields:
+            lines.append(f"  {fname}: {ftype}")
+        lines.append(
+            f"  group(order_by: [{name}_group_order_by!], limit: Int, offset: Int): [{name}_group!]!"
+        )
+        lines.append("}")
+        result_type_blocks.append("\n".join(lines))
+
+        # --- type {T}_group ---
+        lines = [f"type {name}_group {{"]
+        for col in table_def.columns:
+            if col.is_array:
+                continue
+            lines.append(f"  {col.name}: {col.gql_type}")
+        for fname, ftype in agg_fields:
+            lines.append(f"  {fname}: {ftype}")
+        lines.append("}")
+        group_type_blocks.append("\n".join(lines))
 
     query_fields = [
         _description_block(t.description, indent="  ")
-        + f"  {t.name}(limit: Int, offset: Int, where: {t.name}WhereInput): [{t.name}]"
+        + f"  {t.name}(where: {t.name}_bool_exp): {t.name}Result"
         for t in registry
     ]
     query_fields.append(
@@ -97,7 +203,15 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
 
     scalar_defs = [f"scalar {s}" for s in sorted(custom_scalars)]
     parts = (
-        scalar_defs + where_input_defs + type_blocks + [table_info_block, query_block]
+        scalar_defs
+        + [_COMPARISON_EXP_TYPES, _ORDER_BY_ENUM]
+        + bool_exp_defs
+        + order_by_defs
+        + group_order_by_defs
+        + type_blocks
+        + result_type_blocks
+        + group_type_blocks
+        + [table_info_block, query_block]
     )
     return "\n\n".join(parts) + "\n"
 
@@ -146,6 +260,7 @@ def create_graphql_subapp(
     authoritative caller-effective view lives in the policy-pruned
     ``Query._sdl`` field, which is what auth-sensitive clients should use.
     """
+    table_names = {t.name for t in registry}
     _RESERVED = {"_sdl", "_tables", "_TableInfo"}
     for t in registry:
         if t.name in _RESERVED:
@@ -153,10 +268,33 @@ def create_graphql_subapp(
                 f"model name '{t.name}' collides with a reserved schema name "
                 f"({t.name}); rename the model or exclude it via dbt.exclude."
             )
+        for derived in (f"{t.name}Result", f"{t.name}_group"):
+            if derived in table_names:
+                raise ValueError(
+                    f"model name '{derived}' collides with derived type name '{derived}'; "
+                    "rename the model or exclude it via dbt.exclude."
+                )
+        # Aggregate field names (``count``, ``sum_<col>``, ``avg_<col>``, …)
+        # share a namespace with real columns on ``{T}_group``. Reject any
+        # dbt column whose name happens to match a synthetic aggregate
+        # field — the operator can rename the column or exclude it via
+        # ``dbt.exclude``. This is the *only* guarantee that aggregates
+        # don't shadow real data.
+        col_names = {c.name for c in t.columns}
+        for fname, _ in agg_fields_for_table(t):
+            if fname in col_names:
+                raise ValueError(
+                    f"table '{t.name}': column '{fname}' clashes with the "
+                    f"synthetic aggregate field of the same name. Rename "
+                    f"the column or exclude the table via dbt.exclude."
+                )
+
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
     source_doc = build_source_doc(registry)
-    query_type = create_query_type(registry)
-    gql_schema = make_executable_schema(_build_ariadne_sdl(registry), query_type)
+    query_type, object_types = create_query_type(registry)
+    gql_schema = make_executable_schema(
+        _build_ariadne_sdl(registry), query_type, *object_types
+    )
 
     validation_rules = make_query_guard_rules(
         max_depth=graphql_config.query_max_depth,

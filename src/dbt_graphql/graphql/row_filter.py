@@ -16,11 +16,13 @@ flow style (``{ ... }``) for compactness; block style is equivalent.
             - owner_id: { _eq: { jwt: sub } }
         - status: { _in: [active, pending] }
 
-Logical operators: ``_and``, ``_or``, ``_not``. Column-level operators:
-``_eq``, ``_ne``, ``_lt``, ``_lte``, ``_gt``, ``_gte``, ``_in``,
-``_is_null``. RHS values are literals (str/int/float/bool) or
-``{ jwt: <dotted.path> }`` references that resolve from the request JWT
-at compile time.
+Logical operators: ``_and``, ``_or``, ``_not``.
+Column-level operators (Hasura vocab, cross-dialect via SQLAlchemy):
+  ``_eq``, ``_neq``, ``_gt``, ``_gte``, ``_lt``, ``_lte``
+  ``_in``, ``_nin``, ``_is_null``
+  ``_like``, ``_nlike``, ``_ilike``, ``_nilike``
+RHS values are literals (str/int/float/bool) or ``{ jwt: <dotted.path> }``
+references that resolve from the request JWT at compile time.
 """
 
 from __future__ import annotations
@@ -31,17 +33,14 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import and_, bindparam, column, not_, or_
 from sqlalchemy.sql.elements import ColumnElement
 
+from ..sql_ops import COMPARISON_OPS, LIST_OPS, LOGICAL_OPS, apply_comparison
+
 if TYPE_CHECKING:
     from .auth import JWTPayload
 
 
 class RowFilterError(ValueError):
     """Raised on malformed DSL or unknown column / operator references."""
-
-
-_LOGICAL = {"_and", "_or", "_not"}
-_COMPARISON_OPS = {"_eq", "_ne", "_lt", "_lte", "_gt", "_gte"}
-_COMPARISON = _COMPARISON_OPS | {"_in", "_is_null"}
 
 
 def validate_row_filter(
@@ -60,12 +59,12 @@ def validate_row_filter(
         raise RowFilterError(f"row_filter at {path or '<root>'} is empty")
 
     keys: list[str] = [str(k) for k in node.keys()]
-    has_logical = any(k in _LOGICAL for k in keys)
+    has_logical = any(k in LOGICAL_OPS for k in keys)
     has_column = any(not k.startswith("_") for k in keys)
     if has_logical and has_column:
         raise RowFilterError(
             f"{path or '<root>'}: a node cannot mix logical operators "
-            f"({sorted(k for k in keys if k in _LOGICAL)}) with column keys "
+            f"({sorted(k for k in keys if k in LOGICAL_OPS)}) with column keys "
             f"({sorted(k for k in keys if not k.startswith('_'))}). "
             "Wrap the column key in an explicit `_and`."
         )
@@ -77,7 +76,7 @@ def validate_row_filter(
 
     for key, value in node.items():
         sub_path = f"{path}.{key}" if path else key
-        if key in _LOGICAL:
+        if key in LOGICAL_OPS:
             if key == "_not":
                 validate_row_filter(
                     value, allowed_columns=allowed_columns, path=sub_path
@@ -96,7 +95,7 @@ def validate_row_filter(
         if key.startswith("_"):
             raise RowFilterError(
                 f"{sub_path}: unknown logical operator {key!r}. "
-                f"Logical operators are: {sorted(_LOGICAL)}"
+                f"Logical operators are: {sorted(LOGICAL_OPS)}"
             )
         if key not in allowed_columns:
             raise RowFilterError(
@@ -118,28 +117,28 @@ def _validate_comparison(node: Any, *, path: str) -> None:
             f"got {sorted(node.keys())}"
         )
     op, value = next(iter(node.items()))
-    if op not in _COMPARISON:
+    if op not in COMPARISON_OPS:
         raise RowFilterError(
             f"{path}.{op}: unknown comparison operator. "
-            f"Supported: {sorted(_COMPARISON)}"
+            f"Supported: {sorted(COMPARISON_OPS)}"
         )
     if op == "_is_null":
         if not isinstance(value, bool):
             raise RowFilterError(f"{path}._is_null: expected a bool, got {value!r}")
         return
-    if op == "_in":
+    if op in LIST_OPS:
         if not isinstance(value, list) or not value:
             raise RowFilterError(
-                f"{path}._in: expected a non-empty list, got {value!r}"
+                f"{path}.{op}: expected a non-empty list, got {value!r}"
             )
         for i, v in enumerate(value):
             if v is None:
                 raise RowFilterError(
-                    f"{path}._in[{i}]: NULL is not a valid `_in` element "
+                    f"{path}.{op}[{i}]: NULL is not a valid list element "
                     "(SQL `IN (NULL)` never matches). Use `_is_null` for "
                     "null checks."
                 )
-            _validate_value(v, path=f"{path}._in[{i}]")
+            _validate_value(v, path=f"{path}.{op}[{i}]")
         return
     _validate_value(value, path=f"{path}.{op}")
 
@@ -195,23 +194,16 @@ def compile_row_filter(
         col = column(col_name)
 
         if op == "_is_null":
-            return col.is_(None) if raw else col.isnot(None)
-        if op == "_in":
-            return col.in_([_bind(_resolve(v)) for v in raw])
-        bound = _bind(_resolve(raw))
-        if op == "_eq":
-            return col == bound
-        if op == "_ne":
-            return col != bound
-        if op == "_lt":
-            return col < bound
-        if op == "_lte":
-            return col <= bound
-        if op == "_gt":
-            return col > bound
-        if op == "_gte":
-            return col >= bound
-        raise RowFilterError(f"unreachable: unknown comparison operator {op!r}")
+            value: Any = raw
+        elif op in LIST_OPS:
+            value = [_bind(_resolve(v)) for v in raw]
+        else:
+            value = _bind(_resolve(raw))
+
+        try:
+            return apply_comparison(col, op, value)
+        except ValueError as exc:
+            raise RowFilterError(str(exc)) from exc
 
     return _walk(node)
 
