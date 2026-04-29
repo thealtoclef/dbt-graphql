@@ -22,7 +22,7 @@ from graphql.validation import specified_rules
 from ..formatter.schema import TableRegistry
 from ..graphql.app import GraphQLBundle
 from ..graphql.auth import JWTPayload
-from ..graphql.policy import PolicyEngine, PolicyError, ResolvedPolicy
+from ..graphql.policy import PolicyEngine, PolicyError
 from .discovery import SchemaDiscovery
 
 _USAGE_GUIDE_PATH = Path(__file__).with_name("usage_guide.md")
@@ -30,7 +30,7 @@ _USAGE_GUIDE_PATH = Path(__file__).with_name("usage_guide.md")
 
 @functools.lru_cache(maxsize=1)
 def _get_mcp_metrics_instruments():
-    """Build (counter, histogram) once on first call; cached for the process."""
+    """Build (counter, duration histogram, size histogram) once; cached for the process."""
     from opentelemetry import metrics
 
     meter = metrics.get_meter("dbt_graphql.mcp")
@@ -39,35 +39,95 @@ def _get_mcp_metrics_instruments():
         description="Total number of MCP tool calls",
         unit="1",
     )
-    histogram = meter.create_histogram(
+    duration = meter.create_histogram(
         name="mcp.tool.duration",
         description="MCP tool call duration in milliseconds",
         unit="ms",
     )
-    return counter, histogram
+    size = meter.create_histogram(
+        name="mcp.tool.result_bytes",
+        description="MCP tool call result payload size in bytes",
+        unit="By",
+    )
+    return counter, duration, size
+
+
+def _result_bytes(result: Any) -> int:
+    """Best-effort size of the agent-facing payload.
+
+    Strings are measured as UTF-8 bytes. Other JSON-shaped results are
+    serialised with ``default=str`` to handle Decimal/datetime the same
+    way ``run_graphql`` does. Anything that fails to serialise reports 0
+    rather than failing the call — observability must not break tools.
+    """
+    if isinstance(result, str):
+        return len(result.encode("utf-8"))
+    try:
+        return len(json.dumps(result, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+class _ToolReturnedError(Exception):
+    """Typed signal that a tool call must record ``status=error`` while still
+    returning a structured payload to the agent.
+
+    Tools raise this when their typed execution path determines failure
+    (e.g. graphql-core's ``ExecutionResult.errors`` is non-empty). The
+    metrics wrapper catches it so ``timed`` flips ``status=error`` via
+    its normal exception path, then converts the carried ``payload``
+    back into the agent-facing dict — so FastMCP serialises a normal
+    tool return rather than a protocol-level error.
+
+    Detection of "did this call error?" is structural, not derived from
+    inspecting keys in the returned dict. The tool itself decides, based
+    on whatever typed signal its domain provides.
+    """
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self.payload = payload
 
 
 def _instrument_tool(tool_name: str, func: Callable) -> Callable:
-    """Wrap an MCP tool with metrics (counter + duration histogram).
+    """Wrap an MCP tool with metrics (counter + duration + result-size histograms).
 
     FastMCP inspects function signatures to generate the tool schema, so we
     preserve the original signature on the wrapper via functools.wraps +
     explicit __signature__ assignment.
+
+    Tools that need to flag a call as ``status=error`` (e.g. ``run_graphql``
+    on parse/validation/execution errors) raise ``_ToolReturnedError`` with
+    the agent-facing payload. ``timed`` records ``status=error`` via its
+    exception path; the wrapper then unwraps the payload and returns it
+    normally so FastMCP serialises the structured error response rather
+    than an MCP protocol error.
     """
     import functools
     import inspect
 
     from ..monitoring import timed
 
-    counter, histogram = _get_mcp_metrics_instruments()
+    counter, duration, size = _get_mcp_metrics_instruments()
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
-        async with timed(histogram, counter, {"tool.name": tool_name}):
-            result = func(*args, **kwargs)
-            if isinstance(result, Awaitable):
-                result = await result
-            return result
+        # ``timed`` mutates its own copy of base_attrs (status=success|error)
+        # via the duration histogram + counter, but does not propagate that
+        # back to the outer dict — so the size histogram needs its own
+        # explicit ``status`` label to stay consistent across all three
+        # MCP metrics.
+        base = {"tool.name": tool_name}
+        try:
+            async with timed(duration, counter, base):
+                result = func(*args, **kwargs)
+                if isinstance(result, Awaitable):
+                    result = await result
+                size.record(_result_bytes(result), {**base, "status": "success"})
+                return result
+        except _ToolReturnedError as exc:
+            size.record(_result_bytes(exc.payload), {**base, "status": "error"})
+            return exc.payload
 
     setattr(wrapper, "__signature__", inspect.signature(func))
 
@@ -115,9 +175,11 @@ class McpTools:
     queries through the same Ariadne schema with the same per-request
     context — so masks, blocked columns, and row filters apply.
 
-    The ``policy_engine`` and ``bundle`` constructor args are optional to
-    keep the class testable in isolation. When both are absent the tools
-    behave as unrestricted schema discovery (dev / unit-test mode).
+    ``bundle`` is required: ``list_tables`` / ``describe_tables`` route
+    through its executable schema, and ``run_graphql`` executes against
+    it. ``policy_engine`` is optional; when ``None`` the tools behave as
+    unrestricted schema discovery (dev / unit-test mode), matching the
+    ``access_policy=None`` path in :func:`create_graphql_subapp`.
     """
 
     def __init__(
@@ -152,17 +214,9 @@ class McpTools:
         except PolicyError:
             return False
 
-    def _column_visible(
-        self, resolved: ResolvedPolicy | None, column_name: str
-    ) -> bool:
-        # ``resolved is None`` means no policy engine configured (dev mode):
-        # show everything. Otherwise delegate to the single source of truth
-        # on ResolvedPolicy so MCP and compile_query agree on visibility.
-        return resolved is None or resolved.is_column_allowed(column_name)
-
     # ---- tools ----
 
-    def list_tables(self, filter: str | None = None) -> dict[str, Any]:
+    def list_tables(self) -> dict[str, Any]:
         """List tables the caller's access policy authorizes.
 
         Each entry carries ``name`` and ``description`` — the index-page
@@ -170,28 +224,18 @@ class McpTools:
         via ``describe_tables``. Structural detail (columns, relations) is
         intentionally omitted; it belongs to ``describe_tables(names)``.
 
-        Args:
-            filter: Optional case-insensitive substring match against name
-                or description. Visibility is enforced upstream by the
-                GraphQL ``_tables`` resolver — denied tables are never
-                returned regardless of whether they would match the filter.
+        Visibility is enforced upstream by the GraphQL ``_tables`` resolver —
+        denied tables are never returned. The agent filters client-side
+        from the returned ``{name, description}`` list.
         """
         result = self._exec_graphql("{ _tables { name description } }")
         tables: list[dict[str, Any]] = list(result.get("_tables") or [])
-        if filter is not None:
-            f = filter.lower()
-            tables = [
-                t
-                for t in tables
-                if f in t["name"].lower()
-                or f in (t.get("description") or "").lower()
-            ]
         return {
             "tables": tables,
             "_meta": {
                 "next_steps": [
                     "Call describe_tables(names) to get the SDL slice for one or more tables.",
-                    "Call explore_relationships(table_name) to see how tables connect.",
+                    "Call find_path(from, to) to discover multi-hop join paths between tables.",
                 ]
             },
         }
@@ -261,7 +305,8 @@ class McpTools:
                 "to_table": to_table,
                 "_meta": {
                     "next_steps": [
-                        "Try explore_relationships to see what each table connects to."
+                        "Call describe_tables on each endpoint to see which @relation directives "
+                        "they expose and pick a different starting point."
                     ]
                 },
             }
@@ -283,34 +328,8 @@ class McpTools:
             ],
             "_meta": {
                 "next_steps": [
-                    "Use build_query to construct a query using these joins."
-                ]
-            },
-        }
-
-    def explore_relationships(self, table_name: str) -> dict[str, Any]:
-        """Return tables related to ``table_name`` that the caller can see."""
-        ctx = _current_jwt()
-        if not self._is_visible(table_name, ctx):
-            return {
-                "table": table_name,
-                "related_tables": [],
-                "_meta": {
-                    "next_steps": ["This table is not authorized for this caller."]
-                },
-            }
-        related = self._discovery.explore_relationships(table_name)
-        return {
-            "table": table_name,
-            "related_tables": [
-                {"name": r.name, "via_column": r.via_column, "direction": r.direction}
-                for r in related
-                if self._is_visible(r.name, ctx)
-            ],
-            "_meta": {
-                "next_steps": [
-                    "Call find_path to discover multi-hop join paths.",
-                    "Call describe_table for column details of any related table.",
+                    "Compose a GraphQL query that traverses these joins via @relation fields, "
+                    "then pass it to run_graphql (optionally with validate_only=true first)."
                 ]
             },
         }
@@ -363,52 +382,17 @@ class McpTools:
             "downstream": downstream,
             "_meta": {
                 "next_steps": [
-                    "Use build_query on the upstream/downstream tables to "
-                    "construct queries against them."
-                ]
-            },
-        }
-
-    def build_query(self, table: str, fields: list[str]) -> dict[str, Any]:
-        """Generate a GraphQL query string for ``table``.
-
-        Filters fields by policy when configured, then — when a bundle is
-        available — validates the candidate against the live GraphQL
-        schema so the agent never receives a string that won't parse.
-        """
-        ctx = _current_jwt()
-        try:
-            resolved = self._resolve(table, ctx)
-        except PolicyError as exc:
-            return {"error": str(exc), "_meta": {}}
-        visible_fields = [f for f in fields if self._column_visible(resolved, f)]
-        field_str = "\n    ".join(visible_fields)
-        query = f"query {{\n  {table} {{\n    {field_str}\n  }}\n}}"
-        if self._bundle is not None:
-            try:
-                doc = parse(query)
-                errors = validate(self._bundle.schema, doc)
-            except Exception as exc:
-                return {"error": f"generated query is invalid: {exc}", "_meta": {}}
-            if errors:
-                return {
-                    "error": "generated query failed schema validation: "
-                    + "; ".join(e.message for e in errors),
-                    "_meta": {},
-                }
-        return {
-            "table": table,
-            "fields": visible_fields,
-            "query": query,
-            "_meta": {
-                "next_steps": [
-                    "Pass the query to run_graphql to execute it through the policy-enforced GraphQL engine."
+                    "Call describe_tables on upstream or downstream tables for column details, "
+                    "then write a query and pass it to run_graphql."
                 ]
             },
         }
 
     async def run_graphql(
-        self, query: str, variables: dict | None = None
+        self,
+        query: str,
+        variables: dict | None = None,
+        validate_only: bool = False,
     ) -> dict[str, Any]:
         """Execute a GraphQL query through the same engine as ``/graphql``.
 
@@ -418,43 +402,53 @@ class McpTools:
         count, list-pagination cap) are applied here that the HTTP path
         uses — wired through ``GraphQLBundle.validation_rules`` so the two
         transports cannot drift. Returns ``{data, errors}``.
-        """
-        if self._bundle is None:
-            return {
-                "errors": [
-                    {"message": "GraphQL bundle not configured for this MCP server."}
-                ]
-            }
 
+        Args:
+            query: The GraphQL operation source.
+            variables: Optional variable bindings for the operation.
+            validate_only: When ``True``, parse and validate the query
+                against the live schema (including custom query-guard
+                rules) but do not execute. Returns ``{validation: "ok"}``
+                on success, ``{errors: [...]}`` on failure. Useful for
+                agents to verify a candidate query before committing to
+                execution.
+        """
         from graphql import GraphQLError
 
         try:
             document = parse(query)
         except GraphQLError as exc:
-            return {
-                "errors": [
-                    {
-                        "message": str(exc),
-                        "extensions": exc.extensions or {},
-                    }
-                ]
-            }
+            raise _ToolReturnedError(
+                {
+                    "errors": [
+                        {
+                            "message": str(exc),
+                            "extensions": exc.extensions or {},
+                        }
+                    ]
+                }
+            )
 
         # Combine spec rules + our custom guards — same composition Ariadne
         # does for the HTTP path (see ariadne.graphql.validate_query).
         rules = tuple(specified_rules) + tuple(self._bundle.validation_rules)
         validation_errors = validate(self._bundle.schema, document, rules)
         if validation_errors:
-            return {
-                "errors": [
-                    {
-                        "message": e.message,
-                        "path": list(e.path) if e.path else None,
-                        "extensions": e.extensions or {},
-                    }
-                    for e in validation_errors
-                ]
-            }
+            raise _ToolReturnedError(
+                {
+                    "errors": [
+                        {
+                            "message": e.message,
+                            "path": list(e.path) if e.path else None,
+                            "extensions": e.extensions or {},
+                        }
+                        for e in validation_errors
+                    ]
+                }
+            )
+
+        if validate_only:
+            return {"validation": "ok"}
 
         ctx = _current_jwt()
         context_value = self._bundle.build_context(ctx)
@@ -468,7 +462,14 @@ class McpTools:
             execution_result = result
         else:
             execution_result = await result
-        return _format_execution_result(execution_result)
+        formatted = _format_execution_result(execution_result)
+        # ``execution_result.errors`` is the typed structural source of truth
+        # — graphql-core's ExecutionResult attribute, not a parsed dict key.
+        # Any execution error (including partial-success with data) flips
+        # status=error at the metrics layer.
+        if execution_result.errors:
+            raise _ToolReturnedError(formatted)
+        return formatted
 
     @staticmethod
     def usage_guide_text() -> str:
@@ -534,13 +535,9 @@ def create_mcp_server(
         _instrument_tool("describe_tables", tools.describe_tables)
     )
     mcp.tool(name="find_path")(_instrument_tool("find_path", tools.find_path))
-    mcp.tool(name="explore_relationships")(
-        _instrument_tool("explore_relationships", tools.explore_relationships)
-    )
     mcp.tool(name="trace_column_lineage")(
         _instrument_tool("trace_column_lineage", tools.trace_column_lineage)
     )
-    mcp.tool(name="build_query")(_instrument_tool("build_query", tools.build_query))
     mcp.tool(name="run_graphql")(_instrument_tool("run_graphql", tools.run_graphql))
 
     # Static usage guide as an MCP resource (not a tool). Resources can be

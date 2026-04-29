@@ -52,21 +52,6 @@ class TestFindPath:
         assert len(paths) == 0
 
 
-class TestExploreRelationships:
-    def test_orders_has_related_customers(self):
-        d = _make_discovery()
-        related = d.explore_relationships("orders")
-        names = {r.name for r in related}
-        assert "customers" in names
-
-    def test_direction_outgoing(self):
-        d = _make_discovery()
-        related = d.explore_relationships("orders")
-        customers_rel = next((r for r in related if r.name == "customers"), None)
-        assert customers_rel is not None
-        assert customers_rel.direction == "outgoing"
-
-
 def _make_col(name: str) -> ColumnInfo:
     return ColumnInfo(name=name, type="INTEGER")
 

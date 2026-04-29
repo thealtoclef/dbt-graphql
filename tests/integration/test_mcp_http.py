@@ -267,14 +267,16 @@ class TestMCPHTTPtoolsList:
             "list_tables",
             "describe_tables",
             "find_path",
-            "explore_relationships",
             "trace_column_lineage",
-            "build_query",
             "run_graphql",
         }
-        assert expected.issubset(names), f"Missing tools: {expected - names}"
+        assert expected == names, f"Tool surface drift: {expected ^ names}"
         # Singular describe_table was removed in favour of describe_tables.
         assert "describe_table" not in names
+        # build_query and explore_relationships were folded into describe_tables
+        # (SDL @relation directives) and run_graphql (validate_only).
+        assert "build_query" not in names
+        assert "explore_relationships" not in names
         # Usage guide is exposed as an MCP resource, not a tool.
         assert "get_usage_guide" not in names
 
@@ -297,13 +299,6 @@ class TestMCPlistTablesHTTP:
         for t in result["tables"]:
             assert set(t.keys()) >= {"name", "description"}
             assert isinstance(t["description"], str)
-
-    def test_list_tables_filter(self, mcp_client):
-        with mcp_client() as client:
-            result = _mcp_call_tool(client, "list_tables", {"filter": "customer"})
-        names = {t["name"] for t in result["tables"]}
-        assert "customers" in names
-        assert all("customer" in n.lower() for n in names)
 
     def test_list_tables_has_meta_next_steps(self, mcp_client):
         with mcp_client() as client:
@@ -378,22 +373,6 @@ class TestMCPdescribeTablesHTTP:
         assert "definitely_not_a_table" not in (unknown_text or "")
 
 
-class TestMCPbuildQueryHTTP:
-    """Exercise build_query through the HTTP transport."""
-
-    def test_build_query_produces_graphql(self, mcp_client):
-        with mcp_client() as client:
-            result = _mcp_call_tool(
-                client,
-                "build_query",
-                {"table": "customers", "fields": ["customer_id", "first_name"]},
-            )
-        assert "query" in result
-        assert "customers" in result["query"]
-        assert "customer_id" in result["query"]
-        assert "first_name" in result["query"]
-
-
 class TestMCPrunGraphqlHTTP:
     """Exercise run_graphql through the HTTP transport."""
 
@@ -423,19 +402,28 @@ class TestMCPrunGraphqlHTTP:
         assert "errors" in result
         assert len(result["errors"]) > 0
 
-
-class TestMCPexploreRelationshipsHTTP:
-    """Exercise explore_relationships through the HTTP transport."""
-
-    def test_explore_relationships(self, mcp_client):
-        with mcp_client() as client:
-            result = _mcp_call_tool(
-                client, "explore_relationships", {"table_name": "orders"}
+    def test_run_graphql_validate_only(self, mcp_client):
+        """validate_only parses + validates without executing."""
+        with mcp_client(rows=[{"customer_id": 1}]) as client:
+            ok = _mcp_call_tool(
+                client,
+                "run_graphql",
+                {
+                    "query": "query { customers { customer_id } }",
+                    "validate_only": True,
+                },
             )
-        assert "related_tables" in result
-        # At least customers should be related to orders
-        names = {r["name"] for r in result["related_tables"]}
-        assert "customers" in names
+            bad = _mcp_call_tool(
+                client,
+                "run_graphql",
+                {
+                    "query": "query { nonexistent_table { x } }",
+                    "validate_only": True,
+                },
+            )
+        assert ok == {"validation": "ok"}
+        assert "errors" in bad
+        assert "validation" not in bad
 
 
 class TestMCPfindPathHTTP:
@@ -611,17 +599,6 @@ class TestMCPPolicyHTTP:
         assert tool_result.get("isError") is not True
         assert "type orders " not in text
 
-    def test_explore_relationships_hides_unauthorized_neighbors(self, mcp_client):
-        """customers links to orders, but orders is outside the policy."""
-        policy = self._customers_only_policy()
-        with mcp_client(access_policy=policy) as client:
-            result = _mcp_call_tool(
-                client, "explore_relationships", {"table_name": "customers"}
-            )
-        names = {r["name"] for r in result["related_tables"]}
-        # orders is not visible because the policy doesn't include it
-        assert "orders" not in names
-
     def test_find_path_respects_policy(self, mcp_client):
         """find_path between two policy-denied tables returns not found."""
         policy = self._customers_only_policy()
@@ -631,18 +608,6 @@ class TestMCPPolicyHTTP:
             )
         # orders is not visible → path not found
         assert result["found"] is False
-
-    def test_build_query_strips_blocked_fields(self, mcp_client):
-        policy = self._customers_only_policy()
-        with mcp_client(access_policy=policy) as client:
-            result = _mcp_call_tool(
-                client,
-                "build_query",
-                {"table": "customers", "fields": ["customer_id", "email"]},
-            )
-        # email should be stripped by policy
-        assert result["fields"] == ["customer_id"]
-        assert "email" not in result["query"]
 
     def test_run_graphql_respects_row_filter(self, mcp_client):
         """Row filter from JWT claim is compiled into SQL WHERE clause.

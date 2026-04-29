@@ -22,13 +22,11 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 
 | Tool                                | Purpose                                                              |
 |-------------------------------------|----------------------------------------------------------------------|
-| `list_tables(filter?)`              | Index-page summary of tables the caller's policy authorizes — `name` and `description` per entry, no structural detail. Optional case-insensitive `filter` matches name or description. Backed by GraphQL `_tables`. |
-| `describe_tables(names)`            | Effective `db.graphql` SDL slice for one or more tables — full custom directives (`@table`, `@column`, `@relation`, `@masked`, `@filtered`). Names the caller cannot see (denied or nonexistent) are silently skipped, so existence cannot be probed. Backed by GraphQL `_sdl(tables: ...)`. |
-| `find_path(from_table, to_table)`   | Shortest join path(s) via BFS on the relationship graph.             |
-| `explore_relationships(table_name)` | Authorized tables related to the given one (outgoing / incoming).    |
-| `trace_column_lineage(table, column)` | Upstream sources and downstream consumers for a column, derived from dbt's column-level lineage. Edges to unauthorized tables are stripped. |
-| `build_query(table, fields)`        | Generate a GraphQL query string; filters fields by policy.           |
-| `run_graphql(query, variables?)`    | Execute a GraphQL query through the same engine that backs `/graphql`. Subject to the same query guards (depth, field count, list-pagination cap) as the HTTP endpoint. |
+| `list_tables()`                     | Index-page summary of tables the caller's policy authorizes — `name` and `description` per entry, no structural detail. Backed by GraphQL `_tables`. The agent filters client-side from the returned list. |
+| `describe_tables(names)`            | Effective `db.graphql` SDL slice for one or more tables — full custom directives (`@table`, `@column`, `@relation`, `@lineage`, `@masked`, `@filtered`). Names the caller cannot see (denied or nonexistent) are silently skipped, so existence cannot be probed. Backed by GraphQL `_sdl(tables: ...)`. The `@relation` directives are the agent's primary source for 1-hop adjacency; reach for `find_path` only when SDL alone can't answer. |
+| `find_path(from_table, to_table)`   | Shortest join path(s) via BFS on the relationship graph. The one schema-discovery tool that has no GraphQL/SDL equivalent. |
+| `trace_column_lineage(table, column)` | Upstream sources and downstream consumers for a column, derived from dbt's column-level lineage. Upstream edges are also surfaced inline in SDL via `@lineage`; this tool additionally returns *downstream* consumers, which SDL alone doesn't. Edges to unauthorized tables are stripped. |
+| `run_graphql(query, variables?, validate_only?)` | Execute a GraphQL query through the same engine that backs `/graphql`. Subject to the same query guards (depth, field count, list-pagination cap) as the HTTP endpoint. With `validate_only=true`, parses and validates without executing — returns `{validation: "ok"}` or `{errors: [...]}`. |
 
 ### Resources
 
@@ -36,30 +34,29 @@ See [architecture.md](architecture.md) for the design principle behind MCP-first
 |---|---|
 | `dbt-graphql://usage-guide` | Markdown workflow guide for LLM agents — recommended call order, query-guard limits, `where`-arg semantics, and policy invariants. Exposed as an MCP **resource** (not a tool) so clients can stream it into agent context without burning a tool call. |
 
-Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_tables` → `find_path` → `build_query` → `run_graphql`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
+Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_tables` → optionally `find_path` / `trace_column_lineage` → `run_graphql`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
 
 ### Authorization model
 
 The MCP server sits behind the same Starlette `AuthenticationMiddleware` as `/graphql`, so every request carries a verified JWT (or the empty anonymous payload). All tools honour the same `AccessPolicy` that gates GraphQL:
 
-- Discovery tools (`list_tables`, `describe_tables`, `explore_relationships`, `trace_column_lineage`, `build_query`) **filter** their output to tables and columns the caller is authorized to see. `list_tables` and `describe_tables` route through the GraphQL executable schema (`_tables` / `_sdl(tables: ...)`) so MCP and HTTP share a single policy-pruning code path with no risk of drift. `describe_tables` silently skips unknown / policy-denied names so the caller cannot probe for existence.
+- Discovery tools (`list_tables`, `describe_tables`, `find_path`, `trace_column_lineage`) **filter** their output to tables and columns the caller is authorized to see. `list_tables` and `describe_tables` route through the GraphQL executable schema (`_tables` / `_sdl(tables: ...)`) so MCP and HTTP share a single policy-pruning code path with no risk of drift. `describe_tables` silently skips unknown / policy-denied names so the caller cannot probe for existence.
 - `run_graphql` re-executes the query through the **same Ariadne schema** with the **same per-request context** the HTTP layer would have built. Column allow-lists, masks, and row filters all apply structurally — there is no second authorization path to drift from the GraphQL one.
 
 There is no raw-SQL tool. `run_graphql` is the only data-read tool, by design — raw SQL cannot be policy-enforced without parsing arbitrary statements, and "let the LLM execute SQL it wrote" is exactly the bypass the access policy exists to prevent.
 
 ---
 
-## `SchemaDiscovery` — the engine behind the relationship tools
+## `SchemaDiscovery` — the engine behind the tools
 
 [`src/dbt_graphql/mcp/discovery.py`](../src/dbt_graphql/mcp/discovery.py)
 
-`SchemaDiscovery` covers the relationship-graph tools (`find_path`, `explore_relationships`) — the operations that have no GraphQL equivalent. Adjacency is derived from the same `TableRegistry` that GraphQL serves. Discovery never queries the warehouse: the manifest is the single source of truth.
+`SchemaDiscovery` covers `find_path` — the one tool that has no GraphQL equivalent. Adjacency is derived from the same `TableRegistry` that GraphQL serves. Discovery never queries the warehouse: the manifest is the single source of truth.
 
 - Builds a **bidirectional adjacency list** at construction time by walking the registry: every `RelationDef` on a column becomes two edges (outgoing from the owning table, incoming on the target).
 - `find_path()` runs BFS level-by-level, returning *all* shortest paths so the agent can choose between e.g. `orders → customers` and `orders → payments → customers`.
-- `build_query()` validates the candidate query against the live GraphQL schema (`graphql.validate`) before returning, so an agent never receives a string that won't parse.
 
-Listing and SDL inspection (`list_tables`, `describe_tables`) are not part of `SchemaDiscovery`; they execute against the bundle's GraphQL executable schema (`_tables` / `_sdl(tables: ...)`) so policy pruning runs through the same code path as `/graphql`.
+1-hop adjacency questions ("what does `orders` point at?") are answered by reading `@relation` directives in the `describe_tables` SDL slice — there's no separate tool for that. Listing and SDL inspection (`list_tables`, `describe_tables`) are not part of `SchemaDiscovery`; they execute against the bundle's GraphQL executable schema (`_tables` / `_sdl(tables: ...)`) so policy pruning runs through the same code path as `/graphql`.
 
 ---
 
@@ -74,6 +71,16 @@ MCP input arrives as `POST /mcp`; server-to-client events stream via `GET /mcp` 
 ## Observability
 
 fastmcp ships native OTel support built on `opentelemetry-api` (a hard dep of fastmcp, no extras required). Every tool call automatically emits a `SERVER` span with RPC semantic conventions (`rpc.system: "mcp"`, `rpc.method`, `rpc.service`) and FastMCP-specific attributes. Spans are no-ops unless a traces endpoint is configured — set `monitoring.traces.endpoint` and `monitoring.traces.protocol` in `config.yml` (see [configuration.md](configuration.md)). Distributed trace propagation via `traceparent`/`tracestate` in MCP request meta is also supported.
+
+Each tool call also records three metrics, all labeled with `tool.name` and `status` (`success` / `error`):
+
+| Metric | Type | Unit | Notes |
+|---|---|---|---|
+| `mcp.tool.calls` | counter | `1` | Total tool invocations. |
+| `mcp.tool.duration` | histogram | `ms` | Wall-clock time per call. |
+| `mcp.tool.result_bytes` | histogram | `By` | UTF-8 size of the agent-facing payload (string responses) or its JSON serialisation (dict responses). Best-effort — failures to serialise record 0 rather than failing the call. |
+
+Metric records are emitted inside the active span context, so backends that support metric→trace pivoting (Grafana/Tempo, Datadog, Honeycomb) can jump from a slow data point to the originating trace via the shared time window or — once OTel exemplars are enabled on the metric reader — directly via exemplar.
 
 ---
 

@@ -3,6 +3,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from dbt_graphql.formatter.graphql import build_registry
 from dbt_graphql.graphql.app import create_graphql_subapp
 from dbt_graphql.graphql.policy import (
@@ -13,7 +15,7 @@ from dbt_graphql.graphql.policy import (
     Effect,
 )
 from dbt_graphql.pipeline import extract_project
-from dbt_graphql.mcp.server import McpTools
+from dbt_graphql.mcp.server import McpTools, _ToolReturnedError
 
 
 FIXTURES_DIR = (
@@ -79,24 +81,6 @@ class TestListTables:
         result = tools.list_tables()
         assert len(result["_meta"]["next_steps"]) > 0
 
-    def test_filter_returns_only_matching_tables(self):
-        tools = _make_tools()
-        result = tools.list_tables(filter="customer")
-        names = _names(result)
-        assert "customers" in names
-        assert "orders" not in names
-
-    def test_filter_no_match_returns_empty(self):
-        tools = _make_tools()
-        result = tools.list_tables(filter="xyzzy_nonexistent_term_12345")
-        assert result["tables"] == []
-
-    def test_filter_is_case_insensitive(self):
-        tools = _make_tools()
-        result = tools.list_tables(filter="CUSTOMER")
-        assert "customers" in _names(result)
-
-
 
 class TestUsageGuide:
     """The usage guide is exposed as an MCP **resource** (not a tool).
@@ -116,8 +100,9 @@ class TestUsageGuide:
         text = McpTools.usage_guide_text()
         assert "list_tables" in text
         assert "describe_tables" in text
-        assert "build_query" in text
+        assert "find_path" in text
         assert "run_graphql" in text
+        assert "validate_only" in text
 
     def test_contains_policy_semantics_sections(self):
         text = McpTools.usage_guide_text()
@@ -165,39 +150,6 @@ class TestFindPath:
         result = tools.find_path("customers", "stg_orders")
         assert result["found"] is False
         assert "next_steps" in result["_meta"]
-
-
-class TestExploreRelationships:
-    def test_orders_links_to_customers(self):
-        tools = _make_tools()
-        result = tools.explore_relationships("orders")
-        names = {r["name"] for r in result["related_tables"]}
-        assert "customers" in names
-
-    def test_direction_is_valid(self):
-        tools = _make_tools()
-        result = tools.explore_relationships("orders")
-        for r in result["related_tables"]:
-            assert r["direction"] in ("outgoing", "incoming")
-            assert r["via_column"]
-
-
-class TestBuildQuery:
-    def test_produces_graphql_syntax(self):
-        tools = _make_tools()
-        result = tools.build_query("customers", ["customer_id", "first_name"])
-        assert result["table"] == "customers"
-        q = result["query"]
-        assert "customers" in q
-        assert "customer_id" in q
-        assert "first_name" in q
-        assert "{" in q
-
-    def test_fields_preserved(self):
-        tools = _make_tools()
-        fields = ["order_id", "status", "amount"]
-        result = tools.build_query("orders", fields)
-        assert result["fields"] == fields
 
 
 class TestMcpServerRegistration:
@@ -278,25 +230,6 @@ class TestPolicyFiltering:
         assert result["found"] is False
         assert "not authorized" in result["_meta"]["next_steps"][0]
 
-    def test_explore_relationships_hides_unauthorized_neighbors(self):
-        tools = _make_policy_tools()
-        # customers links to orders in the fixtures; orders is denied so
-        # the neighbor list must come back empty rather than leaking the name.
-        result = tools.explore_relationships("customers")
-        names = {r["name"] for r in result["related_tables"]}
-        assert "orders" not in names
-
-    def test_explore_relationships_denied_table_returns_empty(self):
-        tools = _make_policy_tools()
-        result = tools.explore_relationships("orders")
-        assert result["related_tables"] == []
-
-    def test_build_query_strips_blocked_fields(self):
-        tools = _make_policy_tools()
-        result = tools.build_query("customers", ["customer_id", "email"])
-        assert result["fields"] == ["customer_id"]
-        assert "email" not in result["query"]
-
 
 # ---------------------------------------------------------------------------
 # run_graphql plumbing — bundle wired, real Ariadne schema, fake DB
@@ -314,18 +247,48 @@ def _bundle_with(rows, *, access_policy: AccessPolicy | None = None):
 
 
 class TestRunGraphqlWithBundle:
-    def test_executes_query_through_bundle(self):
+    @pytest.mark.asyncio
+    async def test_executes_query_through_bundle(self, fresh_cache):
+        # Real GraphQL execution touches the cashews ``cache`` singleton,
+        # so this test depends on the ``fresh_cache`` fixture from
+        # tests/unit/conftest.py — without it the resolver raises
+        # "run cache.setup(...) before using cache" on the first hit.
         bundle = _bundle_with([{"customer_id": 1}, {"customer_id": 2}])
         tools = McpTools(bundle.registry, bundle=bundle)
-        result = asyncio.run(tools.run_graphql("query { customers { customer_id } }"))
+        result = await tools.run_graphql("query { customers { customer_id } }")
         assert "errors" not in result
         assert result["data"] == {"customers": [{"customer_id": 1}, {"customer_id": 2}]}
 
-    def test_parse_error_returned_as_errors(self):
+    def test_parse_error_raises_typed_signal(self):
+        # Direct (un-wrapped) callers receive the typed _ToolReturnedError;
+        # the FastMCP-mounted wrapper catches it and returns the payload
+        # dict to the agent. The typed exception is what lets the metrics
+        # wrapper flip status=error without parsing the payload.
         bundle = _bundle_with([])
         tools = McpTools(bundle.registry, bundle=bundle)
-        result = asyncio.run(tools.run_graphql("query { nonexistent_table }"))
-        assert "errors" in result
+        with pytest.raises(_ToolReturnedError) as ei:
+            asyncio.run(tools.run_graphql("query { nonexistent_table }"))
+        assert "errors" in ei.value.payload
+
+    def test_validate_only_skips_execution_on_valid_query(self):
+        bundle = _bundle_with([{"customer_id": 1}])
+        tools = McpTools(bundle.registry, bundle=bundle)
+        result = asyncio.run(
+            tools.run_graphql("query { customers { customer_id } }", validate_only=True)
+        )
+        assert result == {"validation": "ok"}
+        # Execution skipped — fake DB recorded zero queries.
+        assert bundle.db.executed == []  # ty: ignore[possibly-unbound-attribute]
+
+    def test_validate_only_raises_on_invalid_query(self):
+        bundle = _bundle_with([])
+        tools = McpTools(bundle.registry, bundle=bundle)
+        with pytest.raises(_ToolReturnedError) as ei:
+            asyncio.run(
+                tools.run_graphql("query { nonexistent_table }", validate_only=True)
+            )
+        assert "errors" in ei.value.payload
+        assert "validation" not in ei.value.payload
 
     def test_policy_denial_propagates_as_graphql_error(self):
         access_policy = AccessPolicy(
@@ -346,11 +309,13 @@ class TestRunGraphqlWithBundle:
         tools = McpTools(
             bundle.registry, bundle=bundle, policy_engine=bundle.policy_engine
         )
-        # ``orders`` is not in the policy → resolver raises TableAccessDenied,
-        # which surfaces as a structured GraphQL error.
-        result = asyncio.run(tools.run_graphql("query { orders { order_id } }"))
-        assert "errors" in result
-        assert any("orders" in e["message"] for e in result["errors"])
+        # ``orders`` is not in the policy → resolver raises TableAccessDenied;
+        # run_graphql converts to _ToolReturnedError so the metrics wrapper
+        # records status=error.
+        with pytest.raises(_ToolReturnedError) as ei:
+            asyncio.run(tools.run_graphql("query { orders { order_id } }"))
+        assert "errors" in ei.value.payload
+        assert any("orders" in e["message"] for e in ei.value.payload["errors"])
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +361,118 @@ class TestTraceColumnLineage:
         result = tools.trace_column_lineage("customers", "customer_id")
         # stg_customers is not visible to this policy, so upstream must be empty
         assert result["upstream"] == []
+
+
+# ---------------------------------------------------------------------------
+# Metric labeling — _ToolReturnedError must flip mcp.tool.calls.status=error
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_mcp_meter(monkeypatch):
+    """Replace the cached MCP instruments with ones bound to an in-memory
+    metric reader, so tests can read recorded attributes back.
+
+    Bypasses ``metrics.set_meter_provider`` (which is one-way and refuses
+    to override). Instead we inject the (counter, duration, size) tuple
+    directly into the cache for the duration of the test.
+    """
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    from dbt_graphql.mcp import server as mcp_server
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    meter = provider.get_meter("dbt_graphql.mcp")
+    instruments = (
+        meter.create_counter(name="mcp.tool.calls", unit="1"),
+        meter.create_histogram(name="mcp.tool.duration", unit="ms"),
+        meter.create_histogram(name="mcp.tool.result_bytes", unit="By"),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "_get_mcp_metrics_instruments",
+        lambda: instruments,
+    )
+    return reader
+
+
+def _statuses_for(reader, metric_name: str) -> list[str]:
+    data = reader.get_metrics_data()
+    if data is None:
+        return []
+    statuses: list[str] = []
+    for rm in data.resource_metrics:
+        for sm in rm.scope_metrics:
+            for m in sm.metrics:
+                if m.name != metric_name:
+                    continue
+                for dp in m.data.data_points:
+                    statuses.append(dp.attributes.get("status"))
+    return statuses
+
+
+class TestInstrumentToolMetricStatus:
+    """``_instrument_tool`` must label ``mcp.tool.calls`` with
+    ``status=error`` whenever a tool raises ``_ToolReturnedError`` —
+    detection via the typed exception, not by parsing the returned dict.
+    """
+
+    def test_typed_error_signal_records_status_error(self, isolated_mcp_meter):
+        from dbt_graphql.mcp.server import _instrument_tool
+
+        async def fails():
+            raise _ToolReturnedError({"errors": [{"message": "boom"}]})
+
+        wrapped = _instrument_tool("test_tool", fails)
+        result = asyncio.run(wrapped())
+        assert result == {"errors": [{"message": "boom"}]}
+        assert _statuses_for(isolated_mcp_meter, "mcp.tool.calls") == ["error"]
+
+    def test_normal_return_records_status_success(self, isolated_mcp_meter):
+        from dbt_graphql.mcp.server import _instrument_tool
+
+        async def ok():
+            return {"data": "yes"}
+
+        wrapped = _instrument_tool("test_tool", ok)
+        result = asyncio.run(wrapped())
+        assert result == {"data": "yes"}
+        assert _statuses_for(isolated_mcp_meter, "mcp.tool.calls") == ["success"]
+
+    def test_uncaught_exception_records_status_error_and_propagates(
+        self, isolated_mcp_meter
+    ):
+        from dbt_graphql.mcp.server import _instrument_tool
+
+        async def boom():
+            raise RuntimeError("kaboom")
+
+        wrapped = _instrument_tool("test_tool", boom)
+        with pytest.raises(RuntimeError):
+            asyncio.run(wrapped())
+        assert _statuses_for(isolated_mcp_meter, "mcp.tool.calls") == ["error"]
+
+    def test_size_histogram_carries_status_on_success_and_error(
+        self, isolated_mcp_meter
+    ):
+        """``mcp.tool.result_bytes`` must be labeled with ``status`` on both
+        the success and structured-error paths, matching the docs contract
+        (all three MCP metrics share ``tool.name`` + ``status`` labels).
+        """
+        from dbt_graphql.mcp.server import _instrument_tool
+
+        async def ok():
+            return {"data": "yes"}
+
+        async def fails():
+            raise _ToolReturnedError({"errors": [{"message": "boom"}]})
+
+        asyncio.run(_instrument_tool("test_tool", ok)())
+        asyncio.run(_instrument_tool("test_tool", fails)())
+        statuses = _statuses_for(isolated_mcp_meter, "mcp.tool.result_bytes")
+        assert sorted(s for s in statuses if s is not None) == ["error", "success"]
 
 
 class TestTraceColumnLineageRegistration:

@@ -50,6 +50,24 @@ serve:
   graphql_introspection: false   # off in prod; on for dev tooling
 ```
 
+## Use with Claude Code
+
+With `serve.mcp_enabled: true`, the server exposes MCP at `http://<host>:<port>/mcp`
+over Streamable HTTP. Register it as a Claude Code MCP server:
+
+```bash
+claude mcp add --transport http dbt-graphql http://localhost:9876/mcp
+# with auth:
+claude mcp add --transport http dbt-graphql http://localhost:9876/mcp \
+  --header "Authorization: Bearer $JWT"
+```
+
+Once connected, the agent autoloads the `dbt-graphql://usage-guide` resource
+and can call `list_tables`, `describe_tables`, `find_path`,
+`trace_column_lineage`, and `run_graphql` (with optional `validate_only`)
+against your warehouse — every call gated by the same `AccessPolicy` as
+`/graphql`.
+
 ## Access policy
 
 Per-request RBAC, row filters (Hasura-style structured DSL), and column

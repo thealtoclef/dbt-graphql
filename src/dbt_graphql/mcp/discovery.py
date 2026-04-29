@@ -2,9 +2,9 @@
 
 ``list_tables`` and ``describe_tables`` route through GraphQL ``_tables`` /
 ``_sdl(tables)`` instead — this module covers only graph traversal
-(``find_path``, ``explore_relationships``) which has no GraphQL equivalent.
-Adjacency is derived from the ``TableRegistry`` ``relation`` fields, i.e.
-the same view the API serves. No live warehouse access.
+(``find_path``) which has no GraphQL equivalent. Adjacency is derived
+from the ``TableRegistry`` ``relation`` fields, i.e. the same view the
+API serves. No live warehouse access.
 """
 
 from __future__ import annotations
@@ -29,13 +29,6 @@ class JoinPath:
     @property
     def length(self) -> int:
         return len(self.steps)
-
-
-@dataclass
-class RelatedTable:
-    name: str
-    via_column: str
-    direction: str  # "outgoing" | "incoming"
 
 
 class SchemaDiscovery:
@@ -97,41 +90,3 @@ class SchemaDiscovery:
             current_level = next_level
 
         return shortest
-
-    def explore_relationships(self, table_name: str) -> list[RelatedTable]:
-        """Return all tables directly related to the given table."""
-        result: list[RelatedTable] = []
-        # outgoing — from this table's columns
-        tdef = self._registry.get(table_name)
-        if tdef is not None:
-            for col in tdef.columns:
-                rel = col.relation
-                if rel is None or not rel.target_model:
-                    continue
-                from_col = rel.from_columns[0] if rel.from_columns else col.name
-                result.append(
-                    RelatedTable(
-                        name=rel.target_model,
-                        via_column=from_col,
-                        direction="outgoing",
-                    )
-                )
-        # incoming — scan every other table for relations pointing here
-        for other in self._registry:
-            if other.name == table_name:
-                continue
-            for col in other.columns:
-                rel = col.relation
-                if rel is None or rel.target_model != table_name:
-                    continue
-                to_col = (
-                    rel.to_columns[0] if rel.to_columns else rel.target_column or ""
-                )
-                result.append(
-                    RelatedTable(
-                        name=other.name,
-                        via_column=to_col,
-                        direction="incoming",
-                    )
-                )
-        return result

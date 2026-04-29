@@ -2,15 +2,14 @@
 
 ## Recommended Workflow
 
-1. **Discover available tables** with `list_tables(filter=None)`.
+1. **Discover available tables** with `list_tables()`.
    Returns the index-page summary of tables visible to the caller — each
    entry has `name` and `description` (dbt-authored). Use this to triage
-   candidates *before* drilling in with `describe_tables`. The `filter`
-   argument is a case-insensitive substring match against name or
-   description. Visibility is enforced upstream by the GraphQL `_tables`
-   field — denied tables are never returned. Structural detail (columns,
-   relations) is intentionally not in this view; that's `describe_tables`'s
-   job.
+   candidates *before* drilling in with `describe_tables`. Visibility is
+   enforced upstream by the GraphQL `_tables` field — denied tables are
+   never returned. Structural detail (columns, relations) is intentionally
+   not in this view; that's `describe_tables`'s job. Filter the returned
+   list client-side if you need to narrow it.
 
 2. **Inspect tables** with `describe_tables(names: [str])`.
    Returns the effective `db.graphql` SDL slice for the named tables, with
@@ -21,26 +20,33 @@
    **Do not use GraphQL `__schema` introspection** — `describe_tables`
    is the authoritative effective view with full directive metadata.
 
-3. **Find how tables connect** with `explore_relationships(table_name)` or
-   `find_path(from_table, to_table)`. These return foreign-key relationships
-   you can use to construct multi-table queries.
+   `@relation` directives in the SDL describe each foreign-key edge an
+   agent can follow when composing nested queries. For most "how does X
+   connect?" questions, reading the SDL is enough — `find_path` is the
+   tool for the cases SDL alone can't answer.
+
+3. **Find multi-hop join paths** with `find_path(from_table, to_table)`.
+   BFS over the relationship graph; returns *all* shortest paths so the
+   agent can pick between alternatives. Use this when 1-hop information
+   from `describe_tables` SDL isn't enough.
 
 4. **Trace a column's origin** with `trace_column_lineage(table, column)`.
    Returns upstream sources and downstream consumers from the dbt manifest,
    each tagged with a `lineage_type` (`pass_through`, `rename`,
    `transformation`). Edges to tables you cannot see are stripped.
-   The same lineage is also surfaced inline in the SDL via the `@lineage`
-   directive: at type level (`@lineage(sources: [...])`) for upstream
-   model names, and as a repeatable field-level directive
-   (`@lineage(source, column, type)`) for column-level edges.
+   The same upstream lineage is also surfaced inline in the SDL via the
+   `@lineage` directive (type-level `@lineage(sources: [...])` and
+   field-level `@lineage(source, column, type)`); the dedicated tool
+   additionally surfaces *downstream* consumers, which SDL alone does not.
 
-5. **Build a query template** with `build_query(table, fields)`.
-   Pass the fields you need; the tool returns a valid GraphQL query string,
-   filtered by policy and validated against the live schema.
-
-6. **Execute** with `run_graphql(query, variables=None)`.
-   Runs through the same engine as the HTTP endpoint, so column allow-lists,
-   masks, and row filters all apply uniformly.
+5. **Execute** with `run_graphql(query, variables=None, validate_only=False)`.
+   Runs through the same engine as the HTTP endpoint, so column
+   allow-lists, masks, and row filters all apply uniformly. Pass
+   `validate_only=true` to parse and validate the candidate query
+   (including depth, field-count, and list-pagination guards) without
+   executing — useful for verifying a query before committing to a real
+   run. On success returns `{validation: "ok"}`; on failure returns
+   `{errors: [...]}` with the same shape as a normal execution error.
 
 ## Query Guards
 
@@ -95,24 +101,10 @@ Every tool honours the caller's JWT payload. Depending on the deployed
 policy:
 
 - **Column-level**: `describe_tables` omits blocked columns from the SDL;
-  `build_query` strips them from generated queries; `run_graphql` rejects
-  them with `FORBIDDEN_COLUMN`.
+  `run_graphql` rejects them with `FORBIDDEN_COLUMN`.
 - **Row-level**: `run_graphql` silently injects row filters into every
   relevant table's resolver. You cannot bypass them.
 - **Table-level**: `list_tables`, `describe_tables`, `find_path`,
-  `explore_relationships`, `trace_column_lineage` all filter their output
-  to authorized tables only. `describe_tables` silently skips unauthorized
-  names (same shape as nonexistent names) so the caller cannot probe for
-  table existence.
-
-## `build_query` Generates Editable Templates
-
-`build_query` returns a query string you own and can modify before passing
-it to `run_graphql`. You can:
-
-- Add `where` arguments for nested relation filtering.
-- Request fields on related tables (`has_many` / `has_one`).
-- Rename field aliases for clarity.
-
-The tool validates the base query against the schema; once you edit it,
-`run_graphql` re-validates and returns errors if invalid.
+  `trace_column_lineage` all filter their output to authorized tables
+  only. `describe_tables` silently skips unauthorized names (same shape
+  as nonexistent names) so the caller cannot probe for table existence.

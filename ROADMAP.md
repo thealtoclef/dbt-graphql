@@ -175,12 +175,20 @@ dbt-graphql allowlist add --query "{ ... }" # manually add a query
 
 ### Audit Logging (Sec-F)
 
-**Motivation:** Compliance and forensics. Who accessed what, when, with what filters applied — essential for GDPR, SOC2, and data governance reviews.
+**Motivation:** Compliance and forensics. Who accessed what, when, with what filters applied — essential for GDPR, SOC2, and data governance reviews. Must span **both** transports — `/graphql` and `/mcp` — for every request/response pair, otherwise an attacker (or a misbehaving agent) can simply pick the unaudited transport. One emitter, two call sites.
+
+**Scope:**
+- One `AuditEvent` per inbound request, regardless of transport.
+- HTTP `/graphql`: emitted at the resolver entry/exit boundary so all queries — including those with errors — produce a record.
+- MCP `/mcp`: emitted around every tool call (`list_tables`, `describe_tables`, `find_path`, `trace_column_lineage`, `run_graphql`). For `run_graphql`, the GraphQL-side emitter is suppressed to avoid double-counting; the MCP-side record carries the same query/policy detail plus the `tool.name` discriminator.
+- Captures both the *request* (caller, query, args) and *response* (status, duration, masks/blocks applied, row count when meaningful).
 
 **Emitted per request (structured log + OTel span attributes):**
 ```json
 {
-  "event": "graphql_query",
+  "event": "request",
+  "transport": "graphql",          // graphql | mcp
+  "tool": null,                    // mcp tool name when transport=mcp; null otherwise
   "user_id": "usr_123",
   "user_email": "alice@acme.com",
   "effective_roles": ["analyst"],
@@ -189,24 +197,29 @@ dbt-graphql allowlist add --query "{ ... }" # manually add a query
   "columns_masked": 2,
   "columns_blocked": 1,
   "row_filter_applied": true,
+  "row_count": 42,                 // null for non-data-returning tools
   "query_hash": "sha256:abc123...",
   "allow_listed": true,
   "duration_ms": 42,
+  "status": "ok",                  // ok | policy_denied | validation_error | execution_error
   "error": null
 }
 ```
 
 **Files to create/modify:**
-- `src/dbt_graphql/api/audit.py` — `AuditEvent` dataclass, `emit_audit_event()`
-- `src/dbt_graphql/api/resolvers.py` — populate and emit `AuditEvent` per resolver call
-- Hooks into existing OTel tracer — adds audit fields as span attributes on the active span
+- `src/dbt_graphql/audit.py` — `AuditEvent` dataclass, `emit_audit_event()` — transport-agnostic emitter (loguru sink + active-span attributes).
+- `src/dbt_graphql/graphql/resolvers.py` — populate and emit `AuditEvent` at resolver boundary.
+- `src/dbt_graphql/mcp/server.py` — emit one `AuditEvent` per tool invocation in `_instrument_tool`; suppress duplicate emission when an MCP `run_graphql` call recurses into the GraphQL resolvers.
 
 | Item | Status |
 |---|---|
 | `AuditEvent` dataclass | 🔲 |
-| Emit via loguru + OTel span attributes | 🔲 |
-| Per-resolver instrumentation | 🔲 |
+| Single emitter (loguru + OTel span attributes) shared by both transports | 🔲 |
+| GraphQL resolver-boundary instrumentation | 🔲 |
+| MCP per-tool instrumentation in `_instrument_tool` (covers all tools) | 🔲 |
+| Dedup contract: MCP `run_graphql` suppresses the inner GraphQL emit | 🔲 |
 | Mask/block counts propagated from policy evaluation | 🔲 |
+| Errors and policy denials always emit a record (no silent paths) | 🔲 |
 
 ---
 
@@ -224,7 +237,7 @@ dbt-graphql allowlist add --query "{ ... }" # manually add a query
 | `get_query_syntax()` tool — static Markdown ≤ 2KB of dialect guide | 🔲 |
 | `search_tables(query, limit)` tool — `difflib` lexical scoring against name + description | 🔲 |
 | MCP Resource `schema://overview` — one line per table, no DB call | 🔲 |
-| MCP Resource `schema://table/{name}` — calls `describe_table`, renders markdown | 🔲 |
+| MCP Resource `schema://table/{name}` — calls `describe_tables([name])`, renders markdown | 🔲 |
 | MCP Resource `schema://examples` — renders `examples.yml`; empty if missing | 🔲 |
 | MCP Prompt `explore_and_query(goal)` — multi-turn stub | 🔲 |
 | `suggest_examples` tool stub wired (impl in few-shot store) | 🔲 |
