@@ -1,0 +1,38 @@
+# dbt-graphql
+
+> Turn a dbt project into a typed GraphQL schema, a SQL-backed GraphQL API, and an MCP surface for LLM agents — without authoring a second modeling layer. Reads `catalog.json` and `manifest.json` and derives everything from what your analytics team already maintains. Python 3.11+, PostgreSQL/MySQL/MariaDB/Doris, JWT auth, RBAC, result caching, OpenTelemetry.
+
+## Understanding the project
+
+- [Project Overview](docs/project-overview-pdr.md): Problem statement (duplication, lost semantics, no agent access), solution (3-phase compiler pipeline), target users, shipped and planned features
+- [System Architecture](docs/system-architecture.md): 3-phase data flow (extract → format → serve), IR boundary, component descriptions, key invariants, database support matrix
+- [Architecture & Design](docs/architecture.md): 12 design principles, pipeline flow, competitive landscape vs Hasura/PostGraphile/GraphJin/Cube, prior art comparison
+
+## Running the server
+
+- [Deployment Guide](docs/deployment-guide.md): Production checklist (JWT, RBAC, cache, pool sizing, OTel), Docker + Compose examples, nginx reverse proxy, env-var overrides
+- [Configuration Reference](docs/configuration.md): Full config surface — dbt paths, database connection, pool tuning, cache TTL, security, monitoring, env-var precedence (DBT_GRAPHQL__ prefix)
+
+## Security & access control
+
+- [Security](docs/security.md): OAuth 2.0 Resource Server model, JWT verification (JWKS + static keys), authentication vs authorization boundary, anonymous mode, threat model
+- [Access Policy](docs/access-policy.md): Per-request RBAC with allow/deny effects, Hasura-style row filter DSL, column-level security, data masking, deny-wins merge semantics, compile-time enforcement
+
+## Technical deep-dives
+
+- [Schema Synthesis](docs/schema-synthesis.md): 10-step extraction pipeline, 3-way relationship merge (constraints > data_tests > compiled_sql), IR Pydantic models, SDL emission and parsing, SQL→GraphQL type mapping
+- [GraphQL API](docs/graphql.md): Ariadne ASGI sub-app, per-table resolvers, query guards (depth/fields/limit), OTel instrumentation, co-mounting with MCP
+- [Compiler](docs/compiler.md): GraphQL → SQL via correlated subqueries, dialect-aware JSON aggregation (JSONB_AGG / JSON_ARRAYAGG), DatabaseManager, build_db_url driver mapping
+- [Caching & Burst Protection](docs/caching.md): Result cache + singleflight via cashews, SHA-256 key derivation, multi-tenant correctness proof, TTL behavior matrix, Redis for multi-replica
+- [MCP Server](docs/mcp.md): 7 tools (list_tables, describe_table, find_path, explore_relationships, trace_column_lineage, build_query, run_graphql), BFS join-path finding, schema discovery
+
+## Contributing
+
+- [Codebase Summary](docs/codebase-summary.md): Full source tree with module-by-module descriptions for all packages (cache, compiler, dbt, formatter, graphql, ir, mcp, serve)
+- [Code Standards](docs/code-standards.md): Python 3.11–3.13, Pydantic v2, async/await, pytest + pytest-docker, naming conventions, dependency list
+- [Design Guidelines](docs/design-guidelines.md): 8 core principles, IR boundary rules, processor pattern, config pattern, security principles, error codes
+- [Project Roadmap](docs/project-roadmap.md): 17 shipped features, P0–P3 planned work, architectural follow-ups (DataLoader batching, query cost scoring, APQ)
+
+## Optional
+
+- [Policy-Aware Introspection Plan](docs/policy-aware-introspection-plan.md): Implementation plan for filtering GraphQL introspection based on caller's access policy

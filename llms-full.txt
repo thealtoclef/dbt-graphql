@@ -1,0 +1,3353 @@
+# dbt-graphql
+
+> Turn a dbt project into a typed GraphQL schema, a SQL-backed GraphQL API, and an MCP surface for LLM agents — without authoring a second modeling layer. Reads `catalog.json` and `manifest.json` and derives everything from what your analytics team already maintains.
+
+## Project Overview
+docs/project-overview-pdr.md
+
+# Project Overview — Product Development Requirements
+
+## Project identity
+
+| Field          | Value                                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Name**       | dbt-graphql                                                                                                 |
+| **Version**    | 0.1.0                                                                                                       |
+| **License**    | MIT (Copyright 2026 The Alto Clef)                                                                          |
+| **Tagline**    | Turn a dbt project into a typed GraphQL schema, a SQL-backed GraphQL API, and an MCP surface for LLM agents |
+| **Repository** | [github.com/minhluc-info/dbt-graphql](https://github.com/minhluc-info/dbt-graphql)                          |
+
+---
+
+## The problem
+
+Analytics teams maintain rich dbt projects — models, tests, constraints, descriptions, column lineage — but exposing that data as an API requires building and maintaining a **second modeling layer**. The typical approach is to introspect the live database with tools like Hasura or PostGraphile, which throws away everything the dbt project knows: descriptions, test-encoded semantics, modeled relationships, and lineage.
+
+Three specific pain points:
+
+| Pain point          | Details                                                                                                                                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Duplication**     | Teams define models, columns, relationships, and tests in dbt. To create a GraphQL API, they must re-define the schema in another tool (Hasura, PostGraphile, hand-rolled). Two sources of truth → schema drift. |
+| **Lost semantics**  | Live DB introspection only sees raw tables/views. Descriptions, test-encoded constraints, relationship metadata, and lineage that the dbt team maintains are invisible.                                          |
+| **No agent access** | LLM agents need to understand the warehouse to query data, but have no structured way to discover schema, relationships, or join paths without writing raw SQL.                                                  |
+
+---
+
+## The solution
+
+dbt-graphql reads two files your dbt project already produces — `catalog.json` and `manifest.json` — and **derives everything** from them. No second modeling layer, no live database introspection, no hand-written resolvers.
+
+### How it works
+
+```
+dbt artifacts (catalog.json, manifest.json)
+        │
+        ▼
+  extract_project() — pipeline.py
+    ├── 3 independent processors (constraints, data tests, compiled SQL)
+    ├── 3-way relationship merge with priority ordering
+    └── ProjectInfo (format-agnostic IR)
+        │
+        ▼
+  build_registry() — formatter/graphql.py
+    └── TableRegistry (Python schema representation)
+        │
+        ├── [generate mode] ──→ db.graphql + lineage.json
+        │
+        └── [serve mode]
+                ├── GraphQL API (/graphql) — resolvers → SQL → warehouse
+                ├── MCP Server (/mcp) — 7 tools for LLM agents
+                ├── JWT Auth + RBAC (column/row/mask at SQL compile time)
+                ├── Result cache + singleflight
+                └── OpenTelemetry (traces + metrics + logs)
+```
+
+### Four core guarantees
+
+| Guarantee                     | How                                                                                                                                                                                                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Zero duplication**          | Schema, types, relationships, enums — all derived from dbt artifacts. The dbt project is the single source of truth.                                                                                                                                     |
+| **Read-only safe**            | Compiles exclusively to `SELECT` statements. No mutations, no writes, no DDL.                                                                                                                                                                            |
+| **Production-grade security** | JWT auth (OAuth 2.0 Resource Server), RBAC with column-level security, Hasura-style row filters, and data masking — all evaluated at SQL compile time. Row filter values become bound SQL parameters, making cross-tenant leaks structurally impossible. |
+| **MCP-first for agents**      | 7 MCP tools allow LLM agents to discover schema, find join paths, trace column lineage, and execute queries — all through the same auth/policy engine as the GraphQL API.                                                                                |
+
+### 3-way relationship merge
+
+dbt-graphql derives table relationships from three independent sources, merged with priority ordering:
+
+1. **dbt constraints** (highest) — PK/FK from v1.5+ `contract.enforced` declarations
+2. **dbt data tests** — `relationships` tests for FK, `accepted_values` for enums
+3. **Compiled SQL analysis** (lowest) — sqlglot JOIN-ON mining + column lineage via dbt-colibri
+
+This means **any dbt project — from basic to mature — gets a working schema with relationships automatically**.
+
+---
+
+## Target users
+
+| User                    | How they use dbt-graphql                                           |
+| ----------------------- | ------------------------------------------------------------------ |
+| **Data engineers**      | Expose dbt models as a typed GraphQL API without writing resolvers |
+| **Analytics engineers** | Author queries through GraphQL that compile to warehouse SQL       |
+| **Platform teams**      | Secure the API with JWT auth, RBAC, row filters, and data masking  |
+| **LLM / AI agents**     | Discover schema and query data via MCP tools                       |
+
+---
+
+## Feature list (shipped)
+
+### dbt artifact integration
+
+- dbt artifact parsing (`manifest.json` + `catalog.json`, dbt schema versions v1–v12)
+- SQL→GraphQL type mapping with automatic enum detection (`accepted_values` tests)
+- Relationship derivation from three independent sources (priority-ordered):
+  1. dbt constraints (`primary_key` / `foreign_key`, v1.5+)
+  2. dbt data tests (`relationships` tests)
+  3. Compiled SQL lineage analysis (sqlglot + dbt-colibri)
+- Column-level lineage extraction via sqlglot's AST traversal
+
+### GraphQL API
+
+- Async GraphQL server built on Ariadne + Starlette
+- Per-table resolvers that compile GraphQL to correlated subqueries
+- Nested relation support without N+1 queries
+- Query guard rails (depth, field count, limit caps)
+- GraphQL introspection (configurable, off by default in production)
+
+### Multi-database support
+
+- PostgreSQL (asyncpg)
+- MySQL (aiomysql)
+- MariaDB
+- Apache Doris
+
+### Authentication & authorization
+
+- JWT authentication following the OAuth 2.0 Resource Server model
+- JWKS rotating key set support (httpx async + monotonic TTL)
+- Static key sources (env var, file, URL) as alternatives
+- RBAC with allow/deny effects (XACML / AWS IAM convention)
+- Column-level security (include_all, includes, excludes)
+- Row-level security via Hasura-style structured filter DSL
+- Data masking with SQL expressions
+- Deny-wins policy merge — cross-cutting prohibitions always take precedence
+
+### Caching & protection
+
+- Result cache with configurable TTL (cashews backend)
+- Singleflight coalescing for identical concurrent queries
+- Redis support for multi-replica cache sharing
+- Pool admission control (HTTP 503 + Retry-After on timeout)
+
+### MCP server
+
+- 7 tools: `list_tables`, `describe_table`, `find_path`, `explore_relationships`, `trace_column_lineage`, `build_query`, `run_graphql`
+- Streamable HTTP transport via FastMCP
+- Schema discovery with BFS join-path finding
+- Live enrichment (row counts, sample rows, value summaries)
+- Shares the same auth, policies, and connection pool as the GraphQL API
+
+### Observability
+
+- Full OpenTelemetry instrumentation (traces, metrics, logs)
+- OTel exporters for all three signals (OTLP HTTP/gRPC)
+- Auto-instrumentation for SQLAlchemy, Starlette, and httpx
+
+### CLI
+
+- **Generate mode** — Output `db.graphql` (SDL) + `lineage.json` without a server
+- **Serve mode** — Run the GraphQL (and optionally MCP) server via uvicorn
+- Flat CLI: `--config` + `--output` (no subcommands)
+
+---
+
+## Planned features
+
+### P0 — Next up
+
+- **Relay-style cursor pagination** — Connection types with `first`/`after`/`last`/`before`
+- **Query Allow-List** — Lock the API to known query shapes in production
+- **Audit logging** — Per-request structured logs for compliance and forensics
+- **MCP SOTA Surface** — Additional tools, resources, and prompt templates
+
+### P1 — Soon
+
+- **Few-shot Q→GraphQL example store** — Lexical retriever for example queries
+- **dbt Selector support** (`--select`) — Use `dbt ls` to filter models
+- **Source node inclusion** — Expose `catalog.sources` as read-only tables
+- **Hot reload of access policies** — Watch config and swap PolicyEngine atomically
+- **Policy test harness** — `policy explain` CLI + inline test blocks
+
+### P2 — Later
+
+- **Column classifications** — Reusable PII/sensitivity classes with mask templates
+
+### P3 — Placeholder
+
+- **Python extension hooks** — Superset-style overrides file for custom resolvers, masks, and audit sinks
+
+---
+
+## Architecture summary
+
+dbt-graphql follows a three-phase pipeline:
+
+1. **Extraction** — Load dbt artifacts and run three independent processors (constraints, data tests, compiled SQL lineage) to produce a unified `ProjectInfo` intermediate representation.
+2. **Formatting** — Convert the IR into a `TableRegistry` (Python schema) and optionally emit GraphQL SDL + lineage JSON.
+3. **Serving** — Compile GraphQL queries to warehouse SQL via correlated subqueries, enforce access policies at compile time, and serve results through GraphQL and MCP transports.
+
+For the full architecture and design rationale, see [system-architecture.md](system-architecture.md) and [architecture.md](architecture.md).
+
+---
+
+## Related documentation
+
+- [System Architecture](system-architecture.md) — 3-phase pipeline, data flow, key invariants
+- [Architecture & Design](architecture.md) — design principles, competitive landscape
+- [Codebase Summary](codebase-summary.md) — source layout and module descriptions
+- [Design Guidelines](design-guidelines.md) — IR boundary, processor pattern, security principles
+- [Configuration Reference](configuration.md) — full config surface with env-var precedence
+- [Access Policy](access-policy.md) — RBAC, row filters, column masking
+- [Security](security.md) — JWT verification, threat model
+- [Roadmap](project-roadmap.md) — shipped features, planned work, follow-ups
+- [Deployment Guide](deployment-guide.md) — production setup, Docker, reverse proxy
+
+---
+## System Architecture
+docs/system-architecture.md
+
+# System Architecture
+
+How dbt-graphql solves the "second modeling layer" problem — from dbt artifacts to production API.
+
+---
+
+## Problem → Solution
+
+**Problem:** Analytics teams maintain dbt projects with models, tests, constraints, and lineage. Exposing this data as an API requires either (a) live DB introspection (loses all semantic metadata), or (b) hand-building a second schema layer (duplication → drift).
+
+**Solution:** Read dbt artifacts (`catalog.json` + `manifest.json`) through a 3-phase compiler pipeline. The dbt project is the single source of truth — no duplication, no live introspection.
+
+```
+dbt artifacts          IR boundary              Consumers
+────────────────────────────────────────────────────────────
+catalog.json    ──→  ProjectInfo (IR)  ──→  GraphQL API (/graphql)
+manifest.json         Pydantic models         MCP Server  (/mcp)
+                                               Compiler (SQL)
+                                               Cache + Auth + OTel
+```
+
+The IR boundary is the most important architectural decision: everything upstream produces `ProjectInfo`, everything downstream consumes it. No downstream module reads dbt artifacts directly.
+
+---
+
+## Data flow
+
+```
+dbt artifacts (catalog.json, manifest.json)
+      │
+      ▼
+extract_project() — pipeline.py
+  ├── artifacts.py (load & validate)
+  ├── processors/ (3-way relationship merge)
+  │   ├── constraints.py    (dbt v1.5+ PK/FK contracts)     ┐
+  │   ├── data_tests.py     (relationships + enum tests)     ├── independent
+  │   └── compiled_sql.py   (sqlglot lineage + JOIN mining)  ┘
+  └── ir/models.py (ProjectInfo IR)
+      │
+      ▼
+build_registry() — formatter/graphql.py
+  └── TableRegistry (Python schema representation)
+      │
+      ├─── [generate mode] ──→ db.graphql + lineage.json
+      │
+      └─── [serve mode]
+              │
+              ├── GraphQL API (/graphql)
+              │     resolvers → compile_query → DatabaseManager → warehouse
+              │
+              ├── MCP Server (/mcp) — 7 discovery + query tools
+              │     run_graphql → same engine, same policies
+              │
+              ├── Auth: JWT verification → PolicyEngine
+              │     column allow/deny, masks, row filters
+              │
+              ├── Cache: result cache + singleflight
+              │     TTL-based, cashews backend, Redis for multi-replica
+              │
+              └── OTel: traces + metrics + logs
+```
+
+---
+
+## Pipeline phases
+
+### Phase 1 — Extraction
+
+**Entry point:** `pipeline.extract_project()`
+
+1. **Load** — `artifacts.py` reads and validates `catalog.json` and `manifest.json` using `dbt-artifacts-parser` (supports dbt schema versions v1–v12).
+2. **Process** — Three independent processors run:
+   - `constraints.py` — Extracts PK/FK relationships from dbt v1.5+ contract constraints
+   - `data_tests.py` — Detects enums from `accepted_values` tests and FKs from `relationships` tests
+   - `compiled_sql.py` — Extracts column lineage and discovers FK relationships from compiled SQL via sqlglot AST analysis
+3. **Merge** — Relationships merged with priority ordering: `constraints > data_tests > compiled_sql`. Deduplication key: `{from_model}_{from_col}_{to_model}_{to_col}`.
+4. **Emit** — Produces `ProjectInfo` (Pydantic models): the format-agnostic IR.
+
+### Phase 2 — Formatting
+
+**Entry point:** `formatter/graphql.py`
+
+- `build_registry()` converts `ProjectInfo` → `TableRegistry` (Python schema objects)
+- In generate mode: `format_graphql()` serializes to SDL → `db.graphql`; `build_lineage_schema()` → `lineage.json`
+- `parse_db_graphql()` enables round-trip: SDL → `TableRegistry` (useful for CI artifacts shipped without dbt)
+
+### Phase 3 — Serving
+
+**Entry point:** `serve/create_app()`
+
+Two modes, one binary:
+
+| Mode         | Command                                          | DB required | Output                               |
+| ------------ | ------------------------------------------------ | ----------- | ------------------------------------ |
+| **Generate** | `dbt-graphql --config config.yml --output ./out` | No          | `db.graphql` + `lineage.json`        |
+| **Serve**    | `dbt-graphql --config config.yml`                | Yes         | HTTP server (GraphQL + optional MCP) |
+
+The Starlette application mounts two transports:
+
+#### GraphQL API (`/graphql`)
+
+- Ariadne async execution with per-table resolvers
+- `compile_query()` translates GraphQL selections into correlated subqueries
+- `DatabaseManager` manages async SQLAlchemy connection pools
+- Query guards enforce depth, field count, and limit caps
+
+#### MCP Server (`/mcp`, opt-in)
+
+- FastMCP with Streamable HTTP transport
+- 7 tools for schema discovery, join-path search, and query execution
+- Shares the same `TableRegistry`, executable schema, policies, and connection pool as GraphQL
+- `run_graphql` tool routes through the same engine — column allow-lists, masks, and row filters apply uniformly
+
+---
+
+## Component descriptions
+
+### Authentication (JWT)
+
+Follows the OAuth 2.0 Resource Server model. An external identity provider (Auth0, Keycloak, Cognito, etc.) issues signed JWTs; dbt-graphql verifies the signature, reads the payload, and evaluates policy against it. Supports JWKS rotating key sets (httpx async with monotonic TTL) and static key sources (env var, file, URL). See [security.md](security.md).
+
+### Policy Engine
+
+Evaluates RBAC policies declared inline in `config.yml`. Each policy has a `when` condition (simpleeval expression against JWT claims) and per-table rules for column access, data masking, and row filters. Supports both `allow` and `deny` effects with deny-wins precedence. Default-deny at the table level; strict-column enforcement (unauthorized columns produce errors, not silent stripping). See [access-policy.md](access-policy.md).
+
+### Compiler
+
+Translates GraphQL selection sets into warehouse SQL using correlated subqueries (not LATERAL joins, for Apache Doris compatibility). Dialect-aware JSON aggregation via SQLAlchemy `@compiles` extensions (JSONB_AGG for PostgreSQL, JSON_ARRAYAGG for MySQL/MariaDB/Doris). Policy enforcement (column stripping, mask injection, row filter WHERE clauses) happens at compile time — unfiltered data never leaves the database engine. See [compiler.md](compiler.md).
+
+### Cache
+
+Result cache + singleflight via cashews. Keyed by SHA-256 of rendered SQL + bound parameters, ensuring cross-tenant isolation. In-memory LRU by default; Redis for multi-replica deployments. Singleflight coalesces identical concurrent requests into a single warehouse roundtrip. See [caching.md](caching.md).
+
+### Pool Admission Control
+
+The SQLAlchemy connection pool acts as the admission queue. Configurable pool size, max overflow, timeout, and recycle. On checkout timeout, the resolver returns a structured `POOL_TIMEOUT` error that the HTTP handler elevates to HTTP 503 + `Retry-After`.
+
+### Observability
+
+Full OpenTelemetry instrumentation: traces, metrics, and logs. Auto-instrumented for SQLAlchemy, Starlette, and httpx. Custom metrics for cache outcomes, auth results, and connection wait times.
+
+---
+
+## Key invariants
+
+| Invariant                    | Description                                                                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **dbt-as-source-of-truth**   | The dbt project defines the schema. dbt-graphql cannot invent metadata the dbt project doesn't have.                             |
+| **Format-agnostic IR**       | `ProjectInfo` is the single boundary between extraction and all consumers. No downstream module reads dbt artifacts directly.    |
+| **Read-only SQL**            | Every compiled query is a `SELECT` tree. No mutations, writes, or DDL.                                                           |
+| **Compile-time enforcement** | Row filters, column stripping, and mask injection happen during SQL compilation — they cannot be bypassed at runtime.            |
+| **Deny-wins policy merge**   | Any matching deny rule takes precedence over all matching allow rules. Cross-cutting prohibitions are always enforced.           |
+| **Default-deny columns**     | Tables not covered by a matching allow policy produce `FORBIDDEN_TABLE`. Unauthorized columns produce `FORBIDDEN_COLUMN` errors. |
+| **Correlated subqueries**    | Nested relations compile to correlated subqueries (no LATERAL), ensuring compatibility with Apache Doris and older engines.      |
+
+---
+
+## Database support
+
+| Database         | Driver   | Notes                                                      |
+| ---------------- | -------- | ---------------------------------------------------------- |
+| **PostgreSQL**   | asyncpg  | JSON aggregation via `JSONB_AGG`                           |
+| **MySQL**        | aiomysql | JSON aggregation via `JSON_ARRAYAGG`                       |
+| **MariaDB**      | aiomysql | Same driver as MySQL; compatible SQL dialect               |
+| **Apache Doris** | aiomysql | No LATERAL support — correlated subqueries used throughout |
+
+---
+
+## Detailed documentation
+
+| Document                                    | Content                                                           |
+| ------------------------------------------- | ----------------------------------------------------------------- |
+| [Architecture & Design](architecture.md)    | Design principles, pipeline flow, landscape comparison, prior art |
+| [Schema Synthesis](schema-synthesis.md)     | dbt extraction, IR design, formatter, and lineage in depth        |
+| [GraphQL API](graphql.md)                   | ASGI sub-app, resolvers, auth, error handling                     |
+| [Compiler](compiler.md)                     | GraphQL → SQL compilation with correlated subqueries              |
+| [Caching & Burst Protection](caching.md)    | Result cache + singleflight design and configuration              |
+| [Access Policy](access-policy.md)           | RBAC, row filters, column masking, policy DSL reference           |
+| [Security](security.md)                     | JWT verification, threat model, anonymous mode                    |
+| [Configuration Reference](configuration.md) | Full config surface with env-var precedence                       |
+| [MCP Server](mcp.md)                        | Tools, discovery engine, and observability                        |
+
+---
+## Architecture & Design
+docs/architecture.md
+
+# Architecture & Design
+
+The design doc for dbt-graphql: the problem it solves, how the pipeline fits together, and the design principles that govern every component.
+
+**Component deep-dives:** [Schema Synthesis](schema-synthesis.md) | [Compiler](compiler.md) | [GraphQL HTTP](graphql.md) | [Caching & Burst Protection](caching.md) | [MCP Server](mcp.md) | [Security](security.md) | [Access Policy](access-policy.md)
+
+---
+
+## Table of contents
+
+- [1. The problem and the shape of the solution](#1-the-problem-and-the-shape-of-the-solution)
+- [2. Pipeline flow](#2-pipeline-flow)
+- [3. Design principles](#3-design-principles)
+- [4. Intermediate representation](#4-intermediate-representation)
+- [5. CLI](#5-cli)
+- [6. Cross-cutting design notes](#6-cross-cutting-design-notes)
+- [7. Landscape & decisions](#7-landscape--decisions)
+
+---
+
+## 1. The problem and the shape of the solution
+
+A dbt project already contains the things an analytics API needs:
+
+- a typed model graph (`manifest.json`: models, columns, descriptions, tests, constraints, refs)
+- resolved warehouse types per column (`catalog.json`)
+- test-encoded semantics: `relationships` tests behave as foreign keys, `unique` and `not_null` tests as column constraints, `accepted_values` as enums
+- dbt v1.5+ first-class `primary_key` / `foreign_key` constraints
+- a dependency graph (table-level lineage for free; column-level via sqlglot)
+
+The usual response to "give my warehouse a GraphQL API" is to introspect the live database (Hasura, PostGraphile, pg_graphql, GraphJin). That throws away everything the dbt project knows — descriptions, tests, modeled relationships, lineage — and re-derives a shallower schema from raw DDL.
+
+dbt-graphql takes the other route: **the dbt project is the source of truth**. Its job is to:
+
+1. Project dbt artifacts into a neutral intermediate representation (IR).
+2. Emit a typed GraphQL SDL that preserves dbt semantics via custom directives.
+3. Compile GraphQL queries against that SDL into warehouse SQL.
+4. Expose the same SDL and an operational surface to LLM agents via MCP.
+
+Steps 2–4 never touch `manifest.json` again. The only coupling to dbt lives in step 1.
+
+---
+
+## 2. Pipeline flow
+
+Primary pipeline (both modes):
+
+```
+  catalog.json  ─┐
+  manifest.json  ─┘──▶ extract_project() ──▶ ProjectInfo ──▶ build_registry() ──▶ TableRegistry
+                              │                                                           │
+                              ▼                                               ┌───────────┴──────────┐
+                       dbt/processors/                                        ▼                      ▼
+                         artifacts.py       — load manifest & catalog    GraphQL API            MCP tools
+                         constraints.py     — dbt v1.5+ constraints        (graphql/)             (mcp/)
+                         data_tests.py      — not_null / unique / enums / FKs
+                         compiled_sql.py    — sqlglot → lineage + JOIN FKs
+```
+
+Side export (`--output DIR` only — no server is started):
+
+```
+  TableRegistry  ──▶  _registry_to_sdl()        ──▶  db.graphql
+  ProjectInfo    ──▶  build_lineage_schema()     ──▶  lineage.json
+```
+
+Entry point: [`src/dbt_graphql/pipeline.py`](../src/dbt_graphql/pipeline.py) — `extract_project()`.
+
+The extraction + SDL-emission phase (the dbt processors, IR, formatter, and lineage builder) is called the **schema synthesis** phase. See [schema-synthesis.md](schema-synthesis.md) for the full step-by-step.
+
+---
+
+## 3. Design principles
+
+A few opinions shaped the code. When in doubt, these are the tiebreakers.
+
+### 3.1 The dbt project is the source of truth
+
+We do not ask users to author a second modeling layer. If dbt has a `relationships` test, it is an edge in the graph. If dbt has a `unique` test, it is a `@unique` directive. If dbt has `primary_key` constraints, it is `@id`. The cost of adopting dbt-graphql is approximately zero beyond "keep your dbt project clean."
+
+Consequence: dbt-graphql **cannot** invent metadata the dbt project doesn't have. Missing descriptions stay missing. Missing relationships stay missing. The tool's correctness is bounded by the quality of your dbt project.
+
+### 3.2 A single format-agnostic IR
+
+`ProjectInfo` is the boundary between dbt and formatters. Every formatter, compiler, and MCP tool consumes `ProjectInfo` — never `manifest.json` directly. This is what makes it tractable to add alternative output formats (OpenAPI, JSON Schema, Malloy, …) or swap the upstream source without touching the rest of the code.
+
+### 3.3 Dataclasses for processors, Pydantic for IR
+
+- `dbt/processors/*` produce lightweight `@dataclass` types — they're internal, mutable, and fast.
+- `ir/models.py` uses `BaseModel` — it's the long-lived contract, needs validation, serialization, and aliasing (`schema_` ↔ `schema`).
+
+Crossing the boundary is a deliberate step: `pipeline.extract_project()` converts processor types into Pydantic IR types.
+
+### 3.4 Preserve the SQL type
+
+GraphQL type systems are coarse. SQL type systems are precise (`NUMERIC(10,2)` matters). We pick both: the GraphQL field gets a standard scalar (`Int`, `Float`, `Boolean`, `String`) for tooling compatibility, and an `@column(type: "NUMERIC", size: "10,2")` directive preserves the exact database type for the compiler. The compiler never has to reverse-engineer SQL types from GraphQL scalar names.
+
+### 3.5 Read-only by design
+
+No mutations, no writes, no upserts. The target is always a `SELECT` tree. That removes an entire class of write-path risk and simplifies the compiler. If you need a write-heavy GraphQL backend, use Hasura or PostGraphile.
+
+### 3.6 MCP-first for agents
+
+The primary consumer of dbt-graphql is **an agent**, not a human writing GraphQL in a playground. The MCP server is not a port of the HTTP API — it's a distinct surface designed around how agents actually plan: first list, then describe, then find a join path, then build a query, then execute. Each MCP tool returns a `_meta.next_steps` field guiding the next call.
+
+### 3.7 Cross-warehouse, not Postgres-only
+
+SQL is emitted via SQLAlchemy Core so we get dialect-aware rendering for free. Where SQLAlchemy doesn't cover it (JSON aggregation varies wildly per engine), we use the `@compiles` extension to register per-dialect rewrites. No LATERAL joins (Apache Doris doesn't support them).
+
+### 3.8 Don't parse what dbt already parsed
+
+`dbt_artifacts_parser` owns manifest/catalog schema validation. `sqlglot` owns SQL parsing/qualification for column and join lineage. `sqlalchemy` owns dialect SQL generation. `graphql-core` owns GraphQL parsing. `ariadne` owns execution. dbt-graphql is the glue — small, opinionated, replaceable.
+
+---
+
+## 4. Intermediate representation
+
+[`src/dbt_graphql/ir/models.py`](../src/dbt_graphql/ir/models.py)
+
+`ProjectInfo` is the single boundary between extraction and everything that follows. Four Pydantic models — `ColumnInfo`, `ModelInfo`, `RelationshipInfo`, `ProjectInfo` — carry the full dbt semantics into formatters, compilers, and the MCP layer. None of these ever look at `manifest.json` directly.
+
+See [schema-synthesis.md § 2](schema-synthesis.md#2-intermediate-representation-irmodelspy) for the full field-level design notes.
+
+---
+
+## 5. CLI
+
+[`src/dbt_graphql/cli.py`](../src/dbt_graphql/cli.py)
+
+One entry point, two modes controlled by `--output`:
+
+```
+dbt-graphql --config config.yml                # serve mode
+dbt-graphql --config config.yml --output DIR   # export mode
+```
+
+**Serve mode** (no `--output`):
+1. `load_config()` reads `config.yml`; dbt artifact paths resolved relative to the config file.
+2. `extract_project()` builds `ProjectInfo` from dbt artifacts.
+3. `build_registry()` builds `TableRegistry` from `ProjectInfo` — the Python object consumed by the serve layer.
+4. Mount transports under one uvicorn process:
+   - GraphQL at `/graphql` (always).
+   - MCP at `/mcp` when `serve.mcp_enabled: true`. The MCP server shares the GraphQL bundle: the `TableRegistry` drives schema discovery, the executable schema backs `run_graphql`, and the same `PolicyEngine` filters every tool's view. dbt artifacts contribute descriptions and enum metadata only.
+
+**Export mode** (`--output DIR`):
+Steps 1–2 only, then `_registry_to_sdl()` writes `db.graphql` and `build_lineage_schema()` writes `lineage.json` to `DIR`. No server is started.
+
+---
+
+## 6. Cross-cutting design notes
+
+1. **Directives encode metadata the SDL readers need.** `@column`, `@id`, `@unique`, `@relation`, `@table` — together they make `db.graphql` self-sufficient at runtime.
+2. **Correlated subqueries over LATERAL.** Portable to Apache Doris and older engines. See [compiler.md § 2](compiler.md#2-why-correlated-subqueries-not-lateral-joins).
+3. **Standard scalars + `@column`.** Familiar GraphQL types, exact warehouse types preserved in directives. See principle 3.4.
+4. **Next-steps hint pattern.** Each MCP tool response includes `_meta.next_steps`. See [mcp.md](mcp.md).
+5. **Enum deduplication by sorted value set.** `accepted_values(['a','b'])` on two columns becomes one enum, not two.
+6. **Read-only.** See principle 3.5. If this ever changes, it's a major version.
+7. **Bidirectional relationship adjacency for BFS.** Every `RelationshipInfo` is stored on both the from-model and to-model; BFS works in either direction.
+8. **Database config decoupled from dbt profiles.** See [compiler.md § 5](compiler.md#5-connection-management-compilerconnectionpy).
+9. **Relationship origin tiers.** Every `RelationshipInfo` records its source (`constraint` > `data_test` > `lineage`). Constraints and tests are user-authored; lineage-inferred relationships are best-effort.
+10. **Processor modules are source-based, not output-based.** `constraints.py` / `data_tests.py` / `compiled_sql.py` each correspond to one input surface. When chasing a bug, "where did this fact come from?" is the question that matters.
+11. **Column lineage via dbt-colibri's traversal approach.** The core recursive `to_node()` logic (qualify → build_scope → CTE/subquery/UNION/PIVOT resolution, max-rank classification) is absorbed into `compiled_sql.py` — no runtime dependency on dbt-colibri. See [schema-synthesis.md § 4](schema-synthesis.md#4-lineage-extraction).
+12. **Result cache + singleflight between HTTP and the warehouse.** Keyed by rendered SQL + bound parameters, so cross-tenant isolation is structural. Wall-clock TTLs only — no refresh-key probing. The lock coalesces concurrent identical requests into a single warehouse roundtrip. See [caching.md](caching.md).
+
+---
+
+## 7. Landscape & decisions
+
+Where dbt-graphql sits relative to adjacent tools, the prior art it draws from, and an honest assessment of what it does well and what's missing.
+
+> dbt-graphql occupies the intersection of two mature spaces — GraphQL-over-SQL (Hasura, PostGraphile, pg_graphql) and AI semantic layers (Cube, MetricFlow, Wren, Malloy) — and picks the smallest viable middle: no new modeling language, no mutations, no separate metrics store. The bet is that for agent-driven analytics, a typed, lineage-aware, read-only GraphQL schema derived straight from dbt is the fastest path to correct answers.
+
+### Prior art & direct inspirations
+
+#### GraphJin ([dosco/graphjin](https://github.com/dosco/graphjin))
+
+From GraphJin we take:
+
+- The **single-query compilation model** — don't resolve relations with N+1 queries; emit JSON-aggregated correlated subqueries so nested GraphQL selections become one SQL statement.
+- The **FK-driven relationship inference** — foreign keys (in our case, dbt `relationships` tests + constraints) define navigable edges in GraphQL.
+- The **MCP-as-agent-surface** model — GraphJin v3 added an `mcp` subcommand exposing tools like `list_tables`, `describe_table`, `execute_graphql`; dbt-graphql adopts the same shape.
+
+Where we differ: GraphJin introspects the **live database**; dbt-graphql introspects **dbt artifacts**. GraphJin has mutations; dbt-graphql doesn't. GraphJin has role-based authorization in YAML; dbt-graphql has none yet (policy is deferred to whatever sits in front of the serve layer).
+
+#### Wren Engine / WrenAI ([Canner/wren-engine](https://github.com/Canner/wren-engine))
+
+From Wren we take:
+
+- The thesis that **LLMs benefit from a typed, declarative model graph** rather than raw `information_schema`.
+- The positioning of an **MCP server as the native agent interface** to that model graph.
+- The **native dbt integration** pattern — Wren reads `manifest.json` and `catalog.json` and projects them into MDL; dbt-graphql does the analogous projection into GraphQL SDL.
+
+Where we differ: Wren's interface to agents is "write SQL against MDL" (text-to-SQL); dbt-graphql's is "write GraphQL and we compile it." Wren is a federated engine across 15+ data sources; dbt-graphql targets the single warehouse your dbt project already models. Wren ships a full GenBI UI (WrenAI); dbt-graphql is a library + CLI.
+
+#### Other influences
+
+- **[`dbt-colibri`](https://github.com/Datatonic/dbt-colibri)** — sqlglot-based column lineage over dbt artifacts. Its `lineage.py` is a modified fork of sqlglot's own lineage module (MIT). We absorbed the core traversal logic directly.
+- **[PostGraphile](https://postgraphile.org)** — the principle that a schema-driven GraphQL API is a *projection* of a richer upstream model, not a hand-authored artifact.
+
+### Semantic layers for AI
+
+| Project | Core idea | Source-of-truth model | AI / agent integration | Query language | DB support | License | Stack |
+|---|---|---|---|---|---|---|---|
+| **dbt-graphql** (this project) | Turn dbt artifacts into GraphQL + SQL compiler + MCP | dbt `manifest.json` + `catalog.json` | MCP server: schema discovery, join-path search, query build + execute | GraphQL (compiled to SQL via SQLAlchemy) | Any SQLAlchemy-supported warehouse | MIT | Python |
+| **[Cube](https://github.com/cube-js/cube)** | Universal semantic layer for BI and AI | Cube data model (YAML/JS cubes, views, measures) | Cube MCP server over HTTPS with OAuth | SQL API, REST, GraphQL, MDX | Postgres, BigQuery, Snowflake, Redshift, Databricks, 20+ | Apache-2.0 (core) | Node.js + Rust |
+| **[dbt Semantic Layer / MetricFlow](https://github.com/dbt-labs/metricflow)** | Governed metrics on top of dbt | MetricFlow YAML (semantic models, metrics) in the dbt project | JDBC + GraphQL Semantic Layer APIs; MCP connectors emerging | MetricFlow query spec (metrics, dimensions, filters) | Any dbt-supported warehouse | Apache-2.0 | Python |
+| **[Wren Engine](https://github.com/Canner/wren-engine)** | Open context engine for AI agents, MDL-based | MDL (Model Definition Language) | Semantic engine for MCP clients; powers WrenAI GenBI agent | SQL (planned via Apache DataFusion from MDL) | 15+ sources | Apache-2.0 | Rust + DataFusion |
+| **[Malloy](https://github.com/malloydata/malloy)** | A modern language for data relationships and transformations | Malloy source files | Publisher semantic model server; VS Code extension | Malloy (compiled to SQL) | BigQuery, Snowflake, Postgres, MySQL, Trino, DuckDB | MIT | TypeScript |
+| **[Vanna AI](https://github.com/vanna-ai/vanna)** | RAG-powered text-to-SQL | Training data: DDL, docs, example Q/SQL pairs | Python library; Streamlit, Flask, Slack integrations | Natural language → SQL | PG, MySQL, Snowflake, BigQuery, Redshift, SQLite, DuckDB, ClickHouse | MIT | Python |
+| **[LangChain SQLDatabaseToolkit](https://docs.langchain.com/oss/python/integrations/tools/sql_database)** | Agent toolkit that introspects a DB and calls an LLM to write SQL | Live DB introspection via SQLAlchemy | Tools for a LangChain agent | Natural language → SQL | Anything SQLAlchemy supports | MIT | Python |
+| **[LlamaIndex NLSQLTableQueryEngine](https://developers.llamaindex.ai/python/framework-api-reference/query_engine/NL_SQL_table/)** | Query engine that turns NL into SQL | Live DB schema + optional table retriever | Part of a LlamaIndex workflow / agent | Natural language → SQL | Anything SQLAlchemy supports | MIT | Python |
+
+**Positioning.** dbt-graphql is not a semantic layer. Cube, MetricFlow, Wren, and Malloy all require you to author a second modeling artifact. dbt-graphql instead *derives* its interface from what dbt already knows — and publishes that as a typed GraphQL schema plus an MCP surface. Compared to LangChain/LlamaIndex/Vanna agent-side text-to-SQL, dbt-graphql gives the agent a *structured* interface (a GraphQL schema and an MCP catalog of joinable entities) instead of raw tables + prompt-engineering.
+
+### GraphQL-to-SQL in open source
+
+| Project | Core idea | Schema source | DB support | Language | Maturity | License |
+|---|---|---|---|---|---|---|
+| **dbt-graphql** (this project) | Generate GraphQL SDL from dbt artifacts; compile queries to SQL; serve via MCP | dbt `manifest.json` + `catalog.json` | Any SQLAlchemy-supported warehouse | Python | Early | MIT |
+| **[Hasura graphql-engine](https://github.com/hasura/graphql-engine)** | Instant realtime GraphQL over multiple databases with RBAC, subscriptions, event triggers | Live DB introspection + metadata | Postgres, MS SQL, BigQuery, MongoDB, ClickHouse | Haskell (v2) / Rust (v3) | Production, large ecosystem | Apache-2.0 core / EE commercial |
+| **[PostGraphile](https://postgraphile.org)** | Low-effort, high-performance GraphQL API from a Postgres schema | Live Postgres introspection | Postgres only | TypeScript / Node.js | Production, mature | MIT |
+| **[GraphJin](https://github.com/dosco/graphjin)** | "Automagical" GraphQL-to-SQL compiler, no-code / config-only | Auto-discovered DB schema + relationships | Postgres, MySQL, MongoDB, SQLite, Oracle, MSSQL | Go | Active, smaller community | Apache-2.0 |
+| **[pg_graphql](https://github.com/supabase/pg_graphql)** (Supabase) | Postgres extension exposing GraphQL via a SQL function | Live Postgres introspection inside the DB | Postgres only | Rust (Postgres extension) | Production (powers Supabase GraphQL) | Apache-2.0 |
+| **[Dgraph](https://github.com/dgraph-io/dgraph)** | Graph-native distributed database that speaks GraphQL | User-defined GraphQL SDL stored inside Dgraph | Dgraph's own storage | Go | Production | Apache-2.0 |
+| **[AWS AppSync / Amplify](https://aws.amazon.com/appsync/)** | Managed serverless GraphQL with real-time + offline sync | Generated from DynamoDB key schema, or custom SDL with JS/VTL resolvers | DynamoDB, Aurora, OpenSearch, arbitrary data sources | Managed (AWS) | Production, enterprise | Proprietary |
+
+**Positioning.** Every other project either introspects the live database (Hasura, PostGraphile, pg_graphql, GraphJin), is graph-native (Dgraph), or asks you to hand-write SDL + resolvers (AppSync). dbt-graphql is the only one that treats **dbt** as the authoritative schema source — which means relationship edges come from `relationships` tests, PKs from `constraints`, descriptions from dbt docs, and **lineage** is exposable as a first-class field (something no DB-introspection tool can do, because lineage doesn't exist in `pg_catalog`).
+
+### Honest assessment
+
+#### Strengths
+
+| Strength | Why it matters |
+|---|---|
+| **dbt-native** — the dbt project *is* the schema | No second modeling layer to maintain. Docs, tests, and constraints are reused verbatim. |
+| **GraphQL schema as a first-class artifact** | Emitted SDL is inspectable by humans and machines; strong typing gives agents a deterministic target. |
+| **Lineage built in** | Upstream/downstream model lineage can be exposed alongside the schema — structurally impossible for DB-introspection tools. |
+| **MCP-first** | The MCP server exposes discovery, relationship search, query construction, and execution as distinct tools — matching how agents actually plan. |
+| **Read-only by design** | Removes an entire class of write-path risk and simplifies the compiler. |
+| **Cross-warehouse via SQLAlchemy** | Dialect-portable SQL generation; a natural seam to add EXPLAIN / query-plan inspection later. |
+| **Python + dbt's runtime** | Easy to extend, easy to embed in data teams that already speak Python. |
+| **Correlated subqueries over LATERAL** | Works on engines without LATERAL (Apache Doris), no extra machinery for nested relations. |
+
+#### Gaps & open work
+
+| Gap | What it means |
+|---|---|
+| **No metrics / semantic layer** | No measures, no predefined aggregations. For governed metrics, pair with MetricFlow or Cube. |
+| **Read-only** (also a strength) | No mutations, writes, or upserts. Wrong tool for app backends. |
+| **Single-process Python serving** | The serve layer is async but still Python. Hasura/PostGraphile handle high-throughput concurrent agent workloads more easily. |
+| **Compiler feature coverage** | No filter/order on nested fields; `where` supports only equality; no operators, no aggregates. |
+| **Maturity** | Needs an integration-test corpus covering real dbt projects across dialects. |
+| **GraphQL feature coverage** | No subscriptions, unions, federation, defer/stream. None are table stakes for analytics over a warehouse: subscriptions need an event/CDC source we don't own, federation belongs at a gateway in front of multiple sub-graphs (we are the sub-graph), and defer/stream is for chunked rendering not aggregation queries. |
+| **No query-cost / safety guardrails** | No default `LIMIT`, no statement timeout, no cost estimation before execution. |
+| **Discovery UX for wide schemas** | Hundreds of models need pagination, tagging, and ranked relationship search. |
+| **Source nodes not yet included** | `catalog.sources` is ignored; FKs pointing at raw sources are dropped. |
+| **No `--select` / dbt selector support** | Model filtering is regex-only today. |
+
+---
+## Deployment Guide
+docs/deployment-guide.md
+
+# Deployment Guide
+
+How to deploy dbt-graphql in development and production environments.
+
+---
+
+## Quick start
+
+### 1. Install
+
+```bash
+pip install dbt-graphql              # core (generate + serve)
+pip install dbt-graphql[postgres]    # + asyncpg driver
+pip install dbt-graphql[mysql]       # + aiomysql driver
+pip install dbt-graphql[redis]       # + Redis-backed cache
+```
+
+### 2. Configure
+
+Copy the example config and edit:
+
+```bash
+cp config.example.yml config.yml
+```
+
+Point `dbt.catalog` and `dbt.manifest` at your dbt artifacts:
+
+```yaml
+dbt:
+  catalog: target/catalog.json
+  manifest: target/manifest.json
+
+db:
+  type: postgres
+  host: localhost
+  port: 5432
+  dbname: analytics
+  user: dbt
+  password: "" # prefer DBT_GRAPHQL__DB__PASSWORD env var
+```
+
+### 3. Run
+
+**Generate mode** (no database connection needed):
+
+```bash
+dbt-graphql --config config.yml --output ./out
+# → out/db.graphql, out/lineage.json
+```
+
+**Serve mode**:
+
+```bash
+dbt-graphql --config config.yml
+# GraphQL API at http://localhost:9876/graphql
+```
+
+---
+
+## Production checklist
+
+### 1. Disable dev mode
+
+```yaml
+dev_mode: false
+```
+
+When `dev_mode` is `false` (or absent), dbt-graphql enforces:
+
+- JWT authentication is required (server fails to start if `security.jwt` is not configured)
+- GraphQL introspection is disabled
+- Policy evaluation is active for every request
+
+### 2. Configure JWT authentication
+
+```yaml
+security:
+  jwt:
+    algorithms: [RS256]
+    audience: dbt-graphql
+    issuer: https://your-issuer.example/
+    jwks_url: https://your-issuer.example/.well-known/jwks.json
+    jwks_cache_ttl: 3600
+```
+
+Exactly one key source is required: `jwks_url`, `key_url`, `key_env`, or `key_file`.
+
+### 3. Define access policies
+
+```yaml
+security:
+  policies:
+    - name: analyst
+      effect: allow
+      when: "'analysts' in jwt.groups"
+      tables:
+        customers:
+          column_level:
+            include_all: true
+            mask:
+              email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
+          row_filter:
+            org_id: { _eq: { jwt: claims.org_id } }
+```
+
+Default-deny: any table not covered by a matching allow rule produces `FORBIDDEN_TABLE`.
+
+### 4. Disable introspection
+
+```yaml
+serve:
+  graphql_introspection: false
+```
+
+This is the default when `dev_mode: false`. Set to `true` only for development tooling.
+
+### 5. Configure cache (multi-replica)
+
+```yaml
+cache:
+  url: "redis://redis.internal:6379/0"
+  ttl: 60
+  lock_safety_timeout: 60
+```
+
+Without Redis configuration, the default is an in-memory LRU cache. Use Redis when running multiple replicas behind a load balancer.
+
+### 6. Tune connection pool
+
+```yaml
+db:
+  pool:
+    size: 10
+    max_overflow: 20
+    timeout: 30
+    recycle: 300
+    retry_after: 30
+```
+
+See [Configuration Reference — db.pool](configuration.md) for full details.
+
+### 7. Configure OpenTelemetry
+
+```yaml
+monitoring:
+  service_name: dbt-graphql
+  traces:
+    endpoint: http://otel-collector:4318/v1/traces
+    protocol: http
+  metrics:
+    endpoint: http://otel-collector:4318/v1/metrics
+    protocol: http
+  logs:
+    level: INFO
+    endpoint: http://otel-collector:4318/v1/logs
+    protocol: http
+```
+
+---
+
+## Environment variable overrides
+
+Any config field can be overridden with a `DBT_GRAPHQL__*` environment variable. Nested fields use `__` as delimiter.
+
+| Config path             | Environment variable                   |
+| ----------------------- | -------------------------------------- |
+| `dbt.catalog`           | `DBT_GRAPHQL__DBT__CATALOG`            |
+| `db.host`               | `DBT_GRAPHQL__DB__HOST`                |
+| `db.password`           | `DBT_GRAPHQL__DB__PASSWORD`            |
+| `serve.port`            | `DBT_GRAPHQL__SERVE__PORT`             |
+| `security.jwt.jwks_url` | `DBT_GRAPHQL__SECURITY__JWT__JWKS_URL` |
+| `cache.ttl`             | `DBT_GRAPHQL__CACHE__TTL`              |
+| `dev_mode`              | `DBT_GRAPHQL__DEV_MODE`                |
+
+**Precedence** (highest to lowest): init arguments > environment variables > config file > defaults.
+
+---
+
+## Docker deployment
+
+### Dockerfile example
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system deps for asyncpg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml uv.lock ./
+RUN pip install uv && uv sync --frozen --no-dev --extra postgres --extra redis
+
+COPY src/ src/
+COPY config.example.yml config.yml
+
+EXPOSE 9876
+
+CMD ["dbt-graphql", "--config", "config.yml"]
+```
+
+### Docker Compose example
+
+```yaml
+version: "3.8"
+services:
+  dbt-graphql:
+    build: .
+    ports:
+      - "9876:9876"
+    environment:
+      DBT_GRAPHQL__DEV_MODE: "false"
+      DBT_GRAPHQL__DB__HOST: postgres
+      DBT_GRAPHQL__DB__PASSWORD: ${DB_PASSWORD}
+      DBT_GRAPHQL__SECURITY__JWT__JWKS_URL: ${JWKS_URL}
+      DBT_GRAPHQL__CACHE__URL: "redis://redis:6379/0"
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: analytics
+      POSTGRES_USER: dbt
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+
+  redis:
+    image: redis:7-alpine
+```
+
+---
+
+## Health checks
+
+dbt-graphql exposes OpenTelemetry metrics. Configure your collector to scrape the metrics endpoint and set up alerts on:
+
+- `db.client.connections.wait_time` — connection pool wait times (alert on high p99)
+- `cache.result` — cache hit/miss ratio (alert on low hit rate under load)
+- `auth.jwt` — JWT verification failures (alert on spike)
+- `graphql.request.duration` — request latency (alert on high p99)
+
+If using uvicorn's `--reload` in development, the process auto-restarts on file changes. In production, use a process manager (systemd, supervisord) or container orchestrator.
+
+---
+
+## Reverse proxy setup
+
+### TLS termination (nginx example)
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name graphql.example.com;
+
+    ssl_certificate     /etc/ssl/certs/graphql.pem;
+    ssl_certificate_key /etc/ssl/private/graphql-key.pem;
+
+    location /graphql {
+        proxy_pass http://127.0.0.1:9876/graphql;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /mcp {
+        proxy_pass http://127.0.0.1:9876/mcp;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+### Notes
+
+- JWT `Authorization: Bearer` headers must pass through the proxy.
+- The `Retry-After` header from pool timeout (503) responses is useful for client-side backoff.
+- If using a CDN or API gateway in front of dbt-graphql, ensure it does not cache POST responses to `/graphql`.
+
+---
+## Configuration Reference
+docs/configuration.md
+
+# Configuration Reference
+
+All configuration is loaded from a single YAML file passed via `--config`. A documented template is shipped at [`config.example.yml`](../config.example.yml) — copy it to `config.yml` and edit. Default values for optional fields are defined as constants in [`src/dbt_graphql/defaults.py`](../src/dbt_graphql/defaults.py).
+
+---
+
+## CLI
+
+```
+dbt-graphql --config config.yml [--output DIR]
+```
+
+| Flag | Description |
+|---|---|
+| `--config PATH` | Path to `config.yml` (required). |
+| `--output DIR` | Write `db.graphql` + `lineage.json` to DIR and exit (generate mode). Omit to serve. |
+
+**Generate mode** (`--output` present): parse dbt artifacts, write schema files, exit. No database connection required.
+
+**Serve mode** (no `--output`): parse dbt artifacts, then start the server. GraphQL is always mounted at `/graphql`. MCP additionally mounts at `/mcp` when `serve.mcp_enabled: true`. Both share one uvicorn process, one JWT auth middleware, and one access policy.
+
+---
+
+## `dbt` (required)
+
+Paths to dbt artifact files produced by `dbt docs generate`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `catalog` | Path | — | Path to `target/catalog.json`. Relative paths resolve from the config file's directory. |
+| `manifest` | Path | — | Path to `target/manifest.json`. Relative paths resolve from the config file's directory. |
+| `exclude` | list | `[]` | Regex patterns matched against model names; matching models are excluded (OR logic). |
+
+---
+
+## `db` (optional)
+
+Database connection — required for serve mode (any time the CLI is invoked without `--output`).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `type` | string | — | Adapter: `postgres`, `mysql`, `mariadb`, `doris` |
+| `host` | string | `""` | Database host |
+| `port` | int | `null` | Database port (adapter default if omitted) |
+| `dbname` | string | `""` | Database / catalog name |
+| `user` | string | `""` | Login user |
+| `password` | string | `""` | Login password |
+| `pool` | object | (see below) | SQLAlchemy connection-pool tuning |
+
+### `db.pool`
+
+The pool is the admission queue: requests beyond `size + max_overflow` block on checkout, and are fast-failed with `sqlalchemy.exc.TimeoutError` after `timeout` seconds. The API translates that into an HTTP **503 Service Unavailable** with a `Retry-After` header — clean admission denial, not a mid-computation poll.
+
+Set `timeout` **below** your upstream LB idle timeout so the API responds before the LB resets connections.
+
+| Field | Type | Default | Description |
+|---|---|---|
+| `size` | int | `20` | Steady-state connections in the pool |
+| `max_overflow` | int | `10` | Burst capacity above `size` (hard cap = `size + max_overflow`) |
+| `timeout` | int | `10` | Seconds to wait on checkout before raising. Below LB idle timeout. |
+| `recycle` | int | `1800` | Recycle connections after N seconds (NAT/firewall hygiene). `-1` to disable. |
+| `retry_after` | int | `5` | Seconds emitted in the `Retry-After` header on 503 responses (per RFC 9110 §10.2.3). Should approximate **p50 warehouse query time**. Distinct from `timeout` (which is admission, not recovery). |
+
+**Sizing rule of thumb:** with `R` replicas and warehouse capacity `Q`, set `size + max_overflow ≤ Q / R`. dbt-graphql doesn't coordinate across replicas — total warehouse concurrency is the sum of per-replica pools.
+
+---
+
+## `serve` (optional)
+
+HTTP server bind config. Required when running in serve mode.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `host` | string | — | Bind address (e.g. `0.0.0.0`) |
+| `port` | int | — | TCP port |
+| `mcp_enabled` | bool | `false` | Mount the MCP server at `/mcp` (Streamable HTTP) in addition to GraphQL. Off by default — opt in to expose schema discovery + `run_graphql` to LLM agents. |
+| `graphql_introspection` | bool | `false` | Allow GraphQL schema introspection queries. **Off by default** — production should keep it off so the schema isn't enumerable. Enable in dev for tooling like GraphQL Playground / Apollo Studio. |
+
+GraphQL is always mounted at `/graphql` in serve mode. When `mcp_enabled: true`, the MCP server co-mounts at `/mcp` under the same uvicorn process — sharing the JWT auth middleware, the connection pool, and the access policy. The MCP `run_graphql` tool re-executes queries through the same engine, so column allow-lists, masks, and row filters apply uniformly to both transports.
+
+### Operating the pool admission 503
+
+When the warehouse is overloaded, the connection pool reaches capacity (`size + max_overflow`). New requests then wait up to `db.pool.timeout` seconds and, if no connection becomes available, fail with **HTTP 503** plus a `Retry-After: <db.pool.retry_after>` header. The LB sees this as clean admission denial and can retry without holding the upstream socket open.
+
+| Operator concern | Where to look |
+|---|---|
+| **"Are we hitting the pool ceiling?"** | OTel histogram `db.client.connections.wait_time` — p95/p99 climbing toward `db.pool.timeout` is the leading indicator. |
+| **"How often are we returning 503?"** | Resolver emits a GraphQL error with `extensions.code = "POOL_TIMEOUT"`; the HTTP layer elevates that to 503. Track 5xx rate per route. |
+| **When to widen the pool** | Sustained `wait_time` p95 > 1s with available warehouse headroom → bump `db.pool.size` (steady) or `db.pool.max_overflow` (burst). Sizing rule above caps the total. |
+| **When `Retry-After` is too short / long** | Aim for the warehouse's p50 query time. Too short and the LB hammers a saturated backend; too long and the client experiences a stall. |
+| **When 503 is *not* the right answer** | If the warehouse itself is healthy and we're 503-ing on stuck connections, raise `db.pool.recycle` complaints — connections are being recycled mid-flight or held by hung queries. |
+
+---
+
+## `graphql` (optional)
+
+Query guard limits applied to all incoming GraphQL operations — both HTTP `/graphql` and MCP `run_graphql`. Guards are checked *before* the query is executed; exceeding a limit returns a 400 response (HTTP) or an error dict (MCP) without touching the database.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `query_max_depth` | int | `5` | Maximum selection-set nesting depth. Introspection-only queries (`__schema { ... }`) are excluded from this limit. |
+| `query_max_fields` | int | `50` | Maximum total leaf fields across the entire query. |
+| `query_max_limit` | int \| null | `1000` | Caps integer literals on `limit:` / `first:` arguments. `null` disables the cap. Variables are not checked at validation time — resolvers must apply runtime caps when accepting variables for pagination. Emits `MAX_LIMIT_EXCEEDED` on violation. |
+
+The default values (5 levels of nesting, 50 leaf fields) follow Hasura's defaults and cover typical analytics queries (5–10 tables × 5–10 fields each). Apollo Router defaults to 100/200 but is geared toward enterprise multi-tenant APIs.
+
+When a limit is exceeded, the HTTP path returns **400 Bad Request** with a GraphQL error body:
+
+```json
+{
+  "data": {},
+  "errors": [{
+    "message": "Query depth 12 exceeds the limit of 5",
+    "extensions": {"code": "MAX_DEPTH_EXCEEDED"}
+  }]
+}
+```
+
+The MCP path returns the same error messages in the tool result dict:
+
+```python
+{"errors": [{"message": "Query depth 12 exceeds the limit of 5"}]}
+```
+
+---
+
+## `monitoring` (optional)
+
+OpenTelemetry configuration and log level. Omit the block (or any sub-block) to use defaults from [`defaults.py`](../src/dbt_graphql/defaults.py). Signals are configured independently — you can ship only traces, only logs, or any combination.
+
+### `monitoring.logs`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `level` | string | `"INFO"` | Log level: `trace`, `debug`, `info`, `warning`, `error`, `critical` |
+| `endpoint` | string | `null` | OTLP collector URL. When set, log records are shipped via OTLP in addition to the console. |
+| `protocol` | string | `null` | OTLP transport: `grpc` or `http`. **Required when `endpoint` is set.** |
+
+Console (stderr) output is always active regardless of whether an OTLP endpoint is configured. Console span export is enabled automatically when `level` is `trace` or `debug`.
+
+### `monitoring.traces`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | `null` | OTLP collector URL for spans. |
+| `protocol` | string | `null` | OTLP transport: `grpc` or `http`. **Required when `endpoint` is set.** |
+
+### `monitoring.metrics`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | `null` | OTLP collector URL for metrics. |
+| `protocol` | string | `null` | OTLP transport: `grpc` or `http`. **Required when `endpoint` is set.** |
+
+### Top-level monitoring fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `service_name` | string | `"dbt-graphql"` | OTel `service.name` resource attribute |
+
+Setting `endpoint` without `protocol` raises a config error at startup.
+
+---
+
+## `cache` (optional)
+
+Result cache + singleflight, sitting between the resolver and the warehouse. See
+[caching.md](caching.md) for the key-derivation argument and tenant-isolation
+proof.
+
+Omit the block to use the default in-memory cache. Pass `cache_config=None` programmatically to `create_app()` to disable caching entirely — useful for tests measuring an uncached baseline.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Disable to bypass the cache entirely (no caching, no coalescing). |
+| `url` | string | `"mem://?size=10000"` | [cashews](https://github.com/Krukov/cashews) URI. Examples: `mem://?size=N`, `redis://host:6379/0`, `redis://...?cluster=true`. Use a Redis URI for multi-replica deployments — both the cache and the singleflight lock then live on the shared backend, so coalescing crosses replicas. Redis requires `pip install dbt-graphql[redis]`. |
+| `ttl` | int | `60` | Freshness window in seconds. `0` = realtime + 1 s coalescing window; see caching.md. |
+| `lock_safety_timeout` | int | `10` | Singleflight lock auto-release, in seconds. Set **above your p99 warehouse query time** and **below your LB idle timeout**. Default targets fast warehouses (p99 ≤ 5s) behind a 30s LB. Bump to 25–60 for slower workloads. **Not** the result TTL. |
+
+---
+
+## `security` (optional)
+
+Single master switch for JWT verification (authn) and access policies
+(authz). See [access-policy.md](access-policy.md) for the policy
+language and [security.md](security.md) for the auth model.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Master switch. `false` ⇒ no JWT verification, no policy evaluation; every request is anonymous (the server warns at startup). `true` ⇒ JWT block must be configured and policies (if any) are enforced. |
+| `jwt` | object | `{}` | JWT verification settings (see below). Only consulted when `enabled: true`. |
+| `policies` | list | `[]` | Inline access policies — same shape as the [access-policy.md](access-policy.md) DSL. Empty list = no row/column enforcement (authn-only) when security is enabled. |
+
+Tying authn and authz to one switch prevents the "JWT off but policies
+armed against `jwt.*` claims" misconfiguration where every request would
+silently match the most-permissive rule.
+
+### `security.jwt`
+
+Consulted only when `security.enabled: true`. When the master switch is
+true, every request must present a valid `Bearer` token or it is
+rejected with HTTP 401 + `WWW-Authenticate: Bearer
+error="invalid_token"`. Exactly one of `jwks_url`, `key_url`, `key_env`,
+or `key_file` must be set.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `algorithms` | list | `[]` | Required when `security.enabled: true`. Allow-list of accepted JWS algorithms (e.g. `[RS256]`, `[HS256]`). Pinned — `none` and unlisted algorithms are rejected before signature checks run. |
+| `audience` | str \| list | `null` | If set, token's `aud` claim must equal (str) or be a member of (list) this value. |
+| `issuer` | str | `null` | If set, token's `iss` claim must equal this value. |
+| `leeway` | int | `30` | Clock-skew tolerance in seconds for `exp` / `nbf` / `iat`. |
+| `required_claims` | list | `["exp"]` | Claims that must be present. |
+| `roles_claim` | str | `"scope"` | Claim read for Starlette scopes. Space-delimited string or list. Set to `scp`, `roles`, or a namespaced URL for non-OIDC IdPs. |
+| `jwks_url` | URL | `null` | Rotating JWKS endpoint (RS256/ES256). The keyset is cached for `jwks_cache_ttl` seconds and refetched on TTL expiry; concurrent refetches are coalesced. JWKS-fetch failure produces 401, not stale keys. |
+| `jwks_cache_ttl` | int | `3600` | TTL for the in-memory JWKS cache. Only meaningful with `jwks_url`. |
+| `key_url` | URL | `null` | URL of a single static key (PEM or JWK). Fetched once on first request. |
+| `key_env` | str | `null` | **Name** of an environment variable holding the key material (HMAC secret, PEM, or JWK). Not the secret itself. |
+| `key_file` | Path | `null` | Path to a single key file (PEM or JWK). |
+
+---
+
+## Environment variables
+
+All config fields can be overridden via `DBT_GRAPHQL__` prefixed env vars. Nested fields use `__` as delimiter.
+
+```
+DBT_GRAPHQL__DB__HOST=myhost
+DBT_GRAPHQL__DB__PASSWORD=secret
+DBT_GRAPHQL__MONITORING__LOGS__LEVEL=DEBUG
+DBT_GRAPHQL__MONITORING__TRACES__ENDPOINT=http://collector:4317
+DBT_GRAPHQL__MONITORING__TRACES__PROTOCOL=grpc
+```
+
+### Precedence
+
+Sources are layered in this order (later wins):
+
+1. **Defaults** — values declared on `AppConfig` / its sub-models in [`src/dbt_graphql/config.py`](../src/dbt_graphql/config.py).
+2. **Config file** — values in `config.yml` passed via `--config`.
+3. **Environment variables** — `DBT_GRAPHQL__*` overrides.
+
+So **env > file > defaults**. The order is enforced by `AppConfig.settings_customise_sources` in `config.py` (Pydantic-Settings).
+
+#### Worked example
+
+```yaml
+# config.yml
+db:
+  host: file-host
+```
+
+```bash
+DBT_GRAPHQL__DB__HOST=env-host dbt-graphql --config config.yml
+```
+
+Effective `db.host` is `env-host`. The env var wins; the file value is shadowed; the in-code default is shadowed by the file value before that.
+
+---
+## Security
+docs/security.md
+
+# Security
+
+How `dbt-graphql` authenticates callers and where the line sits between
+"authentication" (who are you?) and "authorization" (what can you see?).
+
+- **Authentication** is delegated to an external Authorization Server.
+  We trust a signed JWT.
+- **Authorization** is local, declarative, compile-time, and lives in
+  [`security.policies`](access-policy.md). The policy engine reads claims
+  from the JWT payload and shapes the SQL accordingly.
+- **One auth surface for both transports.** GraphQL (`/graphql`) and
+  MCP (`/mcp`) sit behind the same Starlette `AuthenticationMiddleware`
+  and share the same `AccessPolicy`. MCP discovery tools filter their
+  output by policy, and the MCP `run_graphql` tool re-executes through
+  the same engine — so column allow-lists, masks, and row filters apply
+  uniformly regardless of how the caller arrived.
+
+---
+
+## Design — OAuth 2.0 Resource Server
+
+dbt-graphql is a **Resource Server**, not an Authorization Server.
+
+```
+ ┌────────────────────┐      1. log in       ┌──────────────────────┐
+ │  End-user / client │ ───────────────────▶ │ Authorization Server │
+ │   (browser, CLI,   │ ◀───── 2. JWT ────── │ (Auth0 / Keycloak /  │
+ │    agent, BI tool) │                      │  Cognito / Clerk /   │
+ └─────────┬──────────┘                      │  Cube / in-house)    │
+           │                                 └──────────────────────┘
+           │ 3. GET /graphql
+           │    Authorization: Bearer <jwt>
+           ▼
+ ┌────────────────────┐
+ │ dbt-graphql        │   4. verify JWT signature + standard claims
+ │ (Resource Server)  │   5. evaluate security.policies against payload
+ │                    │   6. compile GraphQL + policy into SQL
+ └─────────┬──────────┘
+           │
+           ▼
+ ┌────────────────────┐
+ │ Warehouse          │
+ └────────────────────┘
+```
+
+The Authorization Server is someone else's concern. We don't issue
+tokens, we don't handle passwords, we don't hit a user-info endpoint on
+every request. Given a valid signature, we trust the payload.
+
+### Why this shape?
+
+It is the same split used by every SOTA data platform with an auth
+story — [Cube](https://cube.dev/docs/product/auth/methods/jwt),
+Hasura, PostGraphile-with-pg-jwt, Snowflake's external OAuth, every
+Auth0-protected API, Envoy's JWT filter, Kubernetes' API server. The
+reasons repeat:
+
+1. **One subject of truth for identity.** If the org already has an
+   IdP, bolting a second identity store onto the data API splits
+   users/groups/onboarding/offboarding into two systems that will
+   drift.
+2. **Stateless authentication.** No session store, no round-trip to
+   the IdP per request. The signed payload *is* the credential.
+3. **Credential rotation is a key-management problem, not an app
+   problem.** Rotate the IdP's signing key, JWKS endpoint updates,
+   we pick up the new `kid` automatically.
+4. **Clean separation from policy.** The IdP stamps claims (`groups`,
+   `org_id`, `role`, …); `security.policies` interprets them. Changing policy
+   never means changing the auth system.
+5. **Pluggable front-end.** Translation, exchange, mTLS, cookies, API
+   keys — all of it belongs in a proxy or sidecar (see next section).
+   The app always sees the same thing: a JWT.
+
+---
+
+## Middleware layer (between the caller and us)
+
+The Resource Server assumes `Authorization: Bearer <jwt>` on the wire.
+What sits in front of us and produces that header is intentionally out
+of scope — it's a separate deployment concern and there are many valid
+shapes.
+
+| Shape | Middleware does | Resource Server sees |
+|---|---|---|
+| **Direct JWT from client** | Nothing — the client already has a JWT from the IdP. | `Bearer <jwt>` |
+| **Opaque token exchange** | Client sends an opaque token; proxy calls IdP introspection or token-exchange endpoint, mints a JWT, forwards. | `Bearer <jwt>` |
+| **Session cookie → JWT** | Browser sends a session cookie to an edge proxy; proxy mints a short-lived JWT for the backend call. | `Bearer <jwt>` |
+| **mTLS → JWT** | Service-to-service mTLS terminated at an Envoy/Istio sidecar; sidecar stamps a SPIFFE-style JWT with the caller's identity. | `Bearer <jwt>` |
+| **API key → JWT** | An API gateway keeps a table of `(api_key → role/claims)`; on each request it swaps the key for a freshly-minted JWT. | `Bearer <jwt>` |
+
+None of this requires code in dbt-graphql. The point of the
+Resource-Server split is that we don't need to care *how* the JWT got
+there — only whether its signature checks out.
+
+> **Why not ship API-key support in-app?** It looks tempting ("just
+> accept `X-Api-Key`"), but it re-introduces a credential store, a
+> rotation policy, and an audit trail for the Resource Server to own —
+> exactly the split we avoided by adopting the Resource-Server
+> pattern. Keep keys in the proxy/gateway that already owns
+> customer-facing credentials.
+
+---
+
+## What we verify (and what we trust)
+
+The auth backend enforces:
+
+| Check | Meaning |
+|---|---|
+| Signature | JWT was issued by the configured IdP and hasn't been tampered with. HMAC (HS256) via shared secret, or asymmetric (RS256/ES256) via a JWKS endpoint or a static key. |
+| `alg` allow-list | Reject `none` and any algorithm not explicitly listed — closes the classic `alg=none` downgrade. |
+| `exp` | Token is not expired (with configurable leeway for clock skew). |
+| `nbf` | Token is valid *now* (not-before). |
+| `iss` | Issuer matches the configured IdP (optional). |
+| `aud` | Audience matches this API (optional; accepts a list of acceptable audiences). |
+| `required_claims` | Any claim listed here must be present (defaults to `[exp]`). |
+
+On any failure the request is rejected with **HTTP 401** and an
+RFC 6750 `WWW-Authenticate: Bearer error="invalid_token"` header. No
+fallback to anonymous, no last-good-keyset reuse on JWKS outages — a
+broken IdP surfaces as 401, not as silently-degraded auth.
+
+Everything else in the payload — `sub`, `email`, `groups`,
+`claims.org_id`, `claims.region`, … — is **trusted** once the above
+checks pass. Interpretation lives in `security.policies`.
+
+### Claim conventions
+
+No claims are required by dbt-graphql itself. The policy engine reads
+whatever `security.policies` asks it to. Common conventions:
+
+| Claim | Typical use |
+|---|---|
+| `sub` | Stable user ID — useful for `row_filter: { owner_id: { _eq: { jwt: sub } } }`. |
+| `email` | Display / auditing. |
+| `groups` | List of role-like strings — drives `when: "'analysts' in jwt.groups"`. |
+| `claims.org_id` | Multi-tenant isolation — drives `row_filter: { org_id: { _eq: { jwt: claims.org_id } } }`. |
+| `claims.region` | Region-scoped filters. |
+
+If you control the IdP, match your claim structure to what's
+convenient in policy; both sides are yours to design.
+
+---
+
+## Anonymous access
+
+There is no `anonymous_role` config. When a request arrives with no
+`Authorization` header (or the header is malformed), the auth backend
+produces an **empty** `JWTPayload` — all attribute accesses return
+`None`. Express anonymous access in policy directly:
+
+```yaml
+policies:
+  - name: anon
+    when: "jwt.sub == None"
+    tables:
+      products:
+        column_level: { includes: [product_id, name, price] }
+        row_filter:
+          published: { _eq: true }
+```
+
+This keeps one code path (everything is "evaluate policy against a
+JWT"), avoids a second config surface for anonymous-role mapping, and
+makes the anonymous policy visible in the same file as every other
+policy.
+
+A request with an *invalid* token (bad signature, expired, wrong
+issuer) is rejected with HTTP 401 — it does not fall through to the
+anonymous policy. Anonymous is "no token sent"; invalid is "something
+tried to lie."
+
+When `security.enabled` is `false` (the default), verification is
+**skipped entirely** — every request is anonymous, even one carrying a
+forged token, and no access policies are evaluated. The server logs a
+warning at startup. This is the single master switch for both authn and
+authz, deliberately fused so the "JWT off, policies armed against jwt
+claims" misconfiguration is structurally impossible.
+
+> ⚠️ **Dev-only mode.** Use `security.enabled: false` only for local
+> development or behind a trusted proxy that handles authn and authz
+> upstream. Setting it true requires a fully-configured `security.jwt`
+> block (algorithms + exactly one key source) — config validation
+> rejects partial JWT setup at load time.
+
+> ⚠️ **`key_url` vs `jwks_url`.** `key_url` is for a single static
+> PEM/JWK and is fetched once with no refresh. JWKS endpoints (which
+> rotate) **must** use `jwks_url`. Config validation rejects
+> `key_url` values whose path looks like a JWKS endpoint (contains
+> `jwks` or ends in `/.well-known/jwks.json`) so a misconfigured rotating
+> key set fails fast at load time instead of silently going stale.
+
+---
+
+## Related components
+
+| Component | Role | File |
+|---|---|---|
+| `JWTAuthBackend` | Reads `Authorization` header, delegates to `Verifier`, exposes `request.user.payload`. | [`src/dbt_graphql/graphql/auth/backend.py`](../src/dbt_graphql/graphql/auth/backend.py) |
+| `Verifier` | joserfc-backed signature + claims validation; emits OTel `auth.jwt` outcomes. | [`src/dbt_graphql/graphql/auth/verifier.py`](../src/dbt_graphql/graphql/auth/verifier.py) |
+| `JWKSResolver` / `StaticKeyResolver` | Key sources: rotating JWKS or a single static key (env / file / URL). | [`src/dbt_graphql/graphql/auth/keys.py`](../src/dbt_graphql/graphql/auth/keys.py) |
+| `AuthenticationMiddleware` | Starlette middleware that runs `JWTAuthBackend` per request. | [`src/dbt_graphql/serve/app.py`](../src/dbt_graphql/serve/app.py) |
+| `PolicyEngine` | Evaluates `security.policies` against the payload, returns a `ResolvedPolicy`. | [`src/dbt_graphql/graphql/policy.py`](../src/dbt_graphql/graphql/policy.py) |
+| `compile_query` | Applies the `ResolvedPolicy` — strips blocked columns, rewrites masks, appends `WHERE`. | [`src/dbt_graphql/compiler/query.py`](../src/dbt_graphql/compiler/query.py) |
+
+---
+
+## Related docs
+
+- [access-policy.md](access-policy.md) — policy language, `when:` /
+  `row_filter:` reference, evaluation model.
+- [configuration.md](configuration.md) — `security.enabled`, `security.policies`, and
+  the `security.jwt` block (algorithms, audience, issuer, key source).
+- [../ROADMAP.md](../ROADMAP.md) — Sec-A through Sec-L security
+  roadmap.
+
+---
+## Access Policy
+docs/access-policy.md
+
+# Access Policy
+
+`dbt-graphql` supports per-request access control at the GraphQL layer.
+Policies are declared **inline in `config.yml`** under `security.policies`
+and evaluated at **SQL compile time** — column restrictions, masking, and
+row filters are injected into the generated SQL, so the runtime never sees
+values it should not.
+
+This is the **application-level** control plane. Warehouse-level controls
+(column policy tags, RLS, IAM on service accounts) remain the warehouse's
+responsibility and are complementary. A single dbt model can be served by
+multiple applications, each with different `security.policies`.
+
+---
+
+## Quick start
+
+Declare policies inline in `config.yml`:
+
+```yaml
+security:
+  enabled: true             # master switch — JWT verified, policies enforced
+  jwt:
+    algorithms: [RS256]
+    jwks_url: https://issuer.example/.well-known/jwks.json
+  policies:
+    - name: analyst
+      effect: allow
+      when: "'analysts' in jwt.groups"
+      tables:
+        customers:
+          column_level: { include_all: true }
+```
+
+Each GraphQL **and MCP** request is evaluated against the policy using the
+`Authorization: Bearer <jwt>` header. Both transports share the same
+`AuthenticationMiddleware` and the same `AccessPolicy`, so a caller's
+column allow-list, masks, and row filters apply identically to direct
+`/graphql` calls and to MCP tools (`list_tables`, `describe_table`,
+`run_graphql`, …). See [mcp.md § Authorization model](mcp.md#authorization-model).
+
+When `security.enabled` is false (the default), JWTs are not verified and
+policies are not evaluated — every request is anonymous. The server warns
+at startup. Use this for dev or behind a trusted proxy that authenticates
+upstream.
+
+---
+
+## Policy file structure
+
+```yaml
+policies:
+  - name: analyst
+    effect: allow
+    when: "'analysts' in jwt.groups"
+    tables:
+      customers:
+        column_level:
+          include_all: true
+          excludes: [raw_source_id]
+          mask:
+            email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
+            ssn: ~
+        row_filter:
+          org_id: { _eq: { jwt: claims.org_id } }
+
+  # Cross-cutting deny rule. Precedence over every allow above.
+  - name: contractors_no_pii
+    effect: deny
+    when: "'contractors' in jwt.groups"
+    tables:
+      customers: { deny_columns: [email, ssn] }
+      orders:    { deny_all: true }
+```
+
+Top-level key is `policies` (a list). Each entry has:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Human-readable label (used in logs). |
+| `effect` | enum | `allow` or `deny`. **Required**, no default. See [`effect`](#effect) below. |
+| `when` | string | Boolean expression evaluated by `simpleeval` against `jwt`. |
+| `tables` | map | Per-table rules keyed by GraphQL table name. |
+
+Each table entry contains a different set of fields depending on the
+parent entry's `effect`:
+
+| Effect | Field | Type | Description |
+|---|---|---|---|
+| `allow` | `column_level` | object | Column allow-list + masking. |
+| `allow` | `row_filter` | object | Structured boolean-expression DSL (Hasura-style). |
+| `deny`  | `deny_all` | bool | Deny the whole table for any subject the rule matches. |
+| `deny`  | `deny_columns` | list[str] | Deny specific columns. |
+
+Mixing fields across effects (e.g. `column_level` under a `deny` rule)
+fails policy load — the loader names the offending entry and table.
+
+### `effect`
+
+The `effect` field follows the
+[XACML](https://en.wikipedia.org/wiki/XACML) / [AWS IAM](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_effect.html)
+convention — the standard vocabulary for ABAC policies, where every rule
+has a single `Effect` of either `Allow` or `Deny`. Cedar uses the
+synonym pair `permit` / `forbid`; SQL Server uses `GRANT` / `DENY`.
+The semantics are the same across all three: **a deny always wins over
+an allow**.
+
+`effect` is required on every entry — there is no implicit default.
+Forcing the operator to type `effect: allow` on every grant rule keeps
+the file readable and prevents the "I forgot which kind this was"
+mistake that an `effect: allow` default would invite.
+
+**Allow rules** are additive. The merged result of every matching allow
+rule produces the per-table column allow-list, mask map, and row-filter
+predicate.
+
+**Deny rules** are subtractive and take precedence:
+
+- `deny_all: true` for a matching subject → the table is denied with
+  `FORBIDDEN_TABLE`, regardless of any allow rule that would have
+  granted access.
+- `deny_columns: [...]` for a matching subject → those columns are
+  removed from the merged allow result, added to the blocked set, and
+  any mask the allow side declared for them is dropped (masking a
+  blocked column is meaningless). Selecting a denied column triggers
+  `FORBIDDEN_COLUMN`.
+
+A request with **only matching denies and no matching allow** still
+falls through to default-deny — denies subtract from grants; they don't
+imply one.
+
+The cross-cutting use case `effect: deny` exists to solve:
+
+> *"contractors never see `salary`, even when they're also in the
+> `analysts` group."*
+
+Without deny, that guard has to be copied into every allow rule's
+`when` clause and any allow added later that forgets the guard silently
+re-grants the column. With `effect: deny`, the rule lives in one place
+and a new allow cannot accidentally bypass it.
+
+### `column_level`
+
+| Field | Type | Description |
+|---|---|---|
+| `include_all` | bool | Allow all columns. Mutually exclusive with `includes`. |
+| `includes` | list[str] | Explicit column allow-list. |
+| `excludes` | list[str] | Columns to strip from results. |
+| `mask` | map[str, str\|null] | `column_name → SQL expression`. Use YAML `~` (null) to emit SQL `NULL`. |
+
+Mask values are raw SQL fragments. The `security.policies` block is operator-controlled and
+trusted; **do not populate it from untrusted sources.**
+
+### `row_filter`
+
+A structured boolean-expression tree. The operator vocabulary
+(`_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`,
+`_and`, `_or`, `_not`) is taken directly from
+[Hasura's permission-rule DSL](https://hasura.io/docs/latest/auth/authorization/permissions/row-level-permissions/),
+which is the de-facto standard for declarative row-level filters in the
+GraphQL data-API ecosystem (PostGraphile, GraphJin, and Postgrest all
+use the same shape). Adopting it means operators familiar with any of
+those tools recognize the syntax immediately, and we get a vocabulary
+that has already been battle-tested against SQL/NULL edge cases.
+
+The engine compiles the tree to a SQLAlchemy `ColumnElement` — column
+references are validated at policy-load time, JWT values are bound as
+named parameters, and there is no template engine in the data-access
+path.
+
+**Logical operators:** `_and`, `_or`, `_not`. **Comparison operators:**
+`_eq`, `_ne`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_is_null`. RHS values
+are either:
+
+- a literal scalar (`str`, `int`, `float`, `bool`),
+- a non-empty list of literals (for `_in`), or
+- a JWT reference: `{ jwt: <dotted.path> }`, resolved per request.
+
+```yaml
+row_filter:
+  _and:
+    - org_id: { _eq: { jwt: claims.org_id } }    # JWT-driven (per request)
+    - _or:
+        - is_public: { _eq: true }                # static literal
+        - owner_id: { _eq: { jwt: sub } }
+    - status: { _in: [active, pending] }          # static list
+```
+
+> **YAML note.** The `{ key: value }` form above is YAML *flow style*,
+> not JSON — it parses to the same `dict` as the equivalent block style:
+>
+> ```yaml
+> org_id:
+>   _eq:
+>     jwt: claims.org_id
+> ```
+>
+> Flow style is shipped in the examples because row-filter trees nest
+> deeply and block style chews up vertical space. Either is valid.
+
+A missing JWT path resolves to SQL `NULL` — the comparison then yields
+`UNKNOWN` and excludes the row, which is the safe default.
+
+A node may not mix logical operators (`_and` / `_or` / `_not`) with
+column keys at the same level: the policy loader rejects shapes like
+`{ _and: [...], org_id: {...} }`. Wrap the column key inside the `_and`
+explicitly to keep the intended semantics visible.
+
+---
+
+## Evaluation model
+
+For each table the query touches — root *and* any table reached by a nested
+relation — the engine runs these steps:
+
+1. Every `policies[*].when` expression is evaluated against the request's
+   JWT payload.
+2. Policies whose `when` is true **and** whose `tables` contains the current
+   table are collected. If none match, the request is **denied**
+   (`FORBIDDEN_TABLE`) — see [default-deny](#default-deny) below.
+3. The collected table-policies are merged into a single `ResolvedPolicy`:
+   - **Column access** — OR / union: the most permissive matching policy
+     wins. If any matching policy has `include_all: true`, all columns are
+     allowed; otherwise the union of `includes` is taken.
+   - **Blocked columns** — intersection: a column is blocked only when
+     **every** matching policy blocks it.
+   - **Masks** — a mask is applied only when every matching policy masks
+     the column *and* they agree on the expression. Conflicting expressions
+     raise; any matching policy that leaves a column unmasked drops the
+     mask (most-permissive rule). Raise at request time forces operators to
+     fix the conflict in `security.policies`.
+   - **Row filters** — OR: `(filter_a) OR (filter_b)`. Bind params from
+     each filter are merged under per-policy prefixes to avoid collisions.
+4. Every column the client requested is checked against the merged policy.
+   Any column that is not in `allowed_columns` (when set) or is in
+   `blocked_columns` triggers `FORBIDDEN_COLUMN` — see
+   [strict columns](#strict-columns) below.
+5. The compiler uses `ResolvedPolicy` to:
+   - Emit the selected columns, replacing masked columns with the mask
+     expression.
+   - Append the row filter as a SQLAlchemy `ColumnElement` directly into
+     `stmt.where(...)`.
+
+### Default-deny
+
+When `security.policies` is loaded, **every table must be explicitly listed under
+some policy that matches the subject** — otherwise the request is rejected
+with a GraphQL error. This closes the hole where a role with a narrow
+policy (say, on `orders`) could silently read any other table the policy
+forgot to mention.
+
+When `security.policies` is empty (or `security.enabled` is false),
+enforcement is skipped entirely — this is dev/test mode. Pick one:
+configure a policy file, or don't; there is no "partial enforcement".
+
+### Strict columns
+
+If the client selects a column that the merged policy does not allow —
+either it's outside `includes`, or it's listed in `excludes` — the request
+is rejected with `FORBIDDEN_COLUMN` naming the table and the unauthorized
+columns. Columns are never silently stripped from the response. Silent
+strip creates ambiguous nulls (was this row NULL, or was the column
+blocked?) and makes it hard to debug why a query "didn't return the field I
+asked for" — strict is always louder, and always clearer.
+
+### Nested relations
+
+Default-deny, strict columns, masks, and row filters all apply the same way
+to every table the query reaches — not just the root. Selecting
+`customers { orders { internal_notes } }` evaluates the policy for `orders`
+just as if `orders` were queried directly. Without this, nested selections
+would be a blanket bypass of the whole policy engine.
+
+---
+
+## Error responses
+
+Policy denials surface as standard GraphQL errors (HTTP 200 with a populated
+`errors` array — the idiomatic GraphQL convention). The `extensions` block
+carries a stable `code` plus structured context:
+
+```json
+{
+  "errors": [
+    {
+      "message": "access denied: columns [first_name, last_name] on table 'customers' are not authorized by policy",
+      "extensions": {
+        "code": "FORBIDDEN_COLUMN",
+        "table": "customers",
+        "columns": ["first_name", "last_name"]
+      }
+    }
+  ],
+  "data": null
+}
+```
+
+| `code` | When | Extensions |
+|---|---|---|
+| `FORBIDDEN_TABLE` | No matching policy covers the requested table. | `table` |
+| `FORBIDDEN_COLUMN` | Query selects columns not authorized by the merged policy. | `table`, `columns` |
+
+---
+
+## `when` expression reference
+
+`when` is evaluated by [`simpleeval`](https://pypi.org/project/simpleeval/) —
+an AST-based Python subset that rejects dunder attribute access (`__class__`,
+`__globals__`, ...) and Python builtins (`open`, `exec`, ...). Evaluation
+that raises logs a warning and returns `False` (the policy does not match).
+
+Available operators: `and`, `or`, `not`, `in`, `not in`, `==`, `!=`, `<`,
+`<=`, `>`, `>=`, arithmetic.
+
+Available JWT fields (via `jwt.<name>`):
+
+- `jwt.sub` — subject
+- `jwt.email` — email claim
+- `jwt.groups` — list of groups
+- `jwt.claims.<key>` — arbitrary nested claims
+
+Missing attributes resolve to `None` rather than raising, so typos silently
+evaluate to `False` (they also produce a warning log).
+
+**Examples:**
+
+```yaml
+when: "'data-admins' in jwt.groups"
+when: "'finance' in jwt.groups and jwt.claims.level >= 3"
+when: "jwt.sub == None"                           # anonymous
+when: "'eu-west' in jwt.claims.allowed_regions"
+```
+
+---
+
+## `row_filter` reference
+
+The grammar follows
+[Hasura's row-level permission syntax](https://hasura.io/docs/latest/auth/authorization/permissions/row-level-permissions/)
+— the same convention used by PostGraphile, GraphJin, and Postgrest
+for declarative SQL filters. Operators carry the same meaning across
+those tools.
+
+Each tree node is either a logical-operator map (`_and`, `_or`, `_not`)
+or a column-comparison map. Logical operators take a list of sub-trees
+(except `_not`, which takes a single sub-tree). A column-comparison map
+has a single key (the column name) whose value is a single-key map naming
+the comparison operator.
+
+| DSL | Compiled SQL | Notes |
+|---|---|---|
+| `org_id: { _eq: 7 }` | `org_id = :p_0` (bound) | literal |
+| `org_id: { _eq: { jwt: claims.org_id } }` | `org_id = :p_0` (bound) | JWT ref |
+| `status: { _in: [active, pending] }` | `status IN (:p_0, :p_1)` | each element bound |
+| `owner_id: { _is_null: true }` | `owner_id IS NULL` | no bind |
+| `_not: { status: { _eq: deleted } }` | `status != :p_0` | SA collapses |
+
+Because values are bound via SQLAlchemy `bindparam`, SQL injection via
+JWT claims is structurally impossible — even a claim containing
+`'; DROP TABLE orders; --` cannot escape its bind slot. This is covered
+by a regression test in
+[`tests/unit/graphql/test_policy_integration.py`](../tests/unit/graphql/test_policy_integration.py).
+
+---
+
+## End-to-end example
+
+```yaml
+# config.yml — security.policies
+policies:
+  - name: admin
+    effect: allow
+    when: "'data-admins' in jwt.groups"
+    tables:
+      orders:    { column_level: { include_all: true } }
+      customers: { column_level: { include_all: true } }
+
+  - name: analyst
+    effect: allow
+    when: "'analysts' in jwt.groups"
+    tables:
+      customers:
+        column_level:
+          include_all: true
+          excludes: [raw_source_id]
+          mask:
+            email: "CONCAT('***@', SPLIT_PART(email, '@', 2))"
+            ssn: ~
+        row_filter:
+          org_id: { _eq: { jwt: claims.org_id } }
+
+  - name: anon
+    effect: allow
+    when: "jwt.sub == None"
+    tables:
+      products:
+        column_level: { includes: [product_id, name, price] }
+        row_filter:
+          published: { _eq: true }
+
+  # Deny precedence: contractors lose PII access on customers no matter
+  # which other groups also match. Single source of truth.
+  - name: contractors_no_pii
+    effect: deny
+    when: "'contractors' in jwt.groups"
+    tables:
+      customers: { deny_columns: [email, ssn] }
+```
+
+A request `GET /graphql?...` with
+
+```
+Authorization: Bearer <jwt with groups=["analysts"], claims.org_id=7>
+```
+
+selecting `customers { customer_id email ssn raw_source_id }` compiles to
+roughly (postgresql dialect shown):
+
+```sql
+SELECT
+    _parent.customer_id AS customer_id,
+    CONCAT('***@', SPLIT_PART(email, '@', 2)) AS email,
+    NULL AS ssn
+FROM main.customers AS _parent
+WHERE (org_id = :p0_0)
+-- bind params: p0_0 = 7
+```
+
+`raw_source_id` is stripped entirely; `email` is replaced with the mask
+expression; `ssn` is bound `NULL`; the row filter appears as a bound
+predicate.
+
+---
+
+## Design principles
+
+1. **Compile-time enforcement.** Filters and masks are injected into the SQL
+   sent to the warehouse. The runtime never sees values it should not. It
+   is impossible to "forget" to apply a filter downstream.
+2. **Declarative.** All policy in `security.policies`; no code changes per policy
+   edit.
+3. **Parameterized everywhere.** Claim values are never string-interpolated
+   into SQL.
+4. **Most-permissive OR semantics.** Matches Cube.dev and GraphJin; users
+   with multiple applicable roles get the union.
+5. **Fail safe on conflict.** Mask conflicts raise rather than pick an
+   arbitrary expression.
+6. **Default-deny, strict-column, loud.** Tables the policy doesn't cover
+   raise `FORBIDDEN_TABLE`. Unauthorized columns raise `FORBIDDEN_COLUMN`.
+   The API never returns a partial result that silently hides denials.
+7. **Policy applies to every table the query reaches.** Root tables and
+   nested-relation tables are evaluated the same way — no bypass via
+   nesting.
+8. **Application layer, not warehouse layer.** A single dbt model can be
+   served by many applications with different policies; warehouse-side
+   controls (BigQuery policy tags, Postgres RLS) remain independent.
+
+---
+
+## Enhancement roadmap — SOTA positioning
+
+The current engine covers the core of the Cube / GraphJin feature set. The
+industry SOTA is a **PDP/PEP architecture with ABAC-style declarative rules
+and a decision log** (see OPA, Cedar, SpiceDB, Cube, Hasura). These
+enhancements are tracked in [ROADMAP.md](../ROADMAP.md) under `Sec-B` →
+`Sec-L`; headline items:
+
+### ABAC attribute model (Sec-G)
+
+Today's model is implicitly role-based: `when` inspects JWT groups. SOTA
+policy engines are **attribute-based** — decisions are functions of four
+attribute sets:
+
+| Attribute set | Examples |
+|---|---|
+| **Subject** | `jwt.sub`, `jwt.groups`, `jwt.claims.*` |
+| **Action** | `read`, `aggregate`, `export` |
+| **Resource** | table name, column name, column classification (`pii`, `financial`, `public`) |
+| **Environment** | request IP, time of day, is-production-hours, rate-limit bucket |
+
+### Column classifications (Sec-I)
+
+Declare sensitivity classes; roles opt in or bypass by class rather than
+by column:
+
+```yaml
+classifications:
+  pii:
+    mask: "CONCAT('***@', SPLIT_PART(%s, '@', 2))"   # %s = column
+  pii_strict:
+    mask: "NULL"
+
+roles:
+  analyst:
+    respects: [pii]
+  compliance:
+    respects: [pii, pii_strict]
+  admin:
+    respects: []
+```
+
+One mask change covers every column tagged with that classification.
+
+### External decision point (Sec-J)
+
+Make `dbt-graphql` a **PEP** (Policy Enforcement Point) backed by an
+optional external **PDP** (Policy Decision Point):
+
+```yaml
+security:
+  pdp:
+    url: "http://opa:8181/v1/data/dbt_graphql/allow"
+    timeout_ms: 50
+    cache_ttl_s: 5
+```
+
+At request time the engine sends a decision request (subject + action +
+resource attributes) to OPA/Cedar/custom; the PDP returns
+`{ allowed, filters, masks }`. This is the architecture Stripe, Netflix,
+Goldman, and every Kubernetes cluster use for authz. When no `pdp` is
+configured, the built-in engine decides locally.
+
+### Hot reload, policy test harness, query allow-list, decision log
+
+All tracked as individual roadmap entries. Each is a single-digit-file
+change, but collectively they transform the engine from "policy file" to
+"authz platform".
+
+---
+
+## Related documents
+
+- [`config.example.yml`](../config.example.yml) — see the `security:` block
+- [configuration.md](configuration.md) — `security.enabled`, `security.policies`, env vars
+- [architecture.md](architecture.md) — where the policy fits in the request path
+- [../ROADMAP.md](../ROADMAP.md) — all security phases (Sec-A … Sec-L)
+
+---
+## Schema Synthesis
+docs/schema-synthesis.md
+
+# Schema Synthesis
+
+The phase that reads dbt artifacts and produces a `TableRegistry` — the Python object the serve layer consumes directly. In `--output` mode it also serialises `db.graphql` and `lineage.json` as side artifacts.
+
+**Entry point:** [`src/dbt_graphql/pipeline.py`](../src/dbt_graphql/pipeline.py) — `extract_project()`.
+
+See [architecture.md](architecture.md) for the pipeline overview and design principles that govern this phase.
+
+---
+
+## Table of contents
+
+- [1. Extraction steps](#1-extraction-steps)
+- [2. Intermediate representation (`ir/models.py`)](#2-intermediate-representation-irmodelspy)
+- [3. dbt processors (`dbt/`)](#3-dbt-processors-dbt)
+- [4. Lineage extraction](#4-lineage-extraction)
+- [5. SDL emission (`formatter/graphql.py`)](#5-sdl-emission-formattergraphqlpy)
+- [6. SDL parsing & `TableRegistry` (`formatter/schema.py`)](#6-sdl-parsing--tableregistry-formatterschemapy)
+
+---
+
+## 1. Extraction steps
+
+`extract_project()` runs ten steps in sequence:
+
+1. **Load artifacts.** `load_catalog()` / `load_manifest()` wrap `dbt_artifacts_parser.parser`. Returns typed nodes; no schema validation beyond what the parser provides.
+2. **Read project metadata.** `project_name`, `adapter_type` from `manifest.metadata` — used to label the lineage output and to feed dialect-aware SQL generation.
+3. **Preprocess tests.** Scans `manifest.nodes` for `not_null`, `unique`, `accepted_values` tests. Produces a `TestsResult` keyed by `"{unique_id}.{column_name}"`. Enum definitions are deduplicated by sorted value tuple so two columns with the same `accepted_values` list reuse one enum (name collisions get a numeric suffix).
+4. **Extract constraints.** Reads dbt v1.5+ `constraints` on models (table-level PK / FK) and on columns (column-level). Supports both the legacy `expression="other_table(col)"` form and the v1.9+ `to="db.schema.other_table"` + `to_columns=[...]` form.
+5. **Build models.** For every `model.*` node in the catalog: strip SQL quoting off column names; attach raw SQL types, `not_null`, `unique`, and `enum_values` from the tests result; pull descriptions from the manifest; sort columns by catalog index then name; fall back `database → schema` for adapters that don't populate database (MySQL).
+6. **Merge relationships.** Three sources in priority order: dbt v1.5+ `constraints` > `relationships` tests > JOIN-ON mining (sqlglot). Each `ProcessorRelationship` carries an `origin` tag (`constraint` | `data_test` | `lineage`) that propagates to the IR. Deduplication is by relationship name: whichever tier lands first wins.
+7. **Attach relationships to models.** Each `RelationshipInfo` ends up on both the from-model and the to-model so downstream consumers can navigate edges without rebuilding an index.
+8. **Extract lineage.** Table lineage from `depends_on.nodes` for every model. Column lineage built with sqlglot directly — no optional-dependency gate.
+9. **Build enums dict.** Flattens `{enum_name: [values]}` for formatters that want it.
+10. **Return `ProjectInfo`.** The single boundary between extraction and everything that follows.
+
+Once `ProjectInfo` is in hand, the rest of the system is deterministic: `build_registry()` → `TableRegistry`, compile GraphQL selections → SQL, execute. In `--output` mode, `_registry_to_sdl()` serialises `TableRegistry` to SDL and writes `db.graphql`.
+
+---
+
+## 2. Intermediate representation (`ir/models.py`)
+
+[`src/dbt_graphql/ir/models.py`](../src/dbt_graphql/ir/models.py)
+
+Everything between extraction and the final outputs speaks IR.
+
+### Core types
+
+Four Pydantic models carry the full dbt semantics into the rest of the system:
+
+- **`ColumnInfo`** — name, SQL type, not_null, unique, enum_values, description.
+- **`ModelInfo`** — name, database/schema, columns, primary_keys, relationships, description.
+- **`RelationshipInfo`** — from/to model + column, join_type, origin. Carried on both endpoints.
+- **`ProjectInfo`** — all models, enums, table lineage, column lineage; exposes `build_lineage_schema()`.
+
+Two deliberate choices:
+
+- **`primary_keys` lives on the model, not on columns.** A primary key is a table-level constraint. Storing PK membership per-column would duplicate information and invite drift. When the formatter needs to decide whether a column gets `@id`, it asks `len(model.primary_keys) == 1 and col.name in model.primary_keys`.
+- **`type` is required, no default.** An empty `type` produces a broken SDL. Required-at-construction surfaces the problem at the source.
+
+### Lineage types
+
+`LineageType` is a `StrEnum` with values `pass_through`, `rename`, `transformation`, `filter`, `join`, `unknown`. `ProjectInfo.build_lineage_schema()` groups raw column-lineage dicts by `(source, target)`, constructs typed `ColumnLineageItem` entries, and validates via Pydantic. JSON serialization uses `by_alias=True` so the output is camelCase (`sourceColumn`, `lineageType`) — friendlier to downstream JavaScript tooling.
+
+---
+
+## 3. dbt processors (`dbt/`)
+
+Three source-based processors, each responsible for one input surface. The module name tells you where the data came from, not what shape it has.
+
+### `dbt/artifacts.py`
+
+Thin wrapper around `dbt_artifacts_parser.parser`. Returns typed manifest/catalog objects. The only rule: if someone wants to swap the upstream source (e.g., a dbt Cloud API), this is the only file they needs to change.
+
+### `dbt/processors/constraints.py` — dbt v1.5+ constraints
+
+Extracts `constraints` on models and columns.
+
+- **Primary keys**: both `constraints[].type == "primary_key"` on the model *and* column-level constraints. Results merged, deduplicated by unique_id.
+- **Foreign keys, legacy form** (pre-v1.9): `expression="other_table(other_col)"`, `columns=["my_col"]`. Parsed with a regex in `_parse_fk_expression()`.
+- **Foreign keys, modern form** (dbt v1.9+): `to="db.schema.other_table"`, `to_columns=["other_col"]`, `columns=["my_col"]`. Resolved to a model name via `_resolve_to_model()` which searches manifest nodes by `relation_name`.
+
+Output is a list of `ProcessorRelationship` (dataclass) with `join_type` defaulting to `many_to_one` and `origin=RelationshipOrigin.constraint`. Cardinality refinement happens in `pipeline._rel_to_domain()`.
+
+### `dbt/processors/data_tests.py` — dbt data tests
+
+Extracts everything authored as a dbt **data test** (schema test). Not to be confused with dbt *unit tests*.
+
+- `not_null` / `unique` → booleans keyed by `"{unique_id}.{column_name}"`.
+- `accepted_values` → enum definitions. Enum name derived from the column name via `_sanitize_enum_name()`. Deduplication is by **sorted value tuple** — two columns with the same `accepted_values` list share one enum.
+- `relationships` → `ProcessorRelationship` objects (origin `"data_test"`). For each test node: `attached_node` → source unique_id, `column_name` → source column, `refs[0].name` → target model, `test_metadata.kwargs["field"]` → target column.
+
+Adding support for a new data test type is localized to this module.
+
+### `dbt/processors/compiled_sql.py` — sqlglot over compiled SQL
+
+Centralized sqlglot-driven extraction. Three public functions sharing a single parsing pipeline:
+
+- `extract_table_lineage(manifest)` — table edges from `depends_on.nodes`. No SQL parsing, but lives here because "what came from the compiled DAG" is the conceptual fit.
+- `extract_column_lineage(manifest, catalog)` — column-level lineage. See [§4](#4-lineage-extraction).
+- `extract_join_relationships(manifest, catalog)` — FK-style relationships mined from JOIN ON clauses. For each model's compiled SQL, walks every nested scope and extracts equality pairs from each JOIN ON. Each column reference is resolved through CTE/subquery scopes to a leaf table, which is mapped to a dbt model name via the shared `table_lookup`. Direction rule: the dbt model being processed is always the `from_model`. Emitted with `origin=RelationshipOrigin.lineage` — lowest priority, so an explicit constraint or `relationships` test on the same pair always wins.
+
+### Relationship cardinality inference
+
+Done in `pipeline._infer_join_type()`:
+
+| `from` column unique | `to` column unique | join_type        |
+|----------------------|--------------------|------------------|
+| yes                  | yes                | `one_to_one`     |
+| yes                  | no                 | `one_to_many`    |
+| no                   | yes                | `many_to_one`    |
+| no                   | no                 | `many_to_one` *  |
+
+\* Fallback: when uniqueness is unknown on both sides, we assume the standard FK pattern. A column is "unique" if it has a `unique` test or is a single-column PK.
+
+---
+
+## 4. Lineage extraction
+
+[`src/dbt_graphql/dbt/processors/compiled_sql.py`](../src/dbt_graphql/dbt/processors/compiled_sql.py)
+
+### Table-level
+
+For every `model.*` node, emit an edge for each entry in `depends_on.nodes` that starts with `model.`, `seed.`, or `source.`. Trivial and deterministic — no heuristics, no SQL parsing.
+
+### Column-level (via sqlglot)
+
+For every materialized model:
+
+1. Build a per-model schema dict `{database: {schema: {table: {col: type}}}}` restricted to `depends_on.nodes`.
+2. Sanitize the compiled SQL (dialect-specific: Oracle `LISTAGG DISTINCT` / `ON OVERFLOW` stripping).
+3. Parse with the detected sqlglot dialect (`"sqlserver"` → `"tsql"`; Postgres strips quoted identifiers so `SELECT *` can expand).
+4. `qualify()` with `validate_qualify_columns=False` and `identify=False` — the goal is scope construction, not a validated rewrite.
+5. `build_scope()` → recursively trace each outer select through CTE/subquery scopes to leaf `exp.Table` nodes, classifying each hop (`pass_through` / `rename` / `transformation`) and taking the max rank across the chain.
+
+The core recursive `to_node()` traversal (qualify → build_scope → recursive CTE/subquery/UNION/PIVOT resolution, max-rank classification) is derived from dbt-colibri, itself a fork of sqlglot's lineage module (MIT). It's absorbed directly into `compiled_sql.py` to keep the dependency footprint small.
+
+### Why lineage is first-class
+
+No DB-introspection tool (Hasura, pg_graphql, PostGraphile) can produce lineage — it doesn't exist in `pg_catalog`. It only exists in the transformation graph, which is exactly what dbt owns. Exposing it alongside the schema means an agent can ask not just "what columns are on this model" but "where does this column come from."
+
+---
+
+## 5. Schema object + SDL emission (`formatter/graphql.py`)
+
+[`src/dbt_graphql/formatter/graphql.py`](../src/dbt_graphql/formatter/graphql.py)
+
+Three functions with a clear split of responsibility:
+
+- **`build_registry(project)`** — the canonical path. Converts `ProjectInfo` directly to a `TableRegistry` (Python dataclasses). This is what the serve layer uses; no file I/O, no SDL roundtrip.
+- **`_registry_to_sdl(registry)`** — serialises a `TableRegistry` to SDL string. Used only in `--output` mode to write `db.graphql`.
+- **`format_graphql(project)`** — convenience composition of the two above, used in tests and the `--output` export path.
+
+One `ModelInfo` becomes one `type` block in SDL.
+
+### Type-level directive
+
+```graphql
+type orders @table(database: "mydb", schema: "public", name: "orders") {
+  ...
+}
+```
+
+`@table(database:, schema:, name:)` maps the GraphQL type to the physical warehouse table, honoring the dbt `alias` if set. This makes `db.graphql` self-sufficient — no need to ship `manifest.json` to production.
+
+### Field-level directives
+
+For each column:
+
+- `@column(type: "...", size: "...")` — **always present.** Preserves the raw SQL type and any size/precision.
+- `@id` — only on a *sole-column* primary key. Composite PK parts do not get `@id`.
+- `@unique` — column has a `unique` test and is not already the sole PK.
+- `@relation(type: TargetModel, field: target_col)` — foreign key.
+
+### Type mapping
+
+`_parse_sql_type()` turns raw SQL types into `(base, size, is_array)`:
+
+| Raw SQL                    | base                       | size    | is_array |
+|----------------------------|----------------------------|---------|----------|
+| `INTEGER`                  | `INTEGER`                  | ``      | false    |
+| `VARCHAR(255)`             | `VARCHAR`                  | `255`   | false    |
+| `NUMERIC(10,2)`            | `NUMERIC`                  | `10,2`  | false    |
+| `DOUBLE PRECISION`         | `DOUBLE PRECISION`         | ``      | false    |
+| `TIMESTAMP WITH TIME ZONE` | `TIMESTAMP WITH TIME ZONE` | ``      | false    |
+| `TEXT[]` (Postgres)        | `TEXT`                     | ``      | true     |
+| `ARRAY<STRING>` (BigQuery) | `STRING`                   | ``      | true     |
+
+`_sql_to_gql_scalar()` maps the base to a standard scalar: boolean → `Boolean`, anything ending in `INT` / `INTEGER` / `INT64` → `Int`, numeric/float → `Float`, everything else → `String`.
+
+### What is *not* emitted
+
+- No scalar definitions — all field types are standard GraphQL scalars.
+- No query root — `db.graphql` describes the warehouse; the query root is added at serve time.
+
+---
+
+## 6. SDL parsing & `TableRegistry` (`formatter/schema.py`)
+
+[`src/dbt_graphql/formatter/schema.py`](../src/dbt_graphql/formatter/schema.py)
+
+At serve time and compile time, `db.graphql` is re-parsed into typed Python objects (`ColumnDef`, `TableDef`) — the inverse of the formatter. `TableRegistry` is a dict-like wrapper: `registry[name]`, `name in registry`, `iter(registry)`. The compiler and MCP layer both look up tables through it.
+
+Parsing uses `graphql-core`. `_unwrap_type()` walks `NonNullTypeNode` → `ListTypeNode` → `NamedTypeNode` to compute `(type_name, not_null, is_array)`. `_directive_args()` flattens directive arguments into a `dict[str, str]`.
+
+**When is parsing used?** The primary serve path does not use `parse_db_graphql` — it calls `build_registry()` directly from dbt artifacts. `parse_db_graphql` is still useful when you have a pre-built `db.graphql` (e.g. a CI-generated artifact shipped to production without dbt artifacts) and want to reconstruct a `TableRegistry` from it without re-running extraction.
+
+---
+## GraphQL API
+docs/graphql.md
+
+# GraphQL HTTP API
+
+The HTTP interface for running GraphQL queries against the warehouse. Built on Starlette + Ariadne, served via uvicorn.
+
+**Source:** [`src/dbt_graphql/graphql/`](../src/dbt_graphql/graphql/) (sub-app + resolvers + auth + policy) and [`src/dbt_graphql/serve/`](../src/dbt_graphql/serve/) (Starlette composition + uvicorn runner)
+
+The SQL compilation engine lives in [compiler.md](compiler.md). This document covers the HTTP layer: schema assembly, lifecycle, resolvers, auth, and observability.
+
+See [architecture.md](architecture.md) for the design principles that govern this component.
+
+---
+
+## Table of contents
+
+- [1. Schema assembly (`_build_ariadne_sdl`)](#1-schema-assembly-_build_ariadne_sdl)
+- [2. Lifecycle](#2-lifecycle)
+- [3. Resolvers](#3-resolvers)
+- [4. Auth](#4-auth)
+- [5. Observability](#5-observability)
+- [6. Co-mounting with MCP](#6-co-mounting-with-mcp)
+
+---
+
+## 1. Schema assembly (`_build_ariadne_sdl`)
+
+`db.graphql` uses custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) that Ariadne's schema builder doesn't understand. At serve time, `_build_ariadne_sdl(registry: TableRegistry)` derives a clean executable schema directly from the `TableRegistry`:
+
+1. For each `TableDef`: emits a `type` block with standard GraphQL scalars, and a `XxxWhereInput` input type for filtering.
+2. Collects any non-standard scalar names and emits `scalar X` declarations.
+3. Builds a `Query` type with one field per table, each accepting `limit: Int`, `offset: Int`, `where: XxxWhereInput`.
+
+**`TableRegistry` is the input — not `db.graphql`.** The serve path never reads or parses a file; it operates on the Python object built by `build_registry()` directly from dbt artifacts.
+
+### Introspection signals
+
+Standard GraphQL `IntrospectionQuery` only exposes a fixed set of fields on `__Type` / `__Field`; applied directives are not in that set. To make policy- and structure-relevant signals visible to GraphiQL / Apollo Studio / codegen, the executable SDL routes them through native introspection carriers wherever possible:
+
+- **Primary keys** are emitted with the built-in `ID` scalar — no custom `@id` directive is needed. `ID` is wire-compatible with `String` per the spec.
+- **dbt descriptions** on tables and columns are emitted as triple-quoted blocks above the type / field, so they show up directly in `__Type.description` and `__Field.description`.
+- **`@masked` / `@filtered`** are emitted in the printed `db.graphql` artefact when the corresponding flags are set. They will be set per principal once policy-aware introspection is wired (see `docs/policy-aware-introspection-plan.md`); today `ColumnDef.masked` / `TableDef.filtered` exist as scaffolding and are not populated at runtime.
+
+The remaining custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) appear only in the printed `db.graphql` artefact (`--output` mode); they do not reach introspection clients. The introspection-carrier decision for surfacing these signals to standard introspection is tracked in the plan doc above.
+
+---
+
+## 2. Lifecycle
+
+Composition lives in `serve/app.py:create_app`. `graphql/app.py:create_graphql_subapp` builds only the Ariadne ASGI sub-app — the Starlette assembly, auth middleware, lifespan, and any MCP co-mount are owned by `serve/app.py`. The single `serve/__init__.py:run()` entry point is what the CLI calls.
+
+The `@asynccontextmanager` lifespan:
+
+1. Enters the MCP app's lifespan (if co-mounted) via `AsyncExitStack`.
+2. Connects `DatabaseManager` (only if GraphQL is enabled) and instruments the SQLAlchemy engine with OTel.
+3. Sets up the result cache (if configured).
+4. Yields — uvicorn serves requests.
+5. Tears down in reverse order on shutdown.
+
+State that resolvers need (`TableRegistry`, `DatabaseManager`, JWT payload, `PolicyEngine`, `CacheConfig`) is passed through `info.context` — never captured in closures, never module-global.
+
+---
+
+## 3. Resolvers
+
+`graphql/resolvers.py` registers one resolver per table. Each resolver:
+
+1. Pulls the `TableDef` out of the registry.
+2. Calls `compile_query()` (see [compiler.md](compiler.md)) with the GraphQL field nodes, `limit`, `offset`, `where` from kwargs.
+3. Executes via the `DatabaseManager`, returns rows as dicts.
+
+No N+1 — nested relations are resolved inside the same query via correlated subqueries.
+
+---
+
+## 4. Auth
+
+JWT verification is handled by the `AuthenticationMiddleware` layer. When `security.enabled: true` in config, every request is verified against the configured key source (JWKS URL, key file, or env var). Verification uses `joserfc` with an explicit algorithm allow-list and configurable `audience`, `issuer`, `leeway`, and `required_claims`. The decoded payload is attached as `request.user.payload` and forwarded to `info.context["jwt_payload"]` for the policy engine.
+
+When JWT is disabled (the default), every request is treated as anonymous — the policy engine sees an empty payload.
+
+See [security.md](security.md) for the full JWT configuration reference and key-source options.
+
+---
+
+## 5. Observability
+
+OTel is bundled with `dbt-graphql`. Four auto-instrumentation layers activate automatically:
+
+- **Starlette/ASGI** (`opentelemetry-instrumentation-starlette`, which wraps `opentelemetry-instrumentation-asgi`) — HTTP request spans, plus the standard ASGI metrics (`http.server.duration`, `http.server.active_requests`, request/response size histograms).
+- **httpx** (`opentelemetry-instrumentation-httpx`) — outbound HTTP spans (e.g. JWKS key fetches).
+- **Ariadne** (`ariadne.contrib.tracing.opentelemetry.OpenTelemetryExtension`) — GraphQL operation and per-resolver spans.
+- **SQLAlchemy** (`opentelemetry-instrumentation-sqlalchemy`) — per-query spans (engine pool depth is auto-emitted via `db.client.connections.usage`).
+
+Additionally, custom metrics are emitted by application code:
+
+- `graphql.operation.count` / `graphql.operation.duration` / `graphql.operation.errors` — per operation, recorded by `GraphQLMetricsExtension`.
+- `db.client.connections.wait_time` — pool checkout wait time, recorded in `DatabaseManager`.
+- `db.client.queries.count` / `db.client.queries.duration` — per SQL query, recorded in `DatabaseManager`.
+- `http.server.responses` — HTTP response count grouped by status code (2xx/4xx/5xx), recorded via the Starlette response hook.
+- `jwt.verification.outcomes` — JWT verification results.
+- `cache.result.outcomes` — cache hit/miss/error.
+- `mcp.tool.calls` / `mcp.tool.duration` — per MCP tool, recorded by the `_instrument_tool` wrapper.
+
+See [configuration.md](configuration.md) for the `monitoring` block reference.
+
+---
+
+## 6. Co-mounting with MCP
+
+GraphQL is always mounted at `/graphql` in serve mode. When `serve.mcp_enabled: true` in config, the MCP HTTP app is co-mounted at `/mcp` under the same Starlette + uvicorn process. The MCP app's lifespan is composed into the Starlette lifespan via `AsyncExitStack`; the same `AuthenticationMiddleware` runs above both mounts and the same OTel instrumentation covers both endpoints.
+
+`create_app` passes the `GraphQLBundle` into the MCP factory so the MCP `run_graphql` tool re-executes queries through the same Ariadne schema with the same per-request context — column allow-lists, masks, and row filters apply structurally to MCP traffic the same way they do to direct GraphQL. See [mcp.md § Authorization model](mcp.md#authorization-model).
+
+---
+## Compiler
+docs/compiler.md
+
+# GraphQL → SQL Compiler
+
+The core engine that translates a GraphQL selection into a single warehouse SQL statement. Used by both the [GraphQL HTTP layer](graphql.md) (via resolvers) and the MCP server (via `run_graphql`, which re-executes through the same Ariadne schema).
+
+**Source:** [`src/dbt_graphql/compiler/`](../src/dbt_graphql/compiler/)
+
+See [architecture.md](architecture.md) for the design principles that govern this component.
+
+---
+
+## Table of contents
+
+- [1. What compilation produces](#1-what-compilation-produces)
+- [2. Why correlated subqueries, not LATERAL joins](#2-why-correlated-subqueries-not-lateral-joins)
+- [3. Dialect-aware JSON aggregation](#3-dialect-aware-json-aggregation)
+- [4. `compile_query()` walkthrough](#4-compile_query-walkthrough)
+- [5. Connection management (`compiler/connection.py`)](#5-connection-management-compilerconnectionpy)
+
+---
+
+## 1. What compilation produces
+
+Given a GraphQL field like:
+
+```graphql
+{
+  orders(limit: 10, where: { status: "completed" }) {
+    order_id
+    amount
+    customer {
+      customer_id
+      name
+    }
+  }
+}
+```
+
+the compiler emits a single SQLAlchemy `Select`:
+
+```sql
+SELECT
+  _parent.order_id AS order_id,
+  _parent.amount   AS amount,
+  (SELECT JSON_AGG(JSON_OBJECT('customer_id', child.customer_id, 'name', child.name))
+     FROM customers AS child
+     WHERE child.customer_id = _parent.customer_id) AS customer
+FROM orders AS _parent
+WHERE _parent.status = 'completed'
+LIMIT 10;
+```
+
+---
+
+## 2. Why correlated subqueries, not LATERAL joins
+
+Apache Doris (and some older warehouse engines) do not support `LATERAL`. A correlated subquery is portable everywhere and the optimizer collapses it to the same plan on engines that could use LATERAL anyway. The tradeoff is that ordering/limit on nested fields is harder to express; the current compiler doesn't expose those knobs, which is a conscious scope decision.
+
+---
+
+## 3. Dialect-aware JSON aggregation
+
+Different engines have different JSON aggregation functions. Rather than branching in Python, we define marker classes `json_agg` and `json_build_obj` (`FunctionElement` subclasses) and register per-dialect `@compiles` functions:
+
+| Dialect       | `json_agg`         | `json_build_obj`     |
+|---------------|--------------------|----------------------|
+| PostgreSQL    | `JSONB_AGG`        | `JSONB_BUILD_OBJECT` |
+| MySQL/MariaDB | `JSON_ARRAYAGG`    | `JSON_OBJECT`        |
+| default       | `JSON_ARRAYAGG`    | `JSON_OBJECT`        |
+
+SQL generation stays dialect-agnostic until the moment of rendering.
+
+---
+
+## 4. `compile_query()` walkthrough
+
+Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus optional `limit` / `offset` / `where` / `max_depth`.
+
+1. `_extract_scalar_fields()` partitions the selection into direct columns and FK-backed relations.
+2. For each relation: `_build_correlated_subquery` builds a correlated subquery that aggregates child rows into a JSON array, correlated on the FK equality.
+3. **Multi-hop nesting** — `_build_correlated_subquery` is recursive. Each level gets a unique alias (`child_1`, `child_2`, …). A `visited` frozenset prevents any model from appearing twice in the same subquery stack (cycle guard), and `max_depth` (default: unlimited) caps nesting depth.
+4. `where` is a flat dict of `{col_name: value}` applied as equality predicates. No operator support today.
+5. `LIMIT` and `OFFSET` applied straight through to SQLAlchemy.
+
+**Not supported (explicitly):**
+- Filtering or ordering on nested fields.
+- Operators beyond `=` in `where`.
+- Aggregates, group-by, metrics — that's the job of a semantic layer (Cube, MetricFlow).
+
+---
+
+## 5. Connection management (`compiler/connection.py`)
+
+`DatabaseManager` owns an async SQLAlchemy 2.0 engine, exposes `execute()` for a `Select` and `execute_text()` for raw SQL, and tracks the dialect name. Two construction paths: pass a raw `db_url` string, or pass a `DbConfig` which runs through `build_db_url()`.
+
+`build_db_url()` maps `config.type` keys to async driver schemes (`aiomysql`, `asyncpg`).
+
+No dbt profiles parser — the database configuration is deliberately decoupled from `profiles.yml`. A production serve layer connects differently from a dbt transformation run (different credentials, pooling, network).
+
+---
+## Caching & Burst Protection
+docs/caching.md
+
+# Caching & Burst Protection
+
+A result cache with singleflight, sitting between the GraphQL HTTP handler and the warehouse. Serves repeat queries without re-executing them, and coalesces concurrent identical queries into a single warehouse roundtrip.
+
+**Entry points:** [`src/dbt_graphql/cache/`](../src/dbt_graphql/cache/) — wired into the GraphQL sub-app by [`graphql/app.py`](../src/dbt_graphql/graphql/app.py) and [`graphql/resolvers.py`](../src/dbt_graphql/graphql/resolvers.py).
+
+See [architecture.md](architecture.md) for where the cache sits in the overall pipeline and [configuration.md § cache](configuration.md#cache-optional) for the operator-facing config surface.
+
+---
+
+## Table of contents
+
+- [1. Why only the result cache](#1-why-only-the-result-cache)
+- [2. The flow](#2-the-flow)
+- [3. Cache-key derivation](#3-cache-key-derivation)
+- [4. Multi-tenant correctness — the key claim](#4-multi-tenant-correctness--the-key-claim)
+- [5. TTL](#5-ttl)
+- [6. Self-protection — what the cache does and does not defend against](#6-self-protection--what-the-cache-does-and-does-not-defend-against)
+- [7. Observability](#7-observability)
+- [8. Backend](#8-backend)
+- [9. Things the cache deliberately doesn't do](#9-things-the-cache-deliberately-doesnt-do)
+
+---
+
+## 1. Why only the result cache
+
+An earlier design proposed two more caches in front of this one — a parsed-document cache (skip GraphQL `parse`) and a compiled-plan cache (skip policy eval + SQLAlchemy build). We sized them at the design target of **1000 RPS** and dropped both:
+
+| What | Cost saved per hit | At 1000 RPS, ~100% hit rate | Verdict |
+|---|---|---|---|
+| Parse cache | ~30–100 µs | ~0.05 cores of CPU | Noise — lost in measurement error. |
+| Compiled-plan cache | ~0.5–3 ms | ~1.5 cores of CPU | Real — but not on the bottleneck path. |
+| **Result cache** | **10–1000 ms (warehouse roundtrip)** | dominates | The only one that matters. |
+
+At 1000 RPS to an OLAP warehouse, you exhaust connection-pool / warehouse concurrency long before the app is CPU-bound. The result cache saves the warehouse roundtrip — that's where 1000 RPS becomes sustainable. The compiled-plan cache would save CPU you weren't out of, and adding a replica costs less than maintaining the cache code.
+
+The compiled-plan cache also had a fragile correctness story — its key had to encode "which JWT claims could the policy possibly read?" to avoid cross-tenant leaks, and `compile_query` recursing into nested-table policies made that hard to bound. Dropping it removed the only place the cache could plausibly leak across tenants.
+
+```
+HTTP request (POST /graphql)
+   │
+   ▼
+[Auth middleware → JWT payload]
+   │
+   ▼
+[Ariadne parse + validate]            (~µs, no cache)
+   │
+   ▼
+[Resolver: compile_query → SQL]       (~ms, no cache)
+   │
+   ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Result cache + singleflight   cache/result.py              │
+│  - GET cache by (rendered SQL + bound params + dialect)     │
+│  - On miss: acquire lock, re-check, run warehouse, SET      │
+│    with TTL, release lock                                   │
+│  - Concurrent misses on the same key wait on the lock,      │
+│    wake up to a populated cache, return without firing      │
+│    the warehouse a second time.                             │
+└─────────────────────────────────────────────────────────────┘
+   │
+   ▼
+Warehouse (only on miss while holding the lock)
+```
+
+---
+
+## 2. The flow
+
+The execution path is twelve lines:
+
+```python
+async def execute_with_cache(stmt, *, dialect_name, runner, cfg):
+    key = hash_sql(stmt, dialect_name)
+    ttl = cfg.ttl
+
+    # Fast path — TTL hit.
+    cached = await cache.get(key)
+    if cached is not None:
+        return cached
+
+    # Slow path — coalesce concurrent misses through a lock.
+    async with cache.lock(f"{key}:lock", expire=cfg.lock_safety_timeout):
+        cached = await cache.get(key)         # re-check inside the lock
+        if cached is not None:
+            return cached
+        result = await runner(stmt)
+        await cache.set(key, result, expire=(1 if ttl == 0 else ttl))
+        return result
+```
+
+Behavior matrix:
+
+| Scenario | Outcome |
+|---|---|
+| Steady state, query within TTL | TTL hit — sub-ms, no warehouse |
+| Cold start, 100 concurrent identical | Lock coalesces — 1 warehouse hit, 99 wake to populated cache |
+| TTL boundary, 100 concurrent identical | Lock coalesces — 1 warehouse hit |
+| Distinct queries, different keys | Independent paths, no contention |
+| Lock-holder crashes mid-execution | `expire=lock_safety_timeout` (default `10`) auto-releases; next caller retries |
+
+The lock's `expire=` is the **safety timeout** — auto-release after a lock-holder crash. It is **not** the result TTL. Both are configurable independently.
+
+---
+
+## 3. Cache-key derivation
+
+[`src/dbt_graphql/cache/keys.py`](../src/dbt_graphql/cache/keys.py)
+
+The key is `sql:` + sha256 of a canonical JSON of `{ "sql": ..., "params": ..., "dialect": ... }`, where:
+
+- `sql` is `str(stmt.compile(dialect=…))` — the exact SQL string we will send to the warehouse, including bind-parameter placeholders.
+- `params` is `dict(compiled.params)` — the **bound values** for those placeholders, including row-filter values supplied by the policy engine.
+- `dialect` is the dialect name. Same query against Postgres vs MySQL produces different SQL syntax (functions, quoting, JSON aggregation), so they cannot share an entry on a shared Redis backend.
+
+This means the key is determined by what gets sent over the wire, not by anything from above the SQL boundary (no JWT claims, no policy state, no GraphQL AST). Two requests share a cache entry if and only if they would send byte-identical SQL to the warehouse.
+
+If `dialect_name` is one SQLAlchemy cannot load, `hash_sql` raises `ValueError` rather than falling back. An earlier version fell back to `str(stmt)` for unknown dialects — which omits bound parameter values from the key, silently letting two queries with different binds collide. Refusing to emit the key was the safer fix; today's two adapters (`postgresql`, `mysql`) both load cleanly, and any future adapter SA can register works automatically.
+
+---
+
+## 4. Multi-tenant correctness — the key claim
+
+> **Two users with different effective permissions can never share a cache entry, by construction.**
+
+The argument is short. The policy engine compiles `row_filter` DSL trees to SQLAlchemy `ColumnElement` clauses; JWT claim values bind as named parameters before the statement is compiled. Bound values land in `compiled.params`, which is part of the cache key. Therefore:
+
+- **Tenant A (`cust_id=1`) vs Tenant B (`cust_id=2`)**: the row filter compiles with different bind values → different `params` dict → different keys. Cache cannot leak.
+- **Two admins with no row filter, totally different JWTs**: the compiled SQL is byte-identical and there are no row-filter binds → same key → they share. This is correct: they would receive the same data either way.
+- **Same tenant, same query, repeated**: same SQL, same binds → same key → second request is served from cache. This is the intended hit case.
+- **Same tenant, same query, fresh JWT (new `iat`/`exp`)**: as long as the *relevant* claims are unchanged, the compiled SQL is unchanged → same key → cache hits. Token refresh does not invalidate the cache.
+
+What does **not** automatically share an entry, even when the user might intuitively expect it:
+
+- **Different GraphQL field order** (`{ id name }` vs `{ name id }`). The SELECT column order differs → different SQL → different key. This is correct: response field order is part of the GraphQL contract.
+- **Different `where` argument values, same shape**. Different binds → different keys. Correct.
+- **Different `limit` / `offset`**. SA emits these into the SQL string → different keys. Correct.
+
+There is no separate "tenant key" or claim-tracking machinery. Cross-tenant safety falls out of the SQL itself.
+
+---
+
+## 5. TTL
+
+A single global freshness window:
+
+```yaml
+cache:
+  ttl: 60   # seconds
+```
+
+Per-table TTLs were considered and dropped: scattering freshness rules across the operator config is fragile and disconnects the freshness decision from the dbt model that defines the table. If per-table freshness becomes necessary, it should be expressed alongside the model definition — not in a parallel YAML block in the API config.
+
+Special value: **`ttl: 0` = realtime + minimal coalescing window.** The cache still acquires the singleflight lock so a concurrent burst is coalesced into one warehouse call, but the result is persisted for only 1 second (just long enough for the lock-waiters to wake to a populated cache). After that, the entry expires and the next request re-fetches.
+
+---
+
+## 6. Self-protection — what the cache does and does not defend against
+
+| Threat | Mitigation |
+|---|---|
+| Burst of identical queries → warehouse stampede | **Lock coalesces to 1 warehouse call.** |
+| Burst of distinct queries → warehouse pool exhaustion | **Not mitigated.** SQLAlchemy pool sizing applies; the (N+1)th request blocks on pool checkout. Acceptable: clients see latency, server stays up. |
+| Slow client + long warehouse query → connection held | Asyncio handles thousands of idle waiters cheaply. Client timeout is the client's responsibility. |
+| Lock-holder crash mid-query | `lock_safety_timeout` (default `10`) auto-releases the lock. |
+| Memory growth from queued waiters | Bounded by the HTTP server's max in-flight requests (uvicorn's worker / event-loop concurrency). |
+| Cache poisoning via crafted JWT | Key embeds bound row-filter values directly (§ 4). |
+
+**Tuning the lock safety timeout.** Two constraints:
+
+- **Above your p99 warehouse query time.** When a *legitimately slow* query exceeds the timeout, Redis silently deletes the lock and a waiting caller becomes the new holder — running the same query a second time against the warehouse. Both responses still return 200; the cost is one wasted warehouse roundtrip per slow query. So set the timeout above your slowest expected legitimate query.
+- **Below your upstream LB idle timeout, with a few seconds of headroom.** A *crashed* holder (SIGKILL, OOM) leaves a stuck lock until the TTL fires; after that, a waiter takes over and runs the query. If the TTL is ≥ LB timeout, the LB resets every waiter before recovery completes.
+
+Default `10` targets fast warehouses (ClickHouse, Doris, Postgres on dbt-modeled tables, p99 ≤ 5s) behind a typical 30s LB. Bump to 25–60 for slow OLAP aggregations; bump the LB too if you go above its idle timeout.
+
+What the cache is **not**:
+
+- Not a query-cost limiter — it does not reject expensive queries up-front.
+- Not a per-IP rate limiter — that belongs at the load balancer.
+- Not a connection-pool guard — wrap the SQLAlchemy engine pool yourself if needed.
+
+---
+
+## 7. Observability
+
+Process-local counters live at [`cache/stats.py`](../src/dbt_graphql/cache/stats.py):
+
+```python
+from dbt_graphql.cache import stats
+
+stats.result.hit          # TTL hit (steady state)
+stats.result.coalesced    # woke from lock to populated cache (singleflight win)
+stats.result.miss         # ran the warehouse
+```
+
+The split between `hit` and `coalesced` matters operationally: a high `coalesced:miss` ratio means singleflight is doing real work; a high `hit:miss` ratio means TTLs are well-tuned.
+
+`stats.reset()` clears all counters — used by the test suite between runs.
+
+---
+
+## 8. Backend
+
+A single cashews URI:
+
+```yaml
+cache:
+  url: "mem://?size=10000"             # default — single-replica
+  # url: "redis://localhost:6379/0"    # multi-replica: shares cache + locks across pods
+```
+
+The lock key uses the same prefix as the cache value (`{key}:lock`, not `lock:{key}`), so a Redis URI moves both the cache entries and the singleflight locks to Redis — coalescing crosses replicas, not just per-process. See [cashews](https://github.com/Krukov/cashews) for the URI grammar (TLS, sentinel, cluster, etc.).
+
+---
+
+## 9. Things the cache deliberately doesn't do
+
+- **No parse cache, no compiled-plan cache.** Both savings are dwarfed by the warehouse roundtrip; see § 1.
+- **No refresh-key invalidation (Cube-style).** Probes hit the warehouse on their own schedule and create coordination problems at scale. Wall-clock TTL is sufficient for a dbt-backed analytics API where data updates on dbt's schedule.
+- **No mutation-driven invalidation.** Writes don't flow through dbt-graphql; they happen via dbt jobs out-of-band. Nothing to invalidate on.
+- **No Automatic Persisted Queries (APQ).** Not in the GraphQL spec; an Apollo extension.
+- **No per-query `@cached(ttl:)` directive override.** A single global TTL covers the common case. Per-table freshness, if ever needed, belongs alongside the dbt model definition — not as a parallel block in the operator config.
+
+---
+## MCP Server
+docs/mcp.md
+
+# MCP Server
+
+The surface LLM agents actually use. Structured around **how agents plan queries**, not around the HTTP API.
+
+**Sources:** [`src/dbt_graphql/mcp/server.py`](../src/dbt_graphql/mcp/server.py), [`src/dbt_graphql/mcp/discovery.py`](../src/dbt_graphql/mcp/discovery.py)
+
+See [architecture.md](architecture.md) for the design principle behind MCP-first positioning.
+
+---
+
+## Table of contents
+
+- [1. Tools](#tools)
+- [2. `SchemaDiscovery` — the engine behind the tools](#schemadiscovery--the-engine-behind-the-tools)
+- [3. Transport](#transport)
+- [4. Observability](#observability)
+- [5. Why MCP-first matters](#why-mcp-first-matters)
+
+---
+
+## Tools
+
+| Tool                                | Purpose                                                              |
+|-------------------------------------|----------------------------------------------------------------------|
+| `list_tables(filter?)`              | Tables the caller's policy authorizes — name, description, counts. Optional case-insensitive `filter` substring matches name or description. |
+| `describe_table(name)`              | Column details for an authorized table; blocked columns are hidden.  |
+| `find_path(from_table, to_table)`   | Shortest join path(s) via BFS on the relationship graph.             |
+| `explore_relationships(table_name)` | Authorized tables related to the given one (outgoing / incoming).    |
+| `trace_column_lineage(table, column)` | Upstream sources and downstream consumers for a column, derived from dbt's column-level lineage. Edges to unauthorized tables are stripped. |
+| `build_query(table, fields)`        | Generate a GraphQL query string; filters fields by policy.           |
+| `run_graphql(query, variables?)`    | Execute a GraphQL query through the same engine that backs `/graphql`. Subject to the same query guards (depth, field count, list-pagination cap) as the HTTP endpoint. |
+
+### Resources
+
+| URI | Purpose |
+|---|---|
+| `dbt-graphql://usage-guide` | Markdown workflow guide for LLM agents — recommended call order, query-guard limits, `where`-arg semantics, and policy invariants. Exposed as an MCP **resource** (not a tool) so clients can stream it into agent context without burning a tool call. |
+
+Each response includes `_meta.next_steps` — a short list guiding the agent's next tool call. This encodes the expected workflow (`list_tables` → `describe_table` → `find_path` → `build_query` → `run_graphql`) in the tool surface itself, reducing the need for system-prompt engineering on the agent side.
+
+### Authorization model
+
+The MCP server sits behind the same Starlette `AuthenticationMiddleware` as `/graphql`, so every request carries a verified JWT (or the empty anonymous payload). All tools honour the same `AccessPolicy` that gates GraphQL:
+
+- Discovery tools (`list_tables`, `describe_table`, `explore_relationships`, `trace_column_lineage`, `build_query`) **filter** their output to tables and columns the caller is authorized to see. There is no leak via "the schema lists a table I can't read."
+- `run_graphql` re-executes the query through the **same Ariadne schema** with the **same per-request context** the HTTP layer would have built. Column allow-lists, masks, and row filters all apply structurally — there is no second authorization path to drift from the GraphQL one.
+
+There is no raw-SQL tool. `run_graphql` is the only data-read tool, by design — raw SQL cannot be policy-enforced without parsing arbitrary statements, and "let the LLM execute SQL it wrote" is exactly the bypass the access policy exists to prevent.
+
+---
+
+## `SchemaDiscovery` — the engine behind the tools
+
+[`src/dbt_graphql/mcp/discovery.py`](../src/dbt_graphql/mcp/discovery.py)
+
+`SchemaDiscovery` derives **structure** (tables, columns, types, FK relationships) from the same `TableRegistry` that GraphQL serves. The dbt `ProjectInfo` is layered on as **manifest-only metadata** — table/column descriptions and declared enum values. Discovery never queries the warehouse: the manifest is the single source of truth. This means MCP cannot expose a table or column that GraphQL won't, and cannot leak data through "metadata" disguised as schema.
+
+- Builds a **bidirectional adjacency list** at construction time by walking the registry: every `RelationDef` on a column becomes two edges (outgoing from the owning table, incoming on the target).
+- `find_path()` runs BFS level-by-level, returning *all* shortest paths so the agent can choose between e.g. `orders → customers` and `orders → payments → customers`.
+- `describe_table()` returns column metadata derived from the manifest: SQL type, nullability, uniqueness, dbt description, and declared enum values when present.
+- `build_query()` validates the candidate query against the live GraphQL schema (`graphql.validate`) before returning, so an agent never receives a string that won't parse.
+
+---
+
+## Transport
+
+The MCP server uses **Streamable HTTP transport** (FastMCP's default). It mounts at `/mcp` when `serve.mcp_enabled: true` in `config.yml`, alongside the always-on GraphQL endpoint at `/graphql`. Both share one uvicorn process, one auth middleware, and one connection pool.
+
+MCP input arrives as `POST /mcp`; server-to-client events stream via `GET /mcp` (SSE).
+
+---
+
+## Observability
+
+fastmcp ships native OTel support built on `opentelemetry-api` (a hard dep of fastmcp, no extras required). Every tool call automatically emits a `SERVER` span with RPC semantic conventions (`rpc.system: "mcp"`, `rpc.method`, `rpc.service`) and FastMCP-specific attributes. Spans are no-ops unless a traces endpoint is configured — set `monitoring.traces.endpoint` and `monitoring.traces.protocol` in `config.yml` (see [configuration.md](configuration.md)). Distributed trace propagation via `traceparent`/`tracestate` in MCP request meta is also supported.
+
+---
+
+## Why MCP-first matters
+
+An HTTP GraphQL endpoint assumes the consumer knows what to ask. An MCP surface assumes the consumer is *learning what to ask*. The latter is the agent workflow.
+
+- GraphJin added MCP in v3 and positions it as the primary agent interface.
+- Wren Engine ships an MCP server on top of its MDL.
+- dbt-graphql adopts the same pattern — but grounded in dbt artifacts rather than a live DB or a separate modeling language.
+
+---
+## Codebase Summary
+docs/codebase-summary.md
+
+# Codebase Summary
+
+Source layout for `dbt-graphql` v0.1.0. The package lives under `src/dbt_graphql/`.
+
+```
+src/dbt_graphql/
+├── __init__.py              # Public API: extract_project(), format_graphql()
+├── cli.py                   # CLI entry point (--config, --output)
+├── config.py                # Pydantic Settings (AppConfig) with env-var overrides
+├── defaults.py              # Hard-coded runtime constants (pool sizes, TTLs, limits)
+├── monitoring.py            # OTel SDK bootstrap, tracer/provider setup, timed() helper
+├── pipeline.py              # Orchestration: artifacts → 3 processors → ProjectInfo IR
+│
+├── cache/                   # Result cache + singleflight between HTTP and warehouse
+│   ├── __init__.py
+│   ├── config.py            # CacheConfig Pydantic model (url, ttl, lock_safety_timeout)
+│   ├── keys.py              # SHA-256 cache key derivation from SQL + bound params
+│   ├── result.py            # execute_with_cache() — TTL cache + singleflight lock
+│   ├── setup.py             # Lifespan hooks for cache init/shutdown
+│   └── stats.py             # Hit/miss/coalesce counters, OTel counter emission
+│
+├── compiler/                # GraphQL → SQL compilation
+│   ├── __init__.py
+│   ├── connection.py        # DatabaseManager — async SQLAlchemy engine + pool
+│   └── query.py             # compile_query() — correlated subqueries with JSON aggregation
+│
+├── dbt/                     # dbt artifact loading & processing
+│   ├── __init__.py
+│   ├── artifacts.py         # load_catalog(), load_manifest() — schema-aware readers
+│   └── processors/          # Three independent processors, one per input surface
+│       ├── __init__.py
+│       ├── compiled_sql.py  # sqlglot lineage extraction + JOIN mining (dbt-colibri core)
+│       ├── constraints.py   # PK/FK extraction from dbt v1.5+ contracts
+│       └── data_tests.py    # Enum detection + FK relationships from dbt tests
+│
+├── formatter/               # IR → GraphQL SDL conversion
+│   ├── __init__.py
+│   ├── graphql.py           # build_registry() — ProjectInfo → TableRegistry;
+│   │                        # format_graphql() — TableRegistry → SDL string
+│   └── schema.py            # parse_db_graphql() — SDL → TableRegistry (round-trip)
+│
+├── graphql/                 # GraphQL serving layer
+│   ├── __init__.py
+│   ├── app.py               # GraphQLBundle — ASGI sub-app (schema + context + error handler)
+│   ├── resolvers.py         # Per-table async resolvers (query → compile → execute)
+│   ├── guards.py            # Depth, field count, and limit validation rules
+│   ├── policy.py            # PolicyEngine — RBAC evaluation (allow/deny, masks, row filters)
+│   ├── row_filter.py        # Hasura-style DSL → SQLAlchemy ColumnElement compiler
+│   ├── monitoring.py        # OTel metrics + HTTP request handler instrumentation
+│   └── auth/                # JWT verification (OAuth 2.0 Resource Server)
+│       ├── __init__.py
+│       ├── backend.py       # Starlette AuthenticationBackend integration
+│       ├── keys.py          # JWKS resolver + static key resolvers (env, file, URL)
+│       └── verifier.py      # JWT signature verification + claims validation
+│
+├── ir/                      # Intermediate Representation
+│   ├── __init__.py
+│   └── models.py            # Pydantic domain models:
+│                            #   ProjectInfo, ModelInfo, ColumnInfo, RelationshipInfo
+│
+├── mcp/                     # MCP server for LLM agents
+│   ├── __init__.py
+│   ├── server.py            # FastMCP server — 7 tools (list, describe, find_path, etc.)
+│   ├── discovery.py         # SchemaDiscovery — table search, BFS join-path finding,
+│   │                        #   live enrichment (row counts, sample rows, value summaries)
+│   └── usage_guide.md       # Internal usage guide for MCP tool responses
+│
+└── serve/                   # Server assembly
+    ├── __init__.py          # run() — uvicorn entry point
+    └── app.py               # create_app() — Starlette composition (lifespan, middleware)
+```
+
+## Module descriptions
+
+### Top-level modules
+
+| Module          | Role                                                                                                                                                       |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `__init__.py`   | Public API surface. Exposes `extract_project()` and `format_graphql()` for library usage.                                                                  |
+| `cli.py`        | CLI entry point. Parses `--config` and `--output` flags; delegates to generate or serve mode.                                                              |
+| `config.py`     | Pydantic Settings model (`AppConfig`) with YAML file loading and `DBT_GRAPHQL__*` env-var override support.                                                |
+| `defaults.py`   | Centralized hard-coded constants — pool sizes, cache TTLs, query guard defaults, OTel service name.                                                        |
+| `monitoring.py` | OpenTelemetry SDK bootstrap. Creates tracer provider, configures exporters, provides a `timed()` async context manager for span recording.                 |
+| `pipeline.py`   | Orchestration layer. Loads dbt artifacts, runs three independent processors, merges relationships with priority ordering, and produces a `ProjectInfo` IR. |
+
+### `cache/` — Result cache + singleflight
+
+| Module      | Role                                                                                                       |
+| ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `config.py` | `CacheConfig` Pydantic model defining cache URL, TTL, and lock safety timeout.                             |
+| `keys.py`   | Derives deterministic SHA-256 cache keys from rendered SQL and bound parameter values.                     |
+| `result.py` | `execute_with_cache()` — wraps resolver execution with TTL-based caching and singleflight lock coalescing. |
+| `setup.py`  | Lifespan hooks that initialize and shut down the cache backend (memory or Redis).                          |
+| `stats.py`  | OTel counter for cache outcomes (hit, miss, coalesced) with per-outcome attributes.                        |
+
+### `compiler/` — GraphQL → SQL
+
+| Module          | Role                                                                                                                                                                               |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `connection.py` | `DatabaseManager` — manages async SQLAlchemy engine creation, pool sizing, and connection lifecycle.                                                                               |
+| `query.py`      | `compile_query()` — translates GraphQL selection sets into dialect-aware SQL using correlated subqueries and JSON aggregation (JSONB_AGG for PostgreSQL, JSON_ARRAYAGG for MySQL). |
+
+### `dbt/` — dbt artifact loading & processing
+
+| Module                       | Role                                                                                                                                               |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `artifacts.py`               | Loads and validates `catalog.json` and `manifest.json` using `dbt-artifacts-parser`. Supports dbt schema versions v1–v12.                          |
+| `processors/compiled_sql.py` | Extracts column lineage and discovers FK relationships from compiled SQL using sqlglot AST analysis (absorbed dbt-colibri core logic).             |
+| `processors/constraints.py`  | Extracts primary key and foreign key relationships from dbt v1.5+ contract constraints using sqlglot-based FK parsing.                             |
+| `processors/data_tests.py`   | Detects enums from `accepted_values` tests and FK relationships from `relationships` tests. Reads `meta.relationship_name` and `meta.description`. |
+
+### `formatter/` — IR → GraphQL SDL
+
+| Module       | Role                                                                                                                                                        |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `graphql.py` | `build_registry()` converts `ProjectInfo` to a `TableRegistry` (Python schema objects). `format_graphql()` serializes the registry to a GraphQL SDL string. |
+| `schema.py`  | `parse_db_graphql()` parses an existing GraphQL SDL file back into a `TableRegistry`, enabling round-trip workflow.                                         |
+
+### `graphql/` — GraphQL serving layer
+
+| Module             | Role                                                                                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `app.py`           | `GraphQLBundle` — Ariadne-based ASGI sub-app that wires together schema, context, and error handling.                                                 |
+| `resolvers.py`     | Per-table async resolvers. Each resolver calls `compile_query()` and executes the resulting SQL against the warehouse.                                |
+| `guards.py`        | Validation rules that reject queries exceeding `query_max_depth`, `query_max_fields`, or `query_max_limit`.                                           |
+| `policy.py`        | `PolicyEngine` — evaluates RBAC policies against JWT claims. Produces `ResolvedPolicy` with allowed columns, masks, row filters, and blocked columns. |
+| `row_filter.py`    | Compiles the Hasura-style row filter DSL (from YAML policy config) into SQLAlchemy `ColumnElement` clauses for injection into SQL WHERE clauses.      |
+| `monitoring.py`    | OTel metrics collection and HTTP handler instrumentation for the GraphQL layer.                                                                       |
+| `auth/backend.py`  | Starlette `AuthenticationBackend` integration. Extracts Bearer token and delegates to the verifier.                                                   |
+| `auth/keys.py`     | Key resolution strategies: `JWKSResolver` (rotating key set via httpx) and `StaticKeyResolver` (env var, file, URL).                                  |
+| `auth/verifier.py` | JWT signature verification and claims validation (`exp`, `nbf`, `aud`, `iss`, `required_claims`) using joserfc.                                       |
+
+### `ir/` — Intermediate Representation
+
+| Module      | Role                                                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `models.py` | Pydantic domain models that form the contract between extraction and all downstream consumers: `ProjectInfo`, `ModelInfo`, `ColumnInfo`, `RelationshipInfo`. |
+
+### `mcp/` — MCP server for LLM agents
+
+| Module         | Role                                                                                                                                                                   |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.py`    | FastMCP server registration with 7 tools: `list_tables`, `describe_table`, `find_path`, `explore_relationships`, `trace_column_lineage`, `build_query`, `run_graphql`. |
+| `discovery.py` | `SchemaDiscovery` — BFS-based join path finding, table search, and live DB enrichment (row counts, sample rows, value summaries with configurable budget).             |
+
+### `serve/` — Server assembly
+
+| Module        | Role                                                                                                                              |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `__init__.py` | `run()` — uvicorn entry point that starts the Starlette app.                                                                      |
+| `app.py`      | `create_app()` — assembles the Starlette application with lifespan hooks, middleware stack, and mounted sub-apps (GraphQL + MCP). |
+
+---
+## Code Standards
+docs/code-standards.md
+
+# Code Standards
+
+Coding conventions and tooling standards for the dbt-graphql project.
+
+---
+
+## Language & runtime
+
+- **Python 3.11–3.13** (pinned in `pyproject.toml`: `>=3.11,<3.14`)
+- Full type hints on all public functions and methods
+- Pydantic v2 for configuration models and IR domain models
+
+## Type system
+
+- **Pydantic v2 BaseModel** — used for all configuration (`AppConfig`, `CacheConfig`, `JWTConfig`) and IR models (`ProjectInfo`, `ModelInfo`, `ColumnInfo`, `RelationshipInfo`)
+- **Standard library `@dataclass`** — used for internal processor types (mutable, lightweight, no validation needed)
+- **Type aliases** — used where it improves readability
+- Crossing the dataclass→Pydantic boundary is a deliberate step in `pipeline.extract_project()`
+
+## Async
+
+- `async`/`await` throughout the serve layer
+- Async database drivers: `asyncpg` (PostgreSQL), `aiomysql` (MySQL/MariaDB/Doris)
+- Ariadne async resolvers
+- `httpx.AsyncClient` for JWKS fetching
+- `pytest-asyncio` for async test support
+
+## Testing
+
+- **Framework**: pytest + pytest-asyncio + pytest-docker
+- **Layers**:
+  - Unit tests — pure logic (cache keys, compiler, policy evaluation, row filter DSL, formatter)
+  - Integration tests — PostgreSQL + MySQL parametrized with Docker fixtures
+- **Docker fixtures**: `postgres:5433`, `mysql:3307`, `redis:6380` (non-standard ports to avoid host conflicts)
+- **Coverage**: `pytest-cov` configured in `pyproject.toml`
+- **Test data**: `tests/` directory mirrors `src/dbt_graphql/` structure
+
+## Naming conventions
+
+| Element                       | Convention         | Example                                          |
+| ----------------------------- | ------------------ | ------------------------------------------------ |
+| Functions, methods, variables | `snake_case`       | `extract_project()`, `compile_query()`           |
+| Classes                       | `PascalCase`       | `ProjectInfo`, `PolicyEngine`, `DatabaseManager` |
+| Constants                     | `UPPER_SNAKE_CASE` | `MAX_DEPTH`, `DEFAULT_TTL`                       |
+| Modules, packages             | `snake_case`       | `row_filter.py`, `cache/`                        |
+| Pydantic model fields         | `snake_case`       | `jwks_url`, `lock_safety_timeout`                |
+| Config file keys              | `snake_case`       | `query_max_depth`, `mcp_enabled`                 |
+
+## Module patterns
+
+### Processor pattern
+
+Each processor under `dbt/processors/` has a single responsibility corresponding to one input surface:
+
+- `constraints.py` — dbt contract constraints
+- `data_tests.py` — dbt data tests
+- `compiled_sql.py` — compiled SQL analysis
+
+Processors are independent, composable, and produce lightweight `@dataclass` types.
+
+### IR pattern
+
+The Intermediate Representation (`ir/models.py`) is the single boundary between extraction and all downstream consumers (formatters, compilers, MCP tools). No module downstream of the IR reads dbt artifacts directly. This makes it tractable to add alternative output formats or swap the upstream source.
+
+### Config pattern
+
+All configuration uses Pydantic Settings with:
+
+1. YAML file loading (`config.yml`)
+2. Environment variable override with `DBT_GRAPHQL__` prefix and `__` nested delimiter
+3. Hard-coded defaults in `defaults.py`
+4. Precedence: init > env > file > defaults
+
+## Logging
+
+- **loguru** — structured logging throughout
+- **OTel intercept** — log records are bridged to OpenTelemetry log signals
+- Log levels configurable via `monitoring.logs.level`
+
+## Observability
+
+- **OpenTelemetry** for all three signals: traces, metrics, logs
+- Auto-instrumentation for SQLAlchemy, Starlette, and httpx
+- Custom OTel metrics for cache outcomes, auth results, and connection wait times
+- `timed()` async context manager for consistent span recording
+- Exporters: OTLP over HTTP or gRPC (configurable per signal)
+
+## SQL
+
+- **SQLAlchemy Core** (not ORM) for all database interaction
+- Correlated subqueries for nested GraphQL relations (not LATERAL joins)
+- Dialect-aware JSON aggregation via `@compiles` extensions
+- No raw SQL strings in the data-access path — all user-facing filters compile through SQLAlchemy expressions
+
+## Security
+
+- **Secure by default** — auth is on, introspection is off in production
+- **Deny-wins** policy merge — deny rules always take precedence over allow rules
+- **No silent column stripping** — unauthorized columns produce structured `FORBIDDEN_COLUMN` errors
+- **Compile-time enforcement** — row filters, masks, and column restrictions are injected into SQL at compile time
+- **No template engines in the data path** — row filter DSL compiles to SQLAlchemy `ColumnElement`, not interpolated SQL strings
+
+## Error handling
+
+- Structured GraphQL errors with `extensions.code` field
+- Error codes: `FORBIDDEN_TABLE`, `FORBIDDEN_COLUMN`, `POOL_TIMEOUT`, `MAX_LIMIT_EXCEEDED`, `POLICY_MASK_CONFLICT`, `QUERY_TOO_DEEP`, `QUERY_TOO_COMPLEX`
+- HTTP status code mapping: 503 for pool timeout, 401 for auth failure
+
+## Dependencies
+
+### Core dependencies
+
+| Package                         | Purpose                                              |
+| ------------------------------- | ---------------------------------------------------- |
+| `ariadne`                       | GraphQL execution engine (async)                     |
+| `graphql-core`                  | GraphQL AST parsing and validation                   |
+| `sqlalchemy[asyncio]`           | Async database access (Core, not ORM)                |
+| `sqlglot`                       | SQL parsing for lineage extraction                   |
+| `dbt-artifacts-parser`          | Schema-aware dbt artifact loading                    |
+| `dbt-colibri`                   | Column lineage traversal (core logic absorbed)       |
+| `pydantic-settings`             | Configuration with YAML + env-var support            |
+| `simpleeval`                    | Safe expression evaluation for policy `when` clauses |
+| `cashews`                       | Result cache + singleflight                          |
+| `joserfc`                       | JWT/JWS/JWK primitives                               |
+| `fastmcp`                       | MCP server framework                                 |
+| `uvicorn[standard]`             | ASGI server                                          |
+| `loguru`                        | Structured logging                                   |
+| `opentelemetry-sdk` + exporters | Observability (traces, metrics, logs)                |
+
+### Optional dependencies
+
+| Extra      | Package    | Purpose                               |
+| ---------- | ---------- | ------------------------------------- |
+| `postgres` | `asyncpg`  | PostgreSQL async driver               |
+| `mysql`    | `aiomysql` | MySQL/MariaDB/Doris async driver      |
+| `redis`    | `redis`    | Redis cache backend for multi-replica |
+
+## Build
+
+- **Build backend**: `uv_build` (uv's build backend)
+- **Package manager**: uv
+- **Entry point**: `dbt-graphql = "dbt_graphql.cli:main"`
+
+## Linting
+
+- **ruff** — fast Python linter and formatter
+- **ty** — type checking
+
+---
+## Design Guidelines
+docs/design-guidelines.md
+
+# Design Guidelines
+
+Design principles and patterns for contributors to dbt-graphql.
+
+---
+
+## Core principles
+
+These are the tiebreakers. When in doubt, refer to these.
+
+1. **The dbt project is the source of truth** — We do not ask users to author a second modeling layer. If dbt has a `relationships` test, it is an edge in the graph. If dbt has `unique`, it is a `@unique` directive. The cost of adopting dbt-graphql is approximately zero beyond "keep your dbt project clean." Consequence: dbt-graphql cannot invent metadata the dbt project doesn't have.
+
+2. **A single format-agnostic IR** — `ProjectInfo` is the boundary between dbt and formatters. Every formatter, compiler, and MCP tool consumes `ProjectInfo` — never `manifest.json` directly. This makes it tractable to add alternative output formats or swap the upstream source without touching the rest of the code.
+
+3. **Dataclasses for processors, Pydantic for IR** — `dbt/processors/*` produce lightweight `@dataclass` types (internal, mutable, fast). `ir/models.py` uses `BaseModel` (long-lived contract, needs validation and serialization). Crossing the boundary is a deliberate step in `pipeline.extract_project()`.
+
+4. **Preserve the SQL type** — GraphQL field gets a standard scalar (`Int`, `Float`, `String`) for tooling compatibility; `@column(type: "NUMERIC", size: "10,2")` preserves the exact database type. The compiler never reverse-engineers SQL types from GraphQL scalars.
+
+5. **Read-only by design** — No mutations, no writes. The target is always a `SELECT` tree. Removes an entire class of write-path risk.
+
+6. **MCP-first for agents** — The primary consumer is an agent, not a human. The MCP server is designed around how agents actually plan: list → describe → find path → build query → execute.
+
+7. **Cross-warehouse, not Postgres-only** — SQL emitted via SQLAlchemy Core with `@compiles` extensions for dialect-specific rewrites. No LATERAL joins (Apache Doris compatibility).
+
+8. **Don't parse what dbt already parsed** — `dbt-artifacts-parser` owns manifest/catalog validation. `sqlglot` owns SQL parsing. `sqlalchemy` owns SQL generation. `graphql-core` owns GraphQL parsing. `ariadne` owns execution. dbt-graphql is the glue.
+
+---
+
+## The IR boundary
+
+The Intermediate Representation is the most important architectural constraint.
+
+```
+  dbt artifacts  →  processors  →  ProjectInfo (IR)  →  formatters / compiler / MCP
+  ──────────────────────────────────────────────────────────────────────────────────
+                    LEFT OF IR                        RIGHT OF IR
+```
+
+**Rules:**
+
+- Processors (left of IR) may read dbt artifacts and produce `@dataclass` types.
+- `pipeline.extract_project()` converts processor types into Pydantic IR types.
+- Everything right of the IR (`formatter/`, `compiler/`, `graphql/`, `mcp/`) consumes `ProjectInfo` — never raw artifacts.
+- When adding a new output format, write a new consumer of `ProjectInfo`. Do not modify processors.
+
+---
+
+## Processor pattern
+
+Each module under `dbt/processors/` corresponds to one input surface:
+
+| Processor         | Input                    | Output                                 |
+| ----------------- | ------------------------ | -------------------------------------- |
+| `constraints.py`  | dbt contract constraints | PK/FK `RelationshipInfo`               |
+| `data_tests.py`   | dbt data tests           | Enums + FK `RelationshipInfo`          |
+| `compiled_sql.py` | Compiled SQL via sqlglot | Column lineage + FK `RelationshipInfo` |
+
+**Guidelines:**
+
+- Processors are independent — no processor depends on another's output.
+- Each processor produces lightweight `@dataclass` types, not Pydantic models.
+- Relationship merging with priority ordering happens in `pipeline.py`, not in processors.
+- When adding a new relationship source, create a new processor file.
+
+---
+
+## Config pattern
+
+All configuration follows the same pattern:
+
+```
+defaults.py  →  config.yml  →  DBT_GRAPHQL__* env vars  →  init arguments
+(lowest)                                              (highest)
+```
+
+**Guidelines:**
+
+- New config fields go into the appropriate Pydantic Settings model.
+- Hard-coded defaults live in `defaults.py`, not in the Pydantic model.
+- Every config field must be overridable via environment variable (automatic with Pydantic Settings).
+- Document new config fields in `config.example.yml` and `docs/configuration.md`.
+
+---
+
+## Testing patterns
+
+### Unit tests
+
+- Test pure logic in isolation: cache keys, compiler output, policy evaluation, row filter DSL, formatter output.
+- Mock external dependencies (database connections, HTTP calls).
+- No Docker required.
+
+### Integration tests
+
+- Use `pytest-docker` for PostgreSQL, MySQL, and Redis fixtures.
+- Non-standard ports (5433, 3307, 6380) to avoid host conflicts.
+- Parametrize across databases where behavior differs.
+
+### Test structure
+
+```
+tests/
+├── test_cache/           # Cache key derivation, TTL, singleflight
+├── test_compiler/        # SQL compilation, dialect-specific output
+├── test_dbt/             # Artifact loading, processor output
+├── test_formatter/       # SDL generation, round-trip parsing
+├── test_graphql/         # Auth, guards, policy, resolvers, row filter
+├── test_mcp/             # MCP tools, discovery, enrichment
+├── test_cli/             # CLI argument parsing
+└── test_integration/     # Full-stack HTTP tests with Docker
+```
+
+**Guidelines:**
+
+- Every new feature needs both unit and integration tests.
+- Policy tests must cover: allowed access, denied access, cross-cutting deny precedence, mask conflicts, missing JWT claims.
+- Compiler tests must cover each supported database dialect.
+
+---
+
+## Security principles
+
+1. **Secure by default** — `dev_mode: false` requires JWT config and disables introspection. The server fails to start if security is misconfigured.
+
+2. **Deny-wins** — Any matching deny rule takes precedence over all matching allow rules. This makes cross-cutting prohibitions ("contractors never see PII") trivially correct.
+
+3. **No silent column stripping** — Unauthorized columns produce structured `FORBIDDEN_COLUMN` errors, not empty values. Clients always know when they're being restricted.
+
+4. **Compile-time enforcement** — Row filters, masks, and column restrictions are injected into SQL at compile time. They cannot be bypassed at runtime.
+
+5. **No template engines in the data path** — Row filter DSL compiles to SQLAlchemy `ColumnElement` expressions. Values bind as parameters, never interpolated into SQL strings.
+
+6. **Fail-closed on auth errors** — Invalid or missing JWT returns HTTP 401 with `WWW-Authenticate: Bearer` header per RFC 6750.
+
+---
+
+## Error handling
+
+GraphQL errors use structured extensions:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Table 'orders' is not accessible",
+      "extensions": {
+        "code": "FORBIDDEN_TABLE",
+        "table": "orders"
+      }
+    }
+  ]
+}
+```
+
+**Standard error codes:**
+
+| Code                   | HTTP status | Meaning                                             |
+| ---------------------- | ----------- | --------------------------------------------------- |
+| `FORBIDDEN_TABLE`      | 200         | Table not covered by any matching allow policy      |
+| `FORBIDDEN_COLUMN`     | 200         | Column not in allowed set                           |
+| `POOL_TIMEOUT`         | 503         | Connection pool checkout timed out                  |
+| `MAX_LIMIT_EXCEEDED`   | 200         | `limit`/`first` exceeds `query_max_limit`           |
+| `POLICY_MASK_CONFLICT` | 200         | Two matching policies disagree on a mask expression |
+| `QUERY_TOO_DEEP`       | 200         | Selection depth exceeds `query_max_depth`           |
+| `QUERY_TOO_COMPLEX`    | 200         | Total field count exceeds `query_max_fields`        |
+
+**Guidelines:**
+
+- New error conditions must use a unique `extensions.code`.
+- Error messages are human-readable; `extensions.code` is machine-readable.
+- Pool timeout is the only error that maps to a non-200 HTTP status (503 + `Retry-After`).
+
+---
+
+## Detailed references
+
+| Document                                    | Content                                                     |
+| ------------------------------------------- | ----------------------------------------------------------- |
+| [Architecture & Design](architecture.md)    | Full design principles, pipeline flow, landscape comparison |
+| [Code Standards](code-standards.md)         | Language, tooling, and naming conventions                   |
+| [Access Policy](access-policy.md)           | Policy DSL, evaluation rules, error responses               |
+| [Security](security.md)                     | JWT verification, threat model, key management              |
+| [Configuration Reference](configuration.md) | Full config surface with env-var precedence                 |
+
+---
+## Project Roadmap
+docs/project-roadmap.md
+
+# Project Roadmap
+
+Centralized tracking for all planned features. Items are grouped by priority and ordered within each group. Shipped items are listed first.
+
+---
+
+## Shipped (v0.1.0)
+
+| #   | Feature                                                                   | Status |
+| --- | ------------------------------------------------------------------------- | ------ |
+| 1   | dbt artifact parsing (`catalog.json` + `manifest.json`, dbt v1–v12)       | ✅     |
+| 2   | SQL→GraphQL type mapping with automatic enum detection                    | ✅     |
+| 3   | Relationship derivation (constraints > data tests > compiled SQL lineage) | ✅     |
+| 4   | Column-level lineage via sqlglot + dbt-colibri                            | ✅     |
+| 5   | GraphQL API with Ariadne (async, correlated subqueries)                   | ✅     |
+| 6   | Multi-database support (PostgreSQL, MySQL, MariaDB, Doris)                | ✅     |
+| 7   | JWT authentication (OAuth 2.0 Resource Server model)                      | ✅     |
+| 8   | RBAC with allow/deny effects, column-level security                       | ✅     |
+| 9   | Row-level security (Hasura-style structured filter DSL)                   | ✅     |
+| 10  | Data masking (SQL expression injection at compile time)                   | ✅     |
+| 11  | Result cache + singleflight (cashews, Redis for multi-replica)            | ✅     |
+| 12  | Pool admission control (HTTP 503 + Retry-After)                           | ✅     |
+| 13  | MCP server (7 tools: discovery, join paths, query execution)              | ✅     |
+| 14  | OpenTelemetry instrumentation (traces, metrics, logs)                     | ✅     |
+| 15  | Config-driven CLI with generate and serve modes                           | ✅     |
+| 16  | HTTP MCP transport (Streamable HTTP via FastMCP)                          | ✅     |
+| 17  | MCP live enrichment (row counts, sample rows, value summaries)            | ✅     |
+
+---
+
+## P0 — Next up
+
+### Relay-style cursor pagination
+
+- Adopt Relay-style connections as an optional resolver shape per table
+- Opaque base64 cursors from `(order_by_value, primary_key)` tuples with HMAC signing
+- `first/after` (forward) and `last/before` (backward) args
+- `query_max_limit` becomes per-page ceiling; default injection for unbounded queries
+
+### Query Allow-List
+
+- Dev mode: auto-record normalized query hashes to `allowlist.json`
+- Production mode: reject non-allowlisted queries with HTTP 403
+- SHA256 hash of normalized query (stripped whitespace, field order-normalized)
+
+### Audit Logging
+
+- Per-request structured logs (user, roles, tables, columns, masks, filters, duration)
+- Emitted via loguru + OTel span attributes
+- Covers GDPR, SOC2, and data governance compliance needs
+
+### MCP SOTA Surface
+
+- `get_query_syntax()` tool — static dialect guide
+- `search_tables(query, limit)` tool — lexical table search
+- MCP Resources: `schema://overview`, `schema://table/{name}`, `schema://examples`
+- MCP Prompt: `explore_and_query(goal)` — multi-turn stub
+
+---
+
+## P1 — Soon
+
+### Few-shot Q→GraphQL example store
+
+- `examples.yml` format with `question`, `query`, `tags`
+- Lexical retriever (`difflib` + tag overlap bonus)
+- `suggest_examples(question)` MCP tool
+
+### dbt Selector support (`--select`)
+
+- Shell out to `dbt ls` with user-provided selector string
+- Feed resolved model names as allowlist into `extract_project`
+
+### Source node inclusion
+
+- Iterate `catalog.sources` alongside `catalog.nodes`
+- Create `ModelInfo` entries for source tables that are FK targets
+
+### Hot reload of access policies
+
+- `watchfiles`-based file observer
+- Atomic swap of `PolicyEngine` reference on reload
+- Reload-failed fallback: keep previous engine, log error
+
+### Policy test harness + `policy explain` CLI
+
+- Inline test blocks in config (`tests:` schema)
+- `policy explain --jwt '...' --table customers` CLI
+- `policy test` — CI-friendly exit code + structured failure output
+
+---
+
+## P2 — Later
+
+### Column classifications
+
+- Reusable sensitivity classes (`pii`, `pii_strict`) with mask templates
+- `classifications:` loader + `columns:` tag map
+- `respects:` field on policies to bind role-to-classification
+- Optional read from dbt `meta.dbt_graphql.classification`
+
+---
+
+## P3 — Placeholder
+
+### Python extension hooks
+
+- Superset-style `dbt_graphql_config.py` overrides file
+- Stable extension API for custom JWT key resolvers, masks, audit sinks, cache backends
+- Deferred until the first feature actually needs it
+
+---
+
+## Architectural follow-ups
+
+| ID      | Item                                                                                                                                                                                                                      | Priority |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| **F.1** | **DataLoader-style sibling subquery batching** — Batch sibling relations into `WHERE id IN (...)` lookups. 2–5× warehouse concurrency reduction for result sets with repeated relations. Highest leverage remaining work. | High     |
+| **F.2** | **Query cost/complexity scoring** — `max_depth` exists but no complexity scoring. Prevents deeply nested queries that compile to expensive SQL. Pair with pool admission control.                                         | Medium   |
+| **F.3** | **Persisted queries / APQ** — Apollo-defined spec for client-supplied hashes on subsequent calls. Shares structure with Query Allow-List (Sec-E).                                                                         | Medium   |
+| **D.3** | **MCP HTTP transport e2e tests** — Protocol-level test harness for tool listing, invocation, resources, and prompts. Bake before Phase 3 adds new tools.                                                                  | Medium   |
+
+---
+
+## Recommended sequencing
+
+1. **F.1 DataLoader spike** — Design doc, spike, ship. Highest leverage of remaining work.
+2. **D.3 MCP HTTP harness** — Bake before Phase 3 (SOTA MCP surface) lands new tools.
+3. **F.2 / F.3** — Opportunistic, paired with Query Allow-List (P0) when that ships.
+
+---
+
+## Notes
+
+- Full historical details for each shipped item are in [ROADMAP.md](../ROADMAP.md).
+- Architectural follow-ups and test gaps are in [FOLLOWUPS.md](../FOLLOWUPS.md).
+- Feature-specific design docs are linked from the individual roadmap sections in `ROADMAP.md`.
