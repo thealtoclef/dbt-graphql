@@ -36,7 +36,7 @@ The schema follows a **single-entry-point envelope** pattern (Cube / GraphJin–
 - `input {T}_bool_exp` — recursive Hasura-style WHERE filter (`_and` / `_or` / `_not` plus per-column `<scalar>_comparison_exp`).
 - `input {T}_order_by` and `input {T}_group_order_by` — per-column ordering.
 
-Shared types emitted once per schema: `String_comparison_exp`, `Int_comparison_exp`, `Float_comparison_exp`, `Boolean_comparison_exp`, and `enum order_by { asc desc }`.
+Shared framework-private types emitted once per schema: `_String_comparison_exp`, `_Int_comparison_exp`, `_Float_comparison_exp`, `_Boolean_comparison_exp`, and `enum _order_by { asc desc }`. The leading underscore matches the `_sdl` / `_tables` / `_TableInfo` convention for synthesized non-dbt surface. PK columns keep their underlying scalar so they dispatch to the same comparison_exp as any other column of that type — see "Introspection signals" below for why.
 
 The query field is `{T}(where: {T}_bool_exp): {T}Result` — pagination/ordering hang off `nodes` / `group`, so `where` filters both rows and aggregates from the same envelope. The result type is **nullable** so a sub-field error (e.g. `FORBIDDEN_COLUMN`) localizes to that table without nullifying the whole `data` payload.
 
@@ -48,11 +48,11 @@ Aggregate batching: the `nodes`, `group`, and aggregate-field resolvers each com
 
 Standard GraphQL `IntrospectionQuery` only exposes a fixed set of fields on `__Type` / `__Field`; applied directives are not in that set. To make policy- and structure-relevant signals visible to GraphiQL / Apollo Studio / codegen, the executable SDL routes them through native introspection carriers wherever possible:
 
-- **Primary keys** are emitted with the built-in `ID` scalar — no custom `@id` directive is needed. `ID` is wire-compatible with `String` per the spec.
+- **Primary keys** keep their underlying scalar (`Int!`, `String!`, …) and carry an `@id` directive in the printed `db.graphql` artefact. Preserving the scalar lets `{T}_bool_exp` dispatch the correct `_<Scalar>_comparison_exp` — int PKs get numeric ops, text/UUID PKs get string ops including `_like`/`_ilike`. The PK signal travels via `@id` (visible to LLM agents through `Query._sdl`); standard `__schema` introspection no longer flags PK-ness, which is fine because no current consumer relies on that signal.
 - **dbt descriptions** on tables and columns are emitted as triple-quoted blocks above the type / field, so they show up directly in `__Type.description` and `__Field.description`.
 - **`@masked` / `@filtered`** are emitted in the printed `db.graphql` artefact when the corresponding flags are set. They will be set per principal once policy-aware introspection is wired (see `docs/policy-aware-introspection-plan.md`); today `ColumnDef.masked` / `TableDef.filtered` exist as scaffolding and are not populated at runtime.
 
-The remaining custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) do not appear in standard `__schema` introspection. They are exposed via two dedicated `Query` fields:
+The remaining custom directives (`@table`, `@column`, `@id`, `@relation`, `@unique`, `@masked`, `@filtered`) do not appear in standard `__schema` introspection. They are exposed via two dedicated `Query` fields:
 
 - **`_sdl(tables: [String!]): String!`** — the **effective** db.graphql SDL for the current caller, pruned to tables and columns the caller's `AccessPolicy` allows, with `@masked` / `@filtered` injected per the resolved policy. Without `tables`, the full caller-effective document is returned. With `tables`, the output is intersected with the given names; names the caller cannot see (denied by policy or nonexistent) are silently skipped — an unauthorized name and a missing name are indistinguishable to the client by design.
 - **`_tables: [_TableInfo!]!`** — the cheap "index page" for the visible surface. Each entry carries `name` and `description` (dbt-authored) — enough for an agent to triage candidates before paying full-SDL cost via `_sdl(tables: [...])`. Structural detail (columns, relations) is intentionally omitted; that's `_sdl`'s job. Distinct from native `__schema.types`, which also includes the per-table `_bool_exp` / `_order_by` / `Result` / `_group` types, the shared comparison_exp inputs, scalars, and `Query`.

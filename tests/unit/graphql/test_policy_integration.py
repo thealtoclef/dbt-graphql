@@ -1,4 +1,4 @@
-"""Integration tests: access policy + compile_query + SQLAlchemy.
+"""Integration tests: access policy + compile_nodes_query + SQLAlchemy.
 
 These tests compile real SQL (against the postgresql dialect) to prove that
 policy actually restricts columns, applies masks, injects row filters, and
@@ -24,7 +24,7 @@ from dbt_graphql.graphql.policy import (
     Effect,
 )
 from dbt_graphql.graphql.auth import JWTPayload
-from dbt_graphql.compiler.query import compile_query
+from dbt_graphql.compiler.query import compile_nodes_query
 from dbt_graphql.formatter.schema import (
     ColumnDef,
     RelationDef,
@@ -93,7 +93,7 @@ def _customers_orders_registry() -> tuple[TableDef, TableDef, TableRegistry]:
 def _nodes(query: str) -> list:
     """Parse a GraphQL query and return the top-level field nodes.
 
-    ``compile_query`` walks real ``graphql-core`` AST nodes at runtime;
+    ``compile_nodes_query`` walks real ``graphql-core`` AST nodes at runtime;
     tests build the same shape via ``graphql.parse`` instead of
     hand-rolled duck types so any AST change surfaces here too.
     """
@@ -143,7 +143,7 @@ def test_blocked_column_is_stripped_from_sql():
 
     fields = _nodes("{ customers { customer_id email } }")
     sql = _sql(
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -172,7 +172,7 @@ def test_includes_whitelist_in_sql():
 
     fields = _nodes("{ customers { customer_id email } }")
     sql = _sql(
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -204,7 +204,7 @@ def test_strict_includes_raises_on_unlisted_column():
     )
     fields = _nodes("{ customers { customer_id email ssn } }")
     with pytest.raises(ColumnAccessDenied) as exc_info:
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -231,7 +231,7 @@ def test_strict_excludes_raises_on_excluded_column():
     )
     fields = _nodes("{ customers { customer_id ssn } }")
     with pytest.raises(ColumnAccessDenied) as exc_info:
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -254,7 +254,7 @@ def test_default_deny_at_root_raises_table_denied():
     )
     fields = _nodes("{ customers { customer_id } }")
     with pytest.raises(TableAccessDenied) as exc_info:
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -267,7 +267,7 @@ def test_no_resolve_policy_is_unrestricted_no_op():
     """When resolve_policy=None, no enforcement — parity with old tests."""
     customers, registry = _customers_registry()
     fields = _nodes("{ customers { customer_id ssn email } }")
-    sql = _sql(compile_query(customers, fields, registry, resolve_policy=None))
+    sql = _sql(compile_nodes_query(customers, fields, registry, resolve_policy=None))
     assert "customer_id" in sql
     assert "ssn" in sql
     assert "email" in sql
@@ -294,7 +294,7 @@ def test_null_mask_appears_in_sql():
     )
     fields = _nodes("{ customers { customer_id ssn } }")
     sql = _sql(
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -323,7 +323,7 @@ def test_expression_mask_appears_in_sql():
     )
     fields = _nodes("{ customers { email } }")
     sql = _sql(
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -356,7 +356,7 @@ def test_row_filter_uses_bind_param():
     )
 
     fields = _nodes("{ customers { customer_id } }")
-    stmt = compile_query(
+    stmt = compile_nodes_query(
         customers,
         fields,
         registry,
@@ -384,7 +384,7 @@ def test_row_filter_injection_attempt_does_not_inject():
         )
     )
     fields = _nodes("{ customers { customer_id } }")
-    stmt = compile_query(
+    stmt = compile_nodes_query(
         customers,
         fields,
         registry,
@@ -416,7 +416,7 @@ def test_row_filter_combined_with_user_where():
     )
     fields = _nodes("{ customers { customer_id } }")
     sql = _sql(
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -447,7 +447,7 @@ def test_where_on_unauthorized_column_raises():
     )
     fields = _nodes("{ customers { customer_id } }")
     with pytest.raises(ColumnAccessDenied) as exc:
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -474,7 +474,7 @@ def test_order_by_on_unauthorized_column_raises():
     )
     fields = _nodes("{ customers { customer_id } }")
     with pytest.raises(ColumnAccessDenied) as exc:
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -484,11 +484,41 @@ def test_order_by_on_unauthorized_column_raises():
     assert exc.value.columns == ["ssn"]
 
 
+def test_group_order_by_on_unauthorized_dimension_raises():
+    """ORDER BY on a policy-blocked dimension column inside ``compile_group_query``
+    must also raise — same boolean side-channel risk as the nodes path."""
+    from dbt_graphql.compiler.query import compile_group_query
+
+    customers, _registry = _customers_registry()
+    engine = _engine(
+        PolicyEntry(
+            effect=Effect.ALLOW,
+            name="analyst",
+            when="True",
+            tables={
+                "customers": TablePolicy(
+                    column_level=ColumnLevelPolicy(include_all=True, excludes=["ssn"])
+                )
+            },
+        )
+    )
+    # Group-row selection: dimension ``customer_id`` is allowed; ``ssn`` is hidden.
+    fields = _nodes("{ customers { customer_id } }")
+    with pytest.raises(ColumnAccessDenied) as exc:
+        compile_group_query(
+            customers,
+            fields,
+            order_by=[{"ssn": "asc"}],
+            resolve_policy=_resolver(engine, JWTPayload({})),
+        )
+    assert exc.value.columns == ["ssn"]
+
+
 def test_no_policy_compiles_identically_to_no_argument():
     customers, registry = _customers_registry()
     fields = _nodes("{ customers { customer_id email } }")
-    baseline = _sql(compile_query(customers, fields, registry))
-    with_none = _sql(compile_query(customers, fields, registry, resolve_policy=None))
+    baseline = _sql(compile_nodes_query(customers, fields, registry))
+    with_none = _sql(compile_nodes_query(customers, fields, registry, resolve_policy=None))
     assert baseline == with_none
 
 
@@ -515,7 +545,7 @@ def test_nested_relation_denies_when_target_table_unlisted():
     )
     fields = _nodes("{ customers { customer_id primary_order { order_id } } }")
     with pytest.raises(TableAccessDenied) as exc_info:
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -545,7 +575,7 @@ def test_nested_relation_strict_column_rejects_unauthorized_child_column():
         "{ customers { customer_id primary_order { order_id internal_notes } } }"
     )
     with pytest.raises(ColumnAccessDenied) as exc_info:
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -578,7 +608,7 @@ def test_nested_relation_mask_applied_inside_subquery():
         "{ customers { customer_id primary_order { order_id internal_notes } } }"
     )
     sql = _sql(
-        compile_query(
+        compile_nodes_query(
             customers,
             fields,
             registry,
@@ -613,7 +643,7 @@ def test_nested_relation_row_filter_applied_to_subquery():
         )
     )
     fields = _nodes("{ customers { customer_id primary_order { order_id } } }")
-    stmt = compile_query(
+    stmt = compile_nodes_query(
         customers,
         fields,
         registry,
@@ -657,7 +687,7 @@ def test_nested_relation_row_filter_AND_mask_both_inside_subquery():
     fields = _nodes(
         "{ customers { customer_id primary_order { order_id internal_notes } } }"
     )
-    stmt = compile_query(
+    stmt = compile_nodes_query(
         customers,
         fields,
         registry,

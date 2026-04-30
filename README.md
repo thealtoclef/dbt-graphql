@@ -50,6 +50,55 @@ serve:
   graphql_introspection: false   # off in prod; on for dev tooling
 ```
 
+## Query layer
+
+Each table exposes one root field that returns a `{T}Result` envelope —
+paginated rows, inline aggregates, and Cube-style GROUP BY share the same
+filter and the same DB round-trip when their fields are siblings.
+
+```graphql
+{
+  orders(where: {
+    _and: [
+      { status: { _in: ["completed", "shipped"] } },
+      { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
+    ]
+  }) {
+    nodes(order_by: [{ amount: desc }], limit: 50) {
+      order_id amount status
+      customer { customer_id name }   # nested via correlated subquery (no LATERAL)
+    }
+    count
+    sum_amount
+    avg_amount
+    group(order_by: [{ count: desc }]) {
+      status
+      count
+      sum_amount
+    }
+  }
+}
+```
+
+- **`{T}_bool_exp`** (Hasura vocab): `_and` / `_or` / `_not` plus per-column
+  `_eq` / `_neq` / `_gt` / `_gte` / `_lt` / `_lte` / `_in` / `_nin` / `_is_null`
+  / `_like` / `_nlike` / `_ilike` / `_nilike`. The same operator set is reused
+  by access-policy `row_filter` blocks.
+- **`{T}_order_by`** (and `{T}_group_order_by`): flat `column: asc | desc`.
+- **Aggregates**: `count` always; `sum_<col>` / `avg_<col>` / `stddev_<col>` /
+  `var_<col>` for numeric columns; `min_<col>` / `max_<col>` for every scalar
+  column. Selecting any combination fires one batched SELECT per request.
+- **`group`**: GROUP BY columns are auto-derived from whichever real-column
+  fields you select on `{T}_group` — no separate root entry, no nested
+  `aggregate { sum { col } }`.
+
+WHERE / ORDER BY references to columns the caller's policy hides raise
+`FORBIDDEN_COLUMN` at compile time so callers cannot probe hidden values
+through boolean side-channels.
+
+See [`docs/graphql.md`](docs/graphql.md) and [`docs/compiler.md`](docs/compiler.md)
+for the full SDL shape and SQL generation details.
+
 ## Use with LLM Agents (Claude Code, OpenCode)
 
 With `serve.mcp_enabled: true`, the server exposes MCP at `http://<host>:<port>/mcp`

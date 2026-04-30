@@ -11,7 +11,7 @@ type customers @table(database: mydb, schema: main, name: customers) {
 }
 
 type orders @table(database: mydb, schema: main, name: orders) {
-  order_id: ID! @column(type: "INTEGER")
+  order_id: Integer! @column(type: "INTEGER") @id
   customer_id: Integer! @column(type: "INTEGER") @relation(type: customers, fromField: customer_id, toField: customer_id, cardinality: many_to_one, origin: data_test)
   order_date: Date @column(type: "DATE")
   status: Varchar @column(type: "VARCHAR")
@@ -152,7 +152,7 @@ Customer accounts and contact info.
 """
 type customers @table(database: db, schema: main, name: customers) {
   """The primary key."""
-  customer_id: ID! @column(type: "INTEGER")
+  customer_id: Int! @column(type: "INTEGER") @id
   """User's email address."""
   email: String @column(type: "VARCHAR")
 }
@@ -169,23 +169,31 @@ type customers @table(database: db, schema: main, name: customers) {
         assert cols["email"].description == "User's email address."
 
 
-class TestPkAsIdRoundTrip:
-    """A column emitted with the built-in ID scalar is recognised as PK on parse."""
+class TestPkDirectiveRoundTrip:
+    """A column tagged with ``@id`` is recognised as PK; the underlying scalar
+    is preserved so ``{T}_bool_exp`` dispatches by real type."""
 
-    SDL_PK_AS_ID = """\
+    SDL_PK_DIRECTIVE = """\
 type customers @table(database: db, schema: main, name: customers) {
-  customer_id: ID! @column(type: "INTEGER")
+  customer_id: Int! @column(type: "INTEGER") @id
+  uuid_pk: String! @column(type: "UUID") @id
   name: String @column(type: "VARCHAR")
 }
 """
 
-    def test_id_scalar_marks_pk(self):
-        info, _ = parse_db_graphql(self.SDL_PK_AS_ID)
+    def test_id_directive_marks_pk(self):
+        info, _ = parse_db_graphql(self.SDL_PK_DIRECTIVE)
         col = next(c for c in info.tables[0].columns if c.name == "customer_id")
         assert col.is_pk is True
 
+    def test_pk_preserves_underlying_scalar(self):
+        info, _ = parse_db_graphql(self.SDL_PK_DIRECTIVE)
+        cols = {c.name: c for c in info.tables[0].columns}
+        assert cols["customer_id"].gql_type == "Int"
+        assert cols["uuid_pk"].gql_type == "String"
+
     def test_non_id_column_not_pk(self):
-        info, _ = parse_db_graphql(self.SDL_PK_AS_ID)
+        info, _ = parse_db_graphql(self.SDL_PK_DIRECTIVE)
         col = next(c for c in info.tables[0].columns if c.name == "name")
         assert col.is_pk is False
 
@@ -195,7 +203,7 @@ class TestMaskedFilteredRoundTrip:
 
     SDL_FLAGGED = """\
 type customers @table(database: db, schema: main, name: customers) @filtered {
-  customer_id: ID! @column(type: "INTEGER")
+  customer_id: Int! @column(type: "INTEGER") @id
   email: String @column(type: "VARCHAR") @masked
   name: String @column(type: "VARCHAR")
 }
@@ -216,7 +224,7 @@ type customers @table(database: db, schema: main, name: customers) @filtered {
         assert col.masked is False
 
     def test_filtered_default_false(self):
-        sdl = 'type t @table(database: d, schema: s, name: t) { id: ID! @column(type: "INT") }'
+        sdl = 'type t @table(database: d, schema: s, name: t) { id: Int! @column(type: "INT") @id }'
         info, _ = parse_db_graphql(sdl)
         assert info.tables[0].filtered is False
 

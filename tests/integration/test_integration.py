@@ -2,7 +2,7 @@
 
 For each adapter the test:
 1. Builds the jaffle-shop dbt project (session-scoped fixture)
-2. Runs extract_project → format_graphql → parse_db_graphql → compile_query
+2. Runs extract_project → format_graphql → parse_db_graphql → compile_nodes_query
 3. Executes the compiled SQL against the real database
 4. Asserts results
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from dbt_graphql.compiler.query import compile_query
+from dbt_graphql.compiler.query import compile_nodes_query
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ class TestE2E:
             ],
         )
         rows = await adapter_env.db.execute(
-            compile_query(adapter_env.registry["customers"], [fn], adapter_env.registry)
+            compile_nodes_query(adapter_env.registry["customers"], [fn], adapter_env.registry)
         )
         assert len(rows) > 0
         assert rows[0]["customer_id"] is not None
@@ -71,7 +71,7 @@ class TestE2E:
             "customers",
             [_field_node("customer_id"), _field_node("first_name")],
         )
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             adapter_env.registry["customers"],
             [fn],
             adapter_env.registry,
@@ -85,7 +85,7 @@ class TestE2E:
     async def test_limit(self, adapter_env):
         fn = _field_node("customers", [_field_node("customer_id")])
         rows = await adapter_env.db.execute(
-            compile_query(
+            compile_nodes_query(
                 adapter_env.registry["customers"], [fn], adapter_env.registry, limit=1
             )
         )
@@ -102,7 +102,7 @@ class TestE2E:
             ],
         )
         rows = await adapter_env.db.execute(
-            compile_query(adapter_env.registry["orders"], [fn], adapter_env.registry)
+            compile_nodes_query(adapter_env.registry["orders"], [fn], adapter_env.registry)
         )
         assert len(rows) > 0
         assert rows[0]["order_id"] is not None

@@ -248,3 +248,47 @@ def test_reserved_name_collision_rejects_tables_model():
             registry=registry,
             db=_FakeDB(),  # ty: ignore[invalid-argument-type]
         )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "_order_by",
+        "_String_comparison_exp",
+        "_Int_comparison_exp",
+        "_Float_comparison_exp",
+        "_Boolean_comparison_exp",
+    ],
+)
+def test_reserved_synthetic_type_names_rejected(name):
+    """A dbt model whose name shadows a synthetic input/enum type is rejected
+    at boot — otherwise the SDL would silently produce duplicate type defs
+    and Ariadne would fail with a confusing schema-build error."""
+    project = extract_project(CATALOG, MANIFEST)
+    registry = build_registry(project)
+    next(iter(registry)).name = name
+    with pytest.raises(ValueError, match="reserved"):
+        create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "suffix", ["_bool_exp", "_order_by", "_group_order_by", "Result", "_group"]
+)
+def test_derived_type_name_collision_rejected(suffix):
+    """Two models where one's name equals ``{other.name}{suffix}`` would
+    cause the derived synthetic type/input to clash with the second model's
+    row type. Rejected at boot."""
+    project = extract_project(CATALOG, MANIFEST)
+    registry = build_registry(project)
+    tables = list(registry)
+    assert len(tables) >= 2
+    # Make tables[1] collide with the derived name from tables[0].
+    tables[1].name = f"{tables[0].name}{suffix}"
+    with pytest.raises(ValueError, match="collides"):
+        create_graphql_subapp(
+            registry=registry,
+            db=_FakeDB(),  # ty: ignore[invalid-argument-type]
+        )

@@ -185,14 +185,14 @@ class TestParseSqlType:
 
 
 class TestColumnDirectives:
-    def test_pk_emitted_as_id_scalar(self):
+    def test_pk_keeps_native_scalar_with_id_directive(self):
+        # PK columns retain their underlying scalar so ``{T}_bool_exp`` can
+        # dispatch the right comparison_exp; PK signal moves to ``@id``.
         line = _sdl_col("id", "INTEGER", not_null=True, is_pk=True)
-        assert "id: ID!" in line
-        # @id directive is gone — the ID scalar carries the PK signal.
-        assert "@id" not in line
+        assert "id: Int!" in line
+        assert "@id" in line
 
-    def test_composite_pk_parts_keep_native_scalar(self):
-        # Non-PK members of a composite key keep their native scalar.
+    def test_non_pk_column_has_no_id_directive(self):
         for col_name in ("order_id", "item_id"):
             line = _sdl_col(col_name, "INTEGER", not_null=True, is_pk=False)
             assert ": Int" in line
@@ -204,7 +204,7 @@ class TestColumnDirectives:
 
     def test_pk_column_does_not_get_unique_directive(self):
         line = _sdl_col("id", "INTEGER", not_null=True, is_pk=True, is_unique=False)
-        assert "id: ID!" in line
+        assert "@id" in line
         assert "@unique" not in line
 
     def test_masked_directive_emitted_when_flag_set(self):

@@ -237,7 +237,7 @@ class ResolvedPolicy:
     def is_column_allowed(self, name: str) -> bool:
         """Single source of truth for column visibility.
 
-        Used by ``compile_query`` (to enforce strict denial when a query
+        Used by ``compile_nodes_query`` (to enforce strict denial when a query
         names a blocked column) and by MCP discovery tools (to filter the
         view a caller sees). Both must agree on what "allowed" means.
         """

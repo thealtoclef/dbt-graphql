@@ -177,7 +177,7 @@ def build_source_doc(registry: TableRegistry) -> DocumentNode:
     """Render the registry to db.graphql SDL and parse it into an AST.
 
     The returned ``DocumentNode`` carries every custom directive
-    (``@table``, ``@column``, ``@relation``, ``@masked``, ``@filtered``)
+    (``@table``, ``@column``, ``@id``, ``@relation``, ``@masked``, ``@filtered``)
     and every description string verbatim.
     """
     return parse(_registry_to_sdl(registry))
@@ -201,9 +201,14 @@ def _description_block(text: str, indent: str = "") -> str:
 
 
 def _gql_field_type(col: ColumnDef) -> str:
-    """Return the GraphQL type for a column. PKs are emitted as ID so
-    the primary-key signal reaches standard introspection natively."""
-    base = "ID" if col.is_pk else col.gql_type
+    """Return the GraphQL type for a column.
+
+    PK columns keep their underlying scalar so ``{T}_bool_exp`` can
+    dispatch the right ``_*_comparison_exp`` (numeric ops for int PKs,
+    string ops for text/UUID PKs). The PK signal travels via the
+    ``@id`` directive in the printed db.graphql artefact and ``_sdl``.
+    """
+    base = col.gql_type
     if col.is_array:
         base = f"[{base}]"
     if col.not_null:
@@ -242,6 +247,8 @@ def _column_to_sdl(col: ColumnDef) -> str:
         sql_args += f', size: "{col.sql_size}"'
 
     directives: list[str] = [f"@column({sql_args})"]
+    if col.is_pk:
+        directives.append("@id")
     if col.is_unique:
         directives.append("@unique")
     if col.masked:

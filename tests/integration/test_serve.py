@@ -188,6 +188,72 @@ class TestGraphQLHTTP:
         assert len(rows) == 1
         assert rows[0]["customer_id"] == 1
 
+    def test_where_in_filter(self, client):
+        rows = _gql(
+            client,
+            "{ customers(where: { customer_id: { _in: [1, 2] } }) "
+            "{ nodes { customer_id } } }",
+        )["customers"]["nodes"]
+        assert {r["customer_id"] for r in rows} == {1, 2}
+
+    def test_where_logical_combinators(self, client):
+        rows = _gql(
+            client,
+            "{ customers(where: { _or: ["
+            "{ customer_id: { _eq: 1 } }, { customer_id: { _eq: 2 } }] }) "
+            "{ nodes { customer_id } } }",
+        )["customers"]["nodes"]
+        assert {r["customer_id"] for r in rows} == {1, 2}
+
+    def test_where_is_null(self, client):
+        # _is_null: false on the PK should match every row.
+        rows = _gql(
+            client,
+            "{ customers(where: { customer_id: { _is_null: false } }) "
+            "{ nodes { customer_id } } }",
+        )["customers"]["nodes"]
+        assert len(rows) > 0
+
+    def test_order_by_desc(self, client):
+        rows = _gql(
+            client,
+            "{ customers { nodes(order_by: [{ customer_id: desc }], limit: 3) "
+            "{ customer_id } } }",
+        )["customers"]["nodes"]
+        ids = [r["customer_id"] for r in rows]
+        assert ids == sorted(ids, reverse=True)
+
+    def test_inline_aggregates_count(self, client):
+        body = _gql(client, "{ customers { count } }")
+        assert isinstance(body["customers"]["count"], int)
+        assert body["customers"]["count"] > 0
+
+    def test_inline_aggregate_batched_single_round_trip(self, client):
+        # All four fields must come back populated from one envelope —
+        # they share a single DB round-trip via the batching future.
+        body = _gql(
+            client,
+            "{ customers { count } orders { count nodes(limit: 1) { order_id } } }",
+        )
+        assert body["customers"]["count"] > 0
+        assert body["orders"]["count"] > 0
+        assert len(body["orders"]["nodes"]) == 1
+
+    def test_group_by_dimension(self, client):
+        body = _gql(
+            client,
+            "{ orders { group(order_by: [{ count: desc }]) { status count } } }",
+        )
+        groups = body["orders"]["group"]
+        assert len(groups) > 0
+        # Every group has both the dimension and the aggregate.
+        for g in groups:
+            assert "status" in g
+            assert isinstance(g["count"], int)
+        # ORDER BY count desc — counts should be non-increasing.
+        counts = [g["count"] for g in groups]
+        assert counts == sorted(counts, reverse=True)
+
     def test_where_filter_no_match_returns_empty(self, client):
         resp = client.post(
             "/graphql",

@@ -85,7 +85,7 @@ SQL generation stays dialect-agnostic until the moment of rendering.
 
 ## 4. Three compilers
 
-`compile_nodes_query`, `compile_aggregate_query`, and `compile_group_query` share the same WHERE / policy plumbing but differ in the SELECT shape. `compile_query` is kept as a thin alias for `compile_nodes_query` to preserve backward compatibility with callers that don't need the envelope.
+`compile_nodes_query`, `compile_aggregate_query`, and `compile_group_query` share the same WHERE / policy plumbing but differ in the SELECT shape.
 
 ### `compile_nodes_query`
 

@@ -163,15 +163,11 @@ def _parse_column(field_node: FieldDefinitionNode) -> ColumnDef:
         description=description,
     )
 
-    # PK signal carried by the built-in ID scalar. Parser preserves
-    # gql_type as-is for the SDL round-trip; ``is_pk`` is the canonical
-    # flag downstream consumers read.
-    if gql_type == "ID":
-        col.is_pk = True
-
     for directive in field_node.directives or []:
         dname = directive.name.value
-        if dname == "unique":
+        if dname == "id":
+            col.is_pk = True
+        elif dname == "unique":
             col.is_unique = True
         elif dname == "masked":
             col.masked = True

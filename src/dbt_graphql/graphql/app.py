@@ -26,18 +26,23 @@ from .monitoring import build_graphql_http_handler
 from .policy import AccessPolicy, PolicyEngine
 from .resolvers import create_query_type
 
-_STANDARD_GQL_SCALARS = {"String", "Int", "Float", "Boolean", "ID"}
+_STANDARD_GQL_SCALARS = {"String", "Int", "Float", "Boolean"}
 
+# Global synthetic types are framework-private — leading ``_`` matches the
+# convention set by ``_sdl`` / ``_tables`` / ``_TableInfo``. PK columns
+# keep their underlying scalar (``Int`` / ``String`` / etc.) so they
+# dispatch to the same ``_<Scalar>_comparison_exp`` as any other column
+# of that type — the PK signal travels via the ``@id`` directive in the
+# printed db.graphql artefact and ``Query._sdl``, not through the scalar.
 _GQL_SCALAR_TO_CMP_EXP: dict[str, str] = {
-    "String": "String_comparison_exp",
-    "Int": "Int_comparison_exp",
-    "Float": "Float_comparison_exp",
-    "Boolean": "Boolean_comparison_exp",
-    "ID": "Int_comparison_exp",
+    "String": "_String_comparison_exp",
+    "Int": "_Int_comparison_exp",
+    "Float": "_Float_comparison_exp",
+    "Boolean": "_Boolean_comparison_exp",
 }
 
 _COMPARISON_EXP_TYPES = """\
-input String_comparison_exp {
+input _String_comparison_exp {
   _eq: String  _neq: String
   _gt: String  _gte: String
   _lt: String  _lte: String
@@ -47,7 +52,7 @@ input String_comparison_exp {
   _ilike: String  _nilike: String
 }
 
-input Int_comparison_exp {
+input _Int_comparison_exp {
   _eq: Int  _neq: Int
   _gt: Int  _gte: Int
   _lt: Int  _lte: Int
@@ -55,7 +60,7 @@ input Int_comparison_exp {
   _is_null: Boolean
 }
 
-input Float_comparison_exp {
+input _Float_comparison_exp {
   _eq: Float  _neq: Float
   _gt: Float  _gte: Float
   _lt: Float  _lte: Float
@@ -63,13 +68,13 @@ input Float_comparison_exp {
   _is_null: Boolean
 }
 
-input Boolean_comparison_exp {
+input _Boolean_comparison_exp {
   _eq: Boolean
   _is_null: Boolean
 }"""
 
 _ORDER_BY_ENUM = """\
-enum order_by {
+enum _order_by {
   asc
   desc
 }"""
@@ -86,7 +91,9 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     - ``input {T}_order_by`` — ORDER BY for ``nodes``
     - ``input {T}_group_order_by`` — flat ORDER BY for ``group``
 
-    Shared types (comparison_exp variants, order_by enum) are emitted once.
+    Shared framework-private types (``_<Scalar>_comparison_exp``, ``_order_by``)
+    are emitted once. The leading underscore matches the ``_sdl`` / ``_tables``
+    / ``_TableInfo`` convention for synthesized non-dbt surface.
     """
     custom_scalars: set[str] = set()
     type_blocks: list[str] = []
@@ -104,7 +111,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         type_block = _description_block(table_def.description)
         type_block += f"type {name} {{\n"
         for col in table_def.columns:
-            type_name = "ID" if col.is_pk else col.gql_type
+            type_name = col.gql_type
             if type_name and type_name not in _STANDARD_GQL_SCALARS:
                 custom_scalars.add(type_name)
             wrapped = f"[{type_name}]" if col.is_array else type_name
@@ -125,7 +132,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         for col in table_def.columns:
             if col.is_array:
                 continue
-            cmp_exp = _GQL_SCALAR_TO_CMP_EXP.get(col.gql_type, "String_comparison_exp")
+            cmp_exp = _GQL_SCALAR_TO_CMP_EXP.get(col.gql_type, "_String_comparison_exp")
             lines.append(f"  {col.name}: {cmp_exp}")
         lines.append("}")
         bool_exp_defs.append("\n".join(lines))
@@ -134,7 +141,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         lines = [f"input {name}_order_by {{"]
         for col in table_def.columns:
             if not col.is_array:
-                lines.append(f"  {col.name}: order_by")
+                lines.append(f"  {col.name}: _order_by")
         lines.append("}")
         order_by_defs.append("\n".join(lines))
 
@@ -142,9 +149,9 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         lines = [f"input {name}_group_order_by {{"]
         for col in table_def.columns:
             if not col.is_array:
-                lines.append(f"  {col.name}: order_by")
+                lines.append(f"  {col.name}: _order_by")
         for fname, _ in agg_fields:
-            lines.append(f"  {fname}: order_by")
+            lines.append(f"  {fname}: _order_by")
         lines.append("}")
         group_order_by_defs.append("\n".join(lines))
 
@@ -261,32 +268,43 @@ def create_graphql_subapp(
     ``Query._sdl`` field, which is what auth-sensitive clients should use.
     """
     table_names = {t.name for t in registry}
-    _RESERVED = {"_sdl", "_tables", "_TableInfo"}
+    _RESERVED_TYPES = {
+        "_sdl",
+        "_tables",
+        "_TableInfo",
+        "_order_by",
+        "_String_comparison_exp",
+        "_Int_comparison_exp",
+        "_Float_comparison_exp",
+        "_Boolean_comparison_exp",
+    }
+    _DERIVED_SUFFIXES = (
+        "Result",
+        "_group",
+        "_bool_exp",
+        "_order_by",
+        "_group_order_by",
+    )
     for t in registry:
-        if t.name in _RESERVED:
+        if t.name in _RESERVED_TYPES:
             raise ValueError(
-                f"model name '{t.name}' collides with a reserved schema name "
-                f"({t.name}); rename the model or exclude it via dbt.exclude."
+                f"model name '{t.name}' collides with a reserved schema name."
             )
-        for derived in (f"{t.name}Result", f"{t.name}_group"):
+        for suffix in _DERIVED_SUFFIXES:
+            derived = f"{t.name}{suffix}"
             if derived in table_names:
                 raise ValueError(
-                    f"model name '{derived}' collides with derived type name '{derived}'; "
-                    "rename the model or exclude it via dbt.exclude."
+                    f"model name '{derived}' collides with the synthetic "
+                    f"type/input name '{derived}' derived from another model."
                 )
-        # Aggregate field names (``count``, ``sum_<col>``, ``avg_<col>``, …)
-        # share a namespace with real columns on ``{T}_group``. Reject any
-        # dbt column whose name happens to match a synthetic aggregate
-        # field — the operator can rename the column or exclude it via
-        # ``dbt.exclude``. This is the *only* guarantee that aggregates
-        # don't shadow real data.
+        # Aggregate field names share a namespace with real columns on
+        # ``{T}_group`` — collisions are rejected here, not silently shadowed.
         col_names = {c.name for c in t.columns}
         for fname, _ in agg_fields_for_table(t):
             if fname in col_names:
                 raise ValueError(
                     f"table '{t.name}': column '{fname}' clashes with the "
-                    f"synthetic aggregate field of the same name. Rename "
-                    f"the column or exclude the table via dbt.exclude."
+                    f"synthetic aggregate field of the same name."
                 )
 
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None

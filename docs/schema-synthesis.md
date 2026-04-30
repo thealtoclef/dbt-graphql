@@ -168,6 +168,7 @@ type orders @table(database: "mydb", schema: "public", name: "orders") {
 For each column:
 
 - `@column(type: "...", size: "...")` — **always present.** Preserves the raw SQL type and any size/precision.
+- `@id` — column is the primary key. The column keeps its underlying scalar (`Int!`, `String!`, …) so `{T}_bool_exp` can dispatch the correct comparison_exp.
 - `@unique` — column has a `unique` test and is not already the sole PK.
 - `@relation(type: TargetModel, field: target_col)` — foreign key.
 

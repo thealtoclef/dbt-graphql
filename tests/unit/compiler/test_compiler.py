@@ -11,7 +11,7 @@ from dbt_graphql.compiler.query import (
     agg_fields_for_table,
     compile_aggregate_query,
     compile_group_query,
-    compile_query,
+    compile_nodes_query,
 )
 from dbt_graphql.formatter.schema import (
     ColumnDef,
@@ -105,7 +105,7 @@ class TestFlatQuery:
         fn = _field_node(
             "customers", [_field_node("customer_id"), _field_node("first_name")]
         )
-        stmt = compile_query(customers, [fn], registry)
+        stmt = compile_nodes_query(customers, [fn], registry)
         sql = _sql(stmt, postgresql)
         assert "customer_id" in sql
         assert "first_name" in sql
@@ -113,14 +113,14 @@ class TestFlatQuery:
     def test_limit(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(customers, [fn], registry, limit=10)
+        stmt = compile_nodes_query(customers, [fn], registry, limit=10)
         sql = _sql(stmt, postgresql)
         assert "LIMIT 10" in sql
 
     def test_offset(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(customers, [fn], registry, limit=10, offset=20)
+        stmt = compile_nodes_query(customers, [fn], registry, limit=10, offset=20)
         sql = _sql(stmt, postgresql)
         assert "OFFSET 20" in sql
 
@@ -129,7 +129,7 @@ class TestWhereFilter:
     def test_equality_filter(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers, [fn], registry, where={"customer_id": {"_eq": 1}}
         )
         sql = _sql(stmt, postgresql)
@@ -139,7 +139,7 @@ class TestWhereFilter:
     def test_neq_filter(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers, [fn], registry, where={"customer_id": {"_neq": 1}}
         )
         sql = _sql(stmt, postgresql)
@@ -148,7 +148,7 @@ class TestWhereFilter:
     def test_in_filter(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers, [fn], registry, where={"customer_id": {"_in": [1, 2, 3]}}
         )
         sql = _sql(stmt, postgresql)
@@ -157,7 +157,7 @@ class TestWhereFilter:
     def test_is_null_filter(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("first_name")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers, [fn], registry, where={"first_name": {"_is_null": True}}
         )
         sql = _sql(stmt, postgresql)
@@ -166,7 +166,7 @@ class TestWhereFilter:
     def test_and_combinator(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers,
             [fn],
             registry,
@@ -180,7 +180,7 @@ class TestWhereFilter:
     def test_or_combinator(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers,
             [fn],
             registry,
@@ -192,7 +192,7 @@ class TestWhereFilter:
     def test_not_combinator(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers,
             [fn],
             registry,
@@ -205,7 +205,7 @@ class TestWhereFilter:
     def test_empty_where_does_not_raise(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(customers, [fn], registry, where={})
+        stmt = compile_nodes_query(customers, [fn], registry, where={})
         sql = _sql(stmt, postgresql)
         assert "WHERE" not in sql
 
@@ -214,7 +214,7 @@ class TestOrderBy:
     def test_asc_order(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers, [fn], registry, order_by=[{"customer_id": "asc"}]
         )
         sql = _sql(stmt, postgresql)
@@ -224,7 +224,7 @@ class TestOrderBy:
     def test_desc_order(self):
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers, [fn], registry, order_by=[{"customer_id": "desc"}]
         )
         sql = _sql(stmt, postgresql)
@@ -235,7 +235,7 @@ class TestOrderBy:
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
         with pytest.raises(ValueError, match="Unknown order_by"):
-            compile_query(
+            compile_nodes_query(
                 customers, [fn], registry, order_by=[{"customer_id": "desc_nulls_last"}]
             )
 
@@ -244,7 +244,7 @@ class TestOrderBy:
         fn = _field_node(
             "customers", [_field_node("customer_id"), _field_node("first_name")]
         )
-        stmt = compile_query(
+        stmt = compile_nodes_query(
             customers,
             [fn],
             registry,
@@ -258,7 +258,7 @@ class TestOrderBy:
         customers, registry = _make_registry()
         fn = _field_node("customers", [_field_node("customer_id")])
         with pytest.raises(ValueError, match="Unknown order_by"):
-            compile_query(
+            compile_nodes_query(
                 customers, [fn], registry, order_by=[{"customer_id": "sideways"}]
             )
 
@@ -464,7 +464,7 @@ class TestMultiHopNesting:
                 ),
             ],
         )
-        stmt = compile_query(orders, [fn], registry)
+        stmt = compile_nodes_query(orders, [fn], registry)
         sql = _sql(stmt, postgresql)
         assert "child_1" in sql
         assert "child_2" in sql
@@ -486,7 +486,7 @@ class TestMultiHopNesting:
                 ),
             ],
         )
-        stmt = compile_query(orders, [fn], registry)
+        stmt = compile_nodes_query(orders, [fn], registry)
         sql = _sql(stmt, postgresql)
         # Both levels must aggregate JSON
         assert sql.count("JSONB_AGG") == 2
@@ -550,10 +550,10 @@ class TestMultiHopNesting:
             ],
         )
         with pytest.raises(ValueError, match="Circular"):
-            compile_query(a, [fn], registry)
+            compile_nodes_query(a, [fn], registry)
 
     def test_depth_limit_raises_when_max_depth_set(self):
-        """compile_query(max_depth=N) must raise once nesting exceeds N."""
+        """compile_nodes_query(max_depth=N) must raise once nesting exceeds N."""
         max_depth = 2
         # Build a linear chain: T0 → T1 → T2 → T3 (3 hops, exceeds max_depth=2)
         tables = []
@@ -583,7 +583,7 @@ class TestMultiHopNesting:
 
         fn = _field_node("T0", [_field_node("id"), chain_node(0)])
         with pytest.raises(ValueError, match="depth"):
-            compile_query(tables[0], [fn], registry, max_depth=max_depth)
+            compile_nodes_query(tables[0], [fn], registry, max_depth=max_depth)
 
     def test_no_depth_limit_by_default(self):
         """Without max_depth, a deep non-cyclic chain compiles without error."""
@@ -602,7 +602,7 @@ class TestMultiHopNesting:
             ],
         )
         # Should not raise — no max_depth means unlimited
-        stmt = compile_query(orders, [fn], registry)
+        stmt = compile_nodes_query(orders, [fn], registry)
         assert stmt is not None
 
 
@@ -621,7 +621,7 @@ def _relation_sql(dialect_mod):
             _relation_field_node("customer_id", ["customer_id", "first_name"]),
         ],
     )
-    stmt = compile_query(orders, [fn], registry)
+    stmt = compile_nodes_query(orders, [fn], registry)
     return _sql(stmt, dialect_mod)
 
 
@@ -645,7 +645,7 @@ class TestDialectCompilation:
                 _relation_field_node("customer_id", ["customer_id", "first_name"]),
             ],
         )
-        stmt = compile_query(orders, [fn], registry)
+        stmt = compile_nodes_query(orders, [fn], registry)
         # Default compilation (no specific dialect)
         sql = str(stmt)
         assert "JSON_ARRAYAGG" in sql
@@ -705,7 +705,7 @@ class TestCompositeFKCorrelation:
                 _relation_field_node("order_id", ["tenant_id", "id"]),
             ],
         )
-        return _sql(compile_query(order_items, [fn], registry), postgresql)
+        return _sql(compile_nodes_query(order_items, [fn], registry), postgresql)
 
     def test_composite_predicate_contains_both_column_pairs(self):
         sql = self._composite_sql()

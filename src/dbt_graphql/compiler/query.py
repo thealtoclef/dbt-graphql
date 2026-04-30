@@ -190,7 +190,7 @@ _AGG_FUNC_MAP: dict[str, Any] = {
     "max": func.max,
 }
 
-_NUMERIC_GQL_TYPES = frozenset({"Int", "Float", "ID"})
+_NUMERIC_GQL_TYPES = frozenset({"Int", "Float"})
 
 # Aggregate field names live in the same namespace as real columns on the
 # ``{T}_group`` row type. Collisions (e.g. a dbt column literally named
@@ -499,33 +499,6 @@ def compile_nodes_query(
     return stmt
 
 
-def compile_query(
-    tdef: TableDef,
-    field_nodes: list,
-    registry: TableRegistry,
-    dialect: str = "",
-    limit: int | None = None,
-    offset: int | None = None,
-    where: dict | None = None,
-    order_by: list[dict] | None = None,
-    max_depth: int | None = None,
-    resolve_policy: ResolvePolicy | None = None,
-) -> Select:
-    """Alias for ``compile_nodes_query``; kept for backward compatibility."""
-    return compile_nodes_query(
-        tdef=tdef,
-        field_nodes=field_nodes,
-        registry=registry,
-        dialect=dialect,
-        limit=limit,
-        offset=offset,
-        where=where,
-        order_by=order_by,
-        max_depth=max_depth,
-        resolve_policy=resolve_policy,
-    )
-
-
 def compile_aggregate_query(
     tdef: TableDef,
     requested_agg_fields: set[str],
@@ -666,6 +639,11 @@ def compile_group_query(
                 if order_fn is None:
                     raise ValueError(f"Unknown order_by direction: {direction!r}")
                 if key in dim_col_names:
+                    if (
+                        resolved_policy is not None
+                        and not resolved_policy.is_column_allowed(key)
+                    ):
+                        raise ColumnAccessDenied(tdef.name, [key])
                     stmt = stmt.order_by(order_fn(aliased.c[key]))
                 else:
                     # aggregate field (count, sum_Total, etc.) — use literal label
