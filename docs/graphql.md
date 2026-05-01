@@ -25,27 +25,60 @@ See [architecture.md](architecture.md) for the design principles that govern thi
 
 `db.graphql` uses custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) that Ariadne's schema builder doesn't understand. At serve time, `_build_ariadne_sdl(registry: TableRegistry)` derives a clean executable schema directly from the `TableRegistry`.
 
-The schema follows a **single-entry-point envelope** pattern (Cube / GraphJin–inspired): one root field per table that returns a `{T}Result` envelope holding `nodes`, a nested `_aggregate` block, and `group`. For each `TableDef` it emits:
+The schema exposes **one root field per table** that returns a flat list of row objects — no envelope. For each `TableDef` it emits:
 
-- `type {T}` — the row type (one field per column; relations on row types).
-- `type {T}Result` — the envelope returned by `Query.{T}`. Holds:
-  - `nodes(order_by, limit, offset): [{T}!]!` — paginated rows.
-  - `_aggregate: {T}Aggregate` — nested aggregate block with per-function sub-fields:
-    - `sum`, `avg`, `stddev`, `var` — each containing the numeric columns as fields.
-    - `count` — total row count.
-    - `count_distinct` — containing all scalar columns as fields.
-    - `min`, `max` — each containing all scalar columns as fields.
-  - `group(order_by, limit, offset): [{T}_group!]!` — Cube-style GROUP BY: grouping keys are auto-derived from whichever dimension fields the caller selects on `{T}_group`.
-- `type {T}Aggregate` — aggregate wrapper type with per-function sub-objects.
-- `type {T}_group` — flat group row: dimension columns + the same aggregate sub-fields.
-- `input {T}_bool_exp` — recursive Hasura-style WHERE filter (`_and` / `_or` / `_not` plus per-column `<scalar>_comparison_exp`).
-- `input {T}_order_by` and `input {T}_group_order_by` — per-column ordering (single object, not a list).
+- **`type {T}`** — the row type. One field per column, plus a `_aggregate` field for inline aggregates and relation fields for FK-backed columns.
+- **`type {T}_aggregate`** — aggregate wrapper with per-function sub-objects:
+  - `count: Int!`
+  - `sum: {T}_aggregate_sum` — numeric columns.
+  - `avg: {T}_aggregate_avg` — numeric columns (always `Float`).
+  - `stddev: {T}_aggregate_stddev` / `var: {T}_aggregate_var` — numeric columns.
+  - `count_distinct: {T}_aggregate_count_distinct` — all scalar columns.
+  - `min: {T}_aggregate_min` / `max: {T}_aggregate_max` — all scalar columns.
+- **Per-operation aggregate types** (`{T}_aggregate_sum`, `{T}_aggregate_avg`, etc.) — named types containing the relevant columns as fields.
+- **`input {T}Where`** — recursive Hasura-style WHERE filter. `AND` / `OR` / `NOT` plus per-column typed filter inputs.
+- **`input {T}OrderBy`** — per-column ordering. Each column and `_aggregate` map to `OrderDirection`.
+- **`enum {T}Column`** — one value per scalar column.
 
-Shared framework-private types emitted once per schema: `_String_comparison_exp`, `_Int_comparison_exp`, `_Float_comparison_exp`, `_Boolean_comparison_exp`, and `enum _order_by { asc desc }`. The leading underscore matches the `_sdl` / `_tables` / `_TableInfo` convention for synthesized non-dbt surface. PK columns keep their underlying scalar so they dispatch to the same comparison_exp as any other column of that type — see "Introspection signals" below for why.
+The query field is:
 
-The query field is `{T}(where: {T}_bool_exp, distinct: Boolean): {T}Result` — pagination/ordering hang off `nodes` / `group`, so `where` filters both rows and aggregates from the same envelope. `distinct: true` adds a plain `DISTINCT` to the nodes query. The result type is **nullable** so a sub-field error (e.g. `FORBIDDEN_COLUMN`) localizes to that table without nullifying the whole `data` payload.
+```graphql
+{T}(where: {T}Where, order_by: {T}OrderBy, limit: Int, offset: Int, distinct: Boolean): [{T}!]!
+```
 
-Aggregate batching: the `nodes`, `group`, and `_aggregate` resolvers each compile/execute one SQL statement. The `_aggregate` resolver compiles a single SELECT covering all requested aggregate functions and columns — so `count`, `sum { price quantity }`, `avg { price }` selected together produce **one** DB round-trip, not several.
+Pagination (`limit`, `offset`), ordering (`order_by`), and deduplication (`distinct`) are arguments on the root field. `where` filters rows; the same filter applies to aggregates since they are computed over the same result set.
+
+### Shared types emitted once per schema
+
+- **`StringFilter`**, **`IntFilter`**, **`FloatFilter`**, **`BooleanFilter`** — per-scalar comparison inputs containing the valid operators for that type (e.g., `StringFilter` includes `_like`, `_ilike`, `_regex`; `IntFilter` does not).
+- **`enum OrderDirection { asc desc }`** — direction for order-by fields.
+
+### Aggregate batching
+
+Selecting `_aggregate` alongside dimension columns compiles into a single SELECT with GROUP BY — one DB round-trip. Selecting `_aggregate` alone compiles into a bare aggregate SELECT. Either way, all requested aggregate functions (`count`, `sum { price quantity }`, `avg { price }`, etc.) are batched into one statement.
+
+### Example query
+
+```graphql
+{
+  orders(where: {
+    _and: [
+      { status: { _in: ["completed", "shipped"] } },
+      { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
+    ]
+  }) {
+    order_id
+    amount
+    status
+    customer { customer_id name }
+    _aggregate {
+      count
+      sum { amount }
+      avg { amount }
+    }
+  }
+}
+```
 
 **`TableRegistry` is the input — not `db.graphql`.** The serve path never reads or parses a file; it operates on the Python object built by `build_registry()` directly from dbt artifacts.
 
@@ -53,14 +86,14 @@ Aggregate batching: the `nodes`, `group`, and `_aggregate` resolvers each compil
 
 Standard GraphQL `IntrospectionQuery` only exposes a fixed set of fields on `__Type` / `__Field`; applied directives are not in that set. To make policy- and structure-relevant signals visible to GraphiQL / Apollo Studio / codegen, the executable SDL routes them through native introspection carriers wherever possible:
 
-- **Primary keys** keep their underlying scalar (`Int!`, `String!`, …) and carry an `@id` directive in the printed `db.graphql` artefact. Preserving the scalar lets `{T}_bool_exp` dispatch the correct `_<Scalar>_comparison_exp` — int PKs get numeric ops, text/UUID PKs get string ops including `_like`/`_ilike`. The PK signal travels via `@id` (visible to LLM agents through `Query._sdl`); standard `__schema` introspection no longer flags PK-ness, which is fine because no current consumer relies on that signal.
+- **Primary keys** keep their underlying scalar (`Int!`, `String!`, …) and carry an `@id` directive in the printed `db.graphql` artefact. Preserving the scalar lets `{T}Where` dispatch the correct `<Scalar>Filter` — int PKs get numeric ops, text/UUID PKs get string ops including `_like`/`_ilike`. The PK signal travels via `@id` (visible to LLM agents through `Query._sdl`); standard `__schema` introspection no longer flags PK-ness, which is fine because no current consumer relies on that signal.
 - **dbt descriptions** on tables and columns are emitted as triple-quoted blocks above the type / field, so they show up directly in `__Type.description` and `__Field.description`.
-- **`@masked` / `@filtered`** are emitted in the printed `db.graphql` artefact when the corresponding flags are set. They will be set per principal once policy-aware introspection is wired (see `docs/policy-aware-introspection-plan.md`); today `ColumnDef.masked` / `TableDef.filtered` exist as scaffolding and are not populated at runtime.
+- **`@masked` / `@filtered`** are emitted in the printed `db.graphql` artefact when the corresponding flags are set. They will be set per principal once policy-aware introspection is wired; today `ColumnDef.masked` / `TableDef.filtered` exist as scaffolding and are not populated at runtime.
 
 The remaining custom directives (`@table`, `@column`, `@id`, `@relation`, `@unique`, `@masked`, `@filtered`) do not appear in standard `__schema` introspection. They are exposed via two dedicated `Query` fields:
 
 - **`_sdl(tables: [String!]): String!`** — the **effective** db.graphql SDL for the current caller, pruned to tables and columns the caller's `AccessPolicy` allows, with `@masked` / `@filtered` injected per the resolved policy. Without `tables`, the full caller-effective document is returned. With `tables`, the output is intersected with the given names; names the caller cannot see (denied by policy or nonexistent) are silently skipped — an unauthorized name and a missing name are indistinguishable to the client by design.
-- **`_tables: [_TableInfo!]!`** — the cheap "index page" for the visible surface. Each entry carries `name` and `description` (dbt-authored) — enough for an agent to triage candidates before paying full-SDL cost via `_sdl(tables: [...])`. Structural detail (columns, relations) is intentionally omitted; that's `_sdl`'s job. Distinct from native `__schema.types`, which also includes the per-table `_bool_exp` / `_order_by` / `Result` / `_group` types, the shared comparison_exp inputs, scalars, and `Query`.
+- **`_tables: [_TableInfo!]!`** — the cheap "index page" for the visible surface. Each entry carries `name` and `description` (dbt-authored) — enough for an agent to triage candidates before paying full-SDL cost via `_sdl(tables: [...])`. Structural detail (columns, relations) is intentionally omitted; that's `_sdl`'s job.
 
 The same pruned-AST renderer powers the MCP `describe_table` tool, so HTTP clients and LLM agents see byte-identical SDL. (The `--output` artefact is the unfiltered "boot" view; the per-caller view is `_sdl`.) The names `_sdl`, `_tables`, and `_TableInfo` are reserved — a dbt model colliding with any of them is rejected at boot.
 
@@ -84,14 +117,15 @@ State that resolvers need (`TableRegistry`, `DatabaseManager`, JWT payload, `Pol
 
 ## 3. Resolvers
 
-`graphql/resolvers.py` builds a `QueryType` plus one `ObjectType` per table for `{T}Result`. Per request the resolver chain is:
+**Source:** [`src/dbt_graphql/graphql/resolvers.py`](../src/dbt_graphql/graphql/resolvers.py)
 
-1. **Root `Query.{T}`** (sync) returns a *carrier dict* `{"where": ..., "_table": ...}` — no DB call. Sub-field resolvers read `where` from it.
-2. **`{T}Result.nodes`** calls `compile_nodes_query()` (see [compiler.md](compiler.md)) with the row selection set, ordering, pagination, and policy resolver, then executes via `DatabaseManager`.
-3. **`{T}Result._aggregate`** calls `compile_aggregate_query()` — compiles a single SELECT covering all requested aggregate functions and columns. One DB round-trip per request regardless of how many aggregate sub-fields were selected.
-4. **`{T}Result.group`** calls `compile_group_query()` — GROUP BY columns are auto-derived from whichever dimension fields the caller selects on `{T}_group`.
+`create_query_type(registry)` builds a `QueryType` with one root resolver per table. There are no per-table `ObjectType` bindings — the root field returns rows directly.
 
-No N+1 — nested relations on `{T}` rows are resolved inside the same `nodes` query via correlated subqueries.
+Per request, the resolver chain is a single step:
+
+1. **`Query.{T}`** (async) — calls `compile_query()` with the field nodes, `where`, `order_by`, `limit`, `offset`, `distinct`, and the policy resolver. Executes the resulting `Select` via `execute_with_cache()` (result cache + singleflight). Then restructures flat aggregate keys (`_count`, `_sum_price`, etc.) into the nested `{ count: N, sum: { price: X } }` shape that the GraphQL `_aggregate` field expects. Returns the rows directly.
+
+No N+1 — nested relations on `{T}` rows are resolved inside the same SELECT via correlated subqueries (see [compiler.md](compiler.md)).
 
 ---
 

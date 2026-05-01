@@ -446,36 +446,6 @@ class TestOrderBy:
         assert first_names == sorted(first_names)
 
     @pytest.mark.asyncio
-    async def test_order_by_aggregate(self, adapter_env):
-        """order_by: { sum_amount: desc } on grouped query."""
-        # Use 'status' as dimension - it's not a foreign key (no relation)
-        fn = _field_node(
-            "orders",
-            [
-                _field_node("status"),  # dimension (no relation)
-                _field_node(
-                    "_aggregate",
-                    [
-                        _field_node("sum", [_field_node("amount")]),
-                    ],
-                ),
-            ],
-        )
-        stmt = compile_query(
-            adapter_env.registry["orders"],
-            [fn],
-            adapter_env.registry,
-            order_by=[("_sum_amount", "desc")],
-            limit=10,
-        )
-        rows = await adapter_env.db.execute(stmt)
-        assert len(rows) <= 10
-        # Verify descending order by sum_amount
-        sum_amounts = [r["_sum_amount"] for r in rows if r["_sum_amount"] is not None]
-        if len(sum_amounts) > 1:
-            assert sum_amounts == sorted(sum_amounts, reverse=True)
-
-    @pytest.mark.asyncio
     async def test_order_by_multiple(self, adapter_env):
         """Multiple columns in order_by."""
         fn = _field_node(
@@ -507,43 +477,6 @@ class TestOrderBy:
                 assert curr["first_name"] <= next_["first_name"]
             else:
                 assert curr["last_name"] < next_["last_name"]
-
-    @pytest.mark.asyncio
-    async def test_order_by_aggregate_injects_to_select(self, adapter_env):
-        """Verify aggregate in ORDER BY is injected into SELECT when not already present.
-
-        When a query has both dimension columns AND order_by references an aggregate
-        not in SELECT, the aggregate should be injected into the SELECT clause.
-        """
-        # Use both status (dimension) and sum_amount (aggregate) in SELECT,
-        # but order by sum_amount which is already in SELECT - this tests
-        # that aggregate ordering works correctly when the aggregate is selected
-        fn = _field_node(
-            "orders",
-            [
-                _field_node("status"),  # dimension
-                _field_node(
-                    "_aggregate",
-                    [
-                        _field_node("sum", [_field_node("amount")]),
-                    ],
-                ),
-            ],
-        )
-        stmt = compile_query(
-            adapter_env.registry["orders"],
-            [fn],
-            adapter_env.registry,
-            order_by=[("_sum_amount", "desc")],
-            limit=5,
-        )
-        # If we get here without error, the aggregate ordering works
-        rows = await adapter_env.db.execute(stmt)
-        assert len(rows) == 5
-        # Verify descending order by sum_amount
-        sum_amounts = [r["_sum_amount"] for r in rows if r["_sum_amount"] is not None]
-        if len(sum_amounts) > 1:
-            assert sum_amounts == sorted(sum_amounts, reverse=True)
 
 
 # ---------------------------------------------------------------------------

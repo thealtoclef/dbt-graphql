@@ -483,67 +483,6 @@ def compile_query(
                     ):
                         raise ColumnAccessDenied(tdef.name, [col_name])
                     stmt = stmt.order_by(order_fn(aliased.c[col_name]))
-                elif col_name == AGGREGATE_FIELD:
-                    # For _aggregate order_by, use the first available aggregate projection
-                    # The caller should specify which aggregate operation to order by
-                    existing_labels = [
-                        p._label for p in all_projections if hasattr(p, "_label")
-                    ]
-                    # Try to find a reasonable aggregate column to order by
-                    # Prefer _count if available, otherwise first aggregate
-                    order_label = None
-                    if "_count" in existing_labels:
-                        order_label = "_count"
-                    elif existing_labels:
-                        order_label = existing_labels[0]
-                    if order_label:
-                        stmt = stmt.order_by(order_fn(literal_column(order_label)))
-                elif col_name.startswith("_") and not col_name.startswith("__"):
-                    # Might be an aggregate column - check if it matches aggregate patterns
-                    # Pattern: _<op>_<col> or _count or _count_distinct_<col>
-                    is_aggregate = False
-                    order_label = None
-
-                    # Check all possible aggregate label patterns
-                    if col_name == "_count":
-                        is_aggregate = True
-                        if "_count" in [
-                            p._label for p in all_projections if hasattr(p, "_label")
-                        ]:
-                            order_label = "_count"
-                    elif col_name.startswith("_count_distinct_"):
-                        col = col_name[len("_count_distinct_") :]
-                        potential_label = f"_count_distinct_{col}"
-                        if potential_label in [
-                            p._label for p in all_projections if hasattr(p, "_label")
-                        ]:
-                            order_label = potential_label
-                            is_aggregate = True
-                    else:
-                        # Check for _sum_, _avg_, _min_, _max_, _stddev_, _var_ patterns
-                        for prefix in (
-                            "_sum_",
-                            "_avg_",
-                            "_min_",
-                            "_max_",
-                            "_stddev_",
-                            "_var_",
-                        ):
-                            if col_name.startswith(prefix):
-                                col = col_name[len(prefix) :]
-                                potential_label = f"{prefix}{col}"
-                                if potential_label in [
-                                    p._label
-                                    for p in all_projections
-                                    if hasattr(p, "_label")
-                                ]:
-                                    order_label = potential_label
-                                    is_aggregate = True
-                                break
-
-                    if is_aggregate and order_label:
-                        stmt = stmt.order_by(order_fn(literal_column(order_label)))
-                        continue
                 else:
                     if (
                         resolved_policy is not None

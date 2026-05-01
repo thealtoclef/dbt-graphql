@@ -418,32 +418,6 @@ class TestOrderBy:
         assert "ORDER BY" in sql
         assert "DESC" in sql
 
-    def test_order_by_aggregate_field_injects_into_select(self):
-        """ORDER BY on an aggregate field should inject it into SELECT if not present."""
-        invoice, registry = _make_invoice_registry()
-        fn = _field_node(
-            "Invoice",
-            [
-                _field_node("CustomerId"),
-                _field_node("_aggregate", [_field_node("sum", [_field_node("Total")])]),
-            ],
-        )
-        stmt = compile_query(
-            tdef=invoice,
-            field_nodes=[fn],
-            registry=registry,
-            dialect="",
-            where=None,
-            order_by=[("_aggregate", "desc")],
-            limit=None,
-            offset=None,
-            distinct=None,
-            resolve_policy=None,
-        )
-        sql = _sql(stmt).upper()
-        assert "ORDER BY" in sql
-        assert "_SUM__TOTAL" in sql or "SUM" in sql
-
     def test_order_by_invalid_direction_raises(self):
         invoice, registry = _make_invoice_registry()
         fn = _field_node("Invoice", [_field_node("CustomerId")])

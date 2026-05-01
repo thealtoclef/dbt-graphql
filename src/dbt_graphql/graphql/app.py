@@ -174,8 +174,6 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         for col in table_def.columns:
             if not col.is_array:
                 lines.append(f"  {col.name}: OrderDirection")
-        # _aggregate fields for order_by
-        lines.append(f"  {AGGREGATE_FIELD}: OrderDirection")
         lines.append("}")
         order_by_defs.append("\n".join(lines))
 

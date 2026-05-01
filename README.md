@@ -52,9 +52,9 @@ serve:
 
 ## Query layer
 
-Each table exposes one root field that returns a `{T}Result` envelope —
-paginated rows, nested aggregates, and Cube-style GROUP BY share the same
-filter and the same DB round-trip when their fields are siblings.
+Each table exposes one root field that returns a flat list of row objects.
+Columns, nested relations, and inline aggregates are selected as sibling
+fields on the same type — one `SELECT`, one DB round-trip.
 
 ```graphql
 {
@@ -63,39 +63,31 @@ filter and the same DB round-trip when their fields are siblings.
       { status: { _in: ["completed", "shipped"] } },
       { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
     ]
-  }) {
-    nodes(order_by: { amount: desc }, limit: 50) {
-      order_id amount status
-      customer { customer_id name }   # nested via correlated subquery (no LATERAL)
-    }
+  }, order_by: { amount: desc }, limit: 50) {
+    order_id amount status
+    customer { customer_id name }   # nested via correlated subquery (no LATERAL)
     _aggregate {
       count
       sum { amount }
       avg { amount }
     }
-    group(order_by: { count: desc }) {
-      status
-      _aggregate {
-        count
-        sum { amount }
-      }
-    }
   }
 }
 ```
 
-- **`{T}_bool_exp`** (Hasura vocab): `_and` / `_or` / `_not` plus per-column
+- **`{T}Where`** (Hasura-inspired filter): `_and` / `_or` / `_not` plus per-column
   `_eq` / `_neq` / `_gt` / `_gte` / `_lt` / `_lte` / `_in` / `_nin` / `_is_null`
   / `_like` / `_nlike` / `_ilike` / `_nilike`. The same operator set is reused
   by access-policy `row_filter` blocks.
-- **`{T}_order_by`** (and `{T}_group_order_by`): single object with `column: asc | desc`.
-- **`distinct: true`** on the root field adds a plain `DISTINCT` to the nodes query.
-- **Aggregates**: nested under `_aggregate { ... }`. `count` always; `sum` / `avg` /
-  `stddev` / `var` contain numeric columns; `count_distinct` / `min` / `max`
-  contain all scalar columns. Selecting any combination fires one batched SELECT per request.
-- **`group`**: GROUP BY columns are auto-derived from whichever real-column
-  fields you select on `{T}_group` — no separate root entry. Aggregates inside
-  `group` are also nested under `_aggregate`.
+- **`{T}OrderBy`**: per-column ordering with `asc | desc`.
+- **`distinct: true`** on the root field adds a plain `DISTINCT` to the SELECT.
+- **Aggregates**: nested under `_aggregate { ... }` as a field on `{T}`. `count`
+  always; `sum` / `avg` / `stddev` / `var` contain numeric columns;
+  `count_distinct` / `min` / `max` contain all scalar columns. Selecting any
+  combination fires one batched SELECT per request.
+- **Mutual exclusivity**: `distinct` cannot be combined with `_aggregate`. Relation
+  fields cannot be combined with `_aggregate` (correlated subqueries and GROUP BY
+  do not mix).
 
 WHERE / ORDER BY references to columns the caller's policy hides raise
 `FORBIDDEN_COLUMN` at compile time so callers cannot probe hidden values

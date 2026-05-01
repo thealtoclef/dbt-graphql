@@ -172,8 +172,8 @@ path.
 `_eq`, `_neq`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_nin`, `_is_null`,
 `_like`, `_nlike`, `_ilike`, `_nilike`. The same operator vocabulary is
 shared with the GraphQL `{T}_bool_exp` filter — both call sites dispatch
-through `dbt_graphql.schema.operators.apply_comparison`, the single source of
-truth for Hasura-vocab → SQLAlchemy translation. RHS values are either:
+through `dbt_graphql.compiler.operators.apply_comparison`, the single source of
+truth for Hasura-inspired → SQLAlchemy translation. RHS values are either:
 
 - a literal scalar (`str`, `int`, `float`, `bool`),
 - a non-empty list of literals (for `_in` / `_nin`), or
