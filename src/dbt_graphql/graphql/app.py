@@ -193,7 +193,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
 
     query_fields = [
         _description_block(t.description, indent="  ")
-        + f"  {t.name}(where: {t.name}Where, order_by: {t.name}OrderBy, limit: Int, offset: Int, distinct: Boolean): [{t.name}!]!"
+        + f"  {t.name}(where: {t.name}Where, order_by: {t.name}OrderBy, limit: Int, offset: Int, distinct: Boolean): [{t.name}!]"
         for t in registry
     ]
     query_fields.append(

@@ -200,14 +200,17 @@ def _enforce_strict_columns(
         raise ColumnAccessDenied(table_name, denied)
 
 
-def _collect_field_names(field_nodes: list) -> set[str]:
-    """Return the set of field names selected in the first field node's selection set."""
+def _collect_field_names(field_nodes: list) -> list[str]:
+    """Return the list of field names selected in the first field node's selection set.
+
+    Returns a list (not set) to preserve AST order for cache key differentiation.
+    """
     if not field_nodes:
-        return set()
+        return []
     sel = field_nodes[0]
     if sel.selection_set is None:
-        return set()
-    return {f.name.value for f in sel.selection_set.selections}
+        return []
+    return [f.name.value for f in sel.selection_set.selections]
 
 
 # ---------------------------------------------------------------------------
