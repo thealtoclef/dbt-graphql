@@ -28,14 +28,14 @@ See [architecture.md](architecture.md) for the design principles that govern thi
 The schema exposes **one root field per table** that returns a flat list of row objects — no envelope. For each `TableDef` it emits:
 
 - **`type {T}`** — the row type. One field per column, plus a `_aggregate` field for inline aggregates and relation fields for FK-backed columns.
-- **`type {T}_aggregate`** — aggregate wrapper with per-function sub-objects:
+- **`type {T}Aggregate`** — aggregate wrapper with per-function sub-objects:
   - `count: Int!`
-  - `sum: {T}_aggregate_sum` — numeric columns.
-  - `avg: {T}_aggregate_avg` — numeric columns (always `Float`).
-  - `stddev: {T}_aggregate_stddev` / `var: {T}_aggregate_var` — numeric columns.
-  - `count_distinct: {T}_aggregate_count_distinct` — all scalar columns.
-  - `min: {T}_aggregate_min` / `max: {T}_aggregate_max` — all scalar columns.
-- **Per-operation aggregate types** (`{T}_aggregate_sum`, `{T}_aggregate_avg`, etc.) — named types containing the relevant columns as fields.
+  - `sum: {T}AggregateSum` — numeric columns.
+  - `avg: {T}AggregateAvg` — numeric columns (always `Float`).
+  - `stddev: {T}AggregateStddev` / `var: {T}AggregateVar` — numeric columns.
+  - `count_distinct: {T}AggregateCountDistinct` — all scalar columns.
+  - `min: {T}AggregateMin` / `max: {T}AggregateMax` — all scalar columns.
+- **Per-operation aggregate types** (`{T}AggregateSum`, `{T}AggregateAvg`, etc.) — named types containing the relevant columns as fields.
 - **`input {T}Where`** — recursive Hasura-style WHERE filter. `AND` / `OR` / `NOT` plus per-column typed filter inputs.
 - **`input {T}OrderBy`** — per-column ordering. Each column and `_aggregate` map to `OrderDirection`.
 - **`enum {T}Column`** — one value per scalar column.
@@ -93,9 +93,9 @@ Standard GraphQL `IntrospectionQuery` only exposes a fixed set of fields on `__T
 The remaining custom directives (`@table`, `@column`, `@id`, `@relation`, `@unique`, `@masked`, `@filtered`) do not appear in standard `__schema` introspection. They are exposed via two dedicated `Query` fields:
 
 - **`_sdl(tables: [String!]): String!`** — the **effective** db.graphql SDL for the current caller, pruned to tables and columns the caller's `AccessPolicy` allows, with `@masked` / `@filtered` injected per the resolved policy. Without `tables`, the full caller-effective document is returned. With `tables`, the output is intersected with the given names; names the caller cannot see (denied by policy or nonexistent) are silently skipped — an unauthorized name and a missing name are indistinguishable to the client by design.
-- **`_tables: [_TableInfo!]!`** — the cheap "index page" for the visible surface. Each entry carries `name` and `description` (dbt-authored) — enough for an agent to triage candidates before paying full-SDL cost via `_sdl(tables: [...])`. Structural detail (columns, relations) is intentionally omitted; that's `_sdl`'s job.
+- **`_tables: [TableInfo!]!`** — the cheap "index page" for the visible surface. Each entry carries `name` and `description` (dbt-authored) — enough for an agent to triage candidates before paying full-SDL cost via `_sdl(tables: [...])`. Structural detail (columns, relations) is intentionally omitted; that's `_sdl`'s job.
 
-The same pruned-AST renderer powers the MCP `describe_table` tool, so HTTP clients and LLM agents see byte-identical SDL. (The `--output` artefact is the unfiltered "boot" view; the per-caller view is `_sdl`.) The names `_sdl`, `_tables`, and `_TableInfo` are reserved — a dbt model colliding with any of them is rejected at boot.
+The same pruned-AST renderer powers the MCP `describe_table` tool, so HTTP clients and LLM agents see byte-identical SDL. (The `--output` artefact is the unfiltered "boot" view; the per-caller view is `_sdl`.) The names `_sdl`, `_tables`, and `TableInfo` are reserved — a dbt model colliding with any of them is rejected at boot.
 
 ---
 

@@ -89,49 +89,34 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         numeric_cols = numeric_columns(table_def.columns)
         all_cols = scalar_columns(table_def.columns)
 
-        # Generate separate named types for each aggregate operation
-        if numeric_cols:
-            # sum type
-            fields = "\n".join(f"  {c.name}: {c.gql_type}" for c in numeric_cols)
-            agg_type_defs.append(f"type {name}_aggregate_sum {{\n{fields}\n}}")
-            # avg type (always Float)
-            fields = "\n".join(f"  {c.name}: Float" for c in numeric_cols)
-            agg_type_defs.append(f"type {name}_aggregate_avg {{\n{fields}\n}}")
-            # stddev type
-            fields = "\n".join(f"  {c.name}: Float" for c in numeric_cols)
-            agg_type_defs.append(f"type {name}_aggregate_stddev {{\n{fields}\n}}")
-            # var type
-            fields = "\n".join(f"  {c.name}: Float" for c in numeric_cols)
-            agg_type_defs.append(f"type {name}_aggregate_var {{\n{fields}\n}}")
-        if all_cols:
-            # count_distinct type
-            fields = "\n".join(f"  {c.name}: Int" for c in all_cols)
-            agg_type_defs.append(
-                f"type {name}_aggregate_count_distinct {{\n{fields}\n}}"
-            )
-            # min type
-            fields = "\n".join(f"  {c.name}: {c.gql_type}" for c in all_cols)
-            agg_type_defs.append(f"type {name}_aggregate_min {{\n{fields}\n}}")
-            # max type
-            fields = "\n".join(f"  {c.name}: {c.gql_type}" for c in all_cols)
-            agg_type_defs.append(f"type {name}_aggregate_max {{\n{fields}\n}}")
+        # Declarative: (field_name, columns_source, return_type_fn)
+        # type_suffix is auto-derived as PascalCase of field_name (e.g. count_distinct -> CountDistinct)
+        def _snake_to_pascal(s):
+            return "".join(word.capitalize() for word in s.split("_"))
 
-        # Single aggregate type referencing the named operation types
-        agg_fields_lines = ["  count: Int!"]
-        if numeric_cols:
-            agg_fields_lines.append(f"  sum: {name}_aggregate_sum")
-            agg_fields_lines.append(f"  avg: {name}_aggregate_avg")
-            agg_fields_lines.append(f"  stddev: {name}_aggregate_stddev")
-            agg_fields_lines.append(f"  var: {name}_aggregate_var")
-        if all_cols:
-            agg_fields_lines.append(
-                f"  count_distinct: {name}_aggregate_count_distinct"
-            )
-            agg_fields_lines.append(f"  min: {name}_aggregate_min")
-            agg_fields_lines.append(f"  max: {name}_aggregate_max")
+        AGGREGATE_OPS = [
+            # (field_name, columns_source, return_type_fn)
+            ("sum", "numeric", lambda c: c.gql_type),
+            ("avg", "numeric", lambda _: "Float"),
+            ("stddev", "numeric", lambda _: "Float"),
+            ("var", "numeric", lambda _: "Float"),
+            ("count_distinct", "all", lambda _: "Int"),
+            ("min", "all", lambda c: c.gql_type),
+            ("max", "all", lambda c: c.gql_type),
+        ]
+
+        agg_field_lines = ["  count: Int!"]
+        for field_name, cols_src, ret_type_fn in AGGREGATE_OPS:
+            cols = numeric_cols if cols_src == "numeric" else all_cols
+            if not cols:
+                continue
+            type_name = f"{name}Aggregate{_snake_to_pascal(field_name)}"
+            fields = "\n".join(f"  {c.name}: {ret_type_fn(c)}" for c in cols)
+            agg_type_defs.append(f"type {type_name} {{\n{fields}\n}}")
+            agg_field_lines.append(f"  {field_name}: {type_name}")
 
         agg_type_defs.append(
-            f"type {name}_aggregate {{\n" + "\n".join(agg_fields_lines) + "\n}"
+            f"type {name}Aggregate {{\n" + "\n".join(agg_field_lines) + "\n}"
         )
 
         # --- type {T} with real columns AND _aggregate field ---
@@ -148,7 +133,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
             type_block += f"  {col.name}: {wrapped}\n"
 
         # _aggregate wrapper field
-        type_block += f"  {AGGREGATE_FIELD}: {name}_aggregate!\n"
+        type_block += f"  {AGGREGATE_FIELD}: {name}Aggregate!\n"
 
         type_block += "}"
         type_blocks.append(type_block)
@@ -203,7 +188,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     query_fields.append(
         '  """Names and descriptions of tables visible to this caller after policy '
         'pruning. Use as the cheap index before drilling in via `_sdl(tables: ...)`."""\n'
-        "  _tables: [_TableInfo!]!"
+        "  _tables: [TableInfo!]!"
     )
     query_block = "type Query {\n" + "\n".join(query_fields) + "\n}"
 
@@ -211,7 +196,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
         '"""Summary of a single table — the index-page projection. Description '
         "comes from the dbt manifest; structure (columns, relations) belongs to "
         '`_sdl`."""\n'
-        "type _TableInfo {\n"
+        "type TableInfo {\n"
         "  name: String!\n"
         '  "dbt-authored description; empty string when none is set."\n'
         "  description: String!\n"
@@ -280,7 +265,8 @@ def create_graphql_subapp(
     _RESERVED_TYPES = {
         "_sdl",
         "_tables",
-        "_TableInfo",
+        "TableInfo",
+        "PageInfo",
         "OrderDirection",
         "StringFilter",
         "IntFilter",
@@ -291,7 +277,8 @@ def create_graphql_subapp(
         "Where",
         "OrderBy",
         "Column",
-        AGGREGATE_FIELD,
+        "Aggregate",
+        "Result",
     )
     for t in registry:
         if t.name in _RESERVED_TYPES:
