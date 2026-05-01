@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from dbt_graphql.formatter.graphql import build_registry
+from dbt_graphql.graphql.sdl.generator import build_registry
 from dbt_graphql.pipeline import extract_project
 from dbt_graphql.mcp.discovery import SchemaDiscovery
 from dbt_graphql.ir.models import (

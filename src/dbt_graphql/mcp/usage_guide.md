@@ -5,19 +5,19 @@
 1. **Discover available tables** with `list_tables()`.
    Returns the index-page summary of tables visible to the caller — each
    entry has `name` and `description` (dbt-authored). Use this to triage
-   candidates *before* drilling in with `describe_tables`. Visibility is
+   candidates *before* drilling in with `describe_table`. Visibility is
    enforced upstream by the GraphQL `_tables` field — denied tables are
    never returned. Structural detail (columns, relations) is intentionally
-   not in this view; that's `describe_tables`'s job. Filter the returned
+   not in this view; that's `describe_table`'s job. Filter the returned
    list client-side if you need to narrow it.
 
-2. **Inspect tables** with `describe_tables(names: [str])`.
-   Returns the effective `db.graphql` SDL slice for the named tables, with
+2. **Inspect tables** with `describe_table(table: str)`.
+   Returns the effective `db.graphql` SDL slice for the named table, with
    full custom directives (`@table`, `@column`, `@relation`, `@lineage`,
    `@masked`, `@filtered`) — the format the schema is authored in. Names
    the caller cannot see (denied by policy or nonexistent) are silently
    skipped, so the response shape cannot be used to probe for existence.
-   **Do not use GraphQL `__schema` introspection** — `describe_tables`
+   **Do not use GraphQL `__schema` introspection** — `describe_table`
    is the authoritative effective view with full directive metadata.
 
    `@relation` directives in the SDL describe each foreign-key edge an
@@ -28,7 +28,7 @@
 3. **Find multi-hop join paths** with `find_path(from_table, to_table)`.
    BFS over the relationship graph; returns *all* shortest paths so the
    agent can pick between alternatives. Use this when 1-hop information
-   from `describe_tables` SDL isn't enough.
+   from `describe_table` SDL isn't enough.
 
 4. **Trace a column's origin** with `trace_column_lineage(table, column)`.
    Returns upstream sources and downstream consumers from the dbt manifest,
@@ -100,11 +100,11 @@ you cannot override them — the server enforces them on every execution.
 Every tool honours the caller's JWT payload. Depending on the deployed
 policy:
 
-- **Column-level**: `describe_tables` omits blocked columns from the SDL;
+- **Column-level**: `describe_table` omits blocked columns from the SDL;
   `run_graphql` rejects them with `FORBIDDEN_COLUMN`.
 - **Row-level**: `run_graphql` silently injects row filters into every
   relevant table's resolver. You cannot bypass them.
-- **Table-level**: `list_tables`, `describe_tables`, `find_path`,
+- **Table-level**: `list_tables`, `describe_table`, `find_path`,
   `trace_column_lineage` all filter their output to authorized tables
-  only. `describe_tables` silently skips unauthorized names (same shape
+  only. `describe_table` silently skips unauthorized names (same shape
   as nonexistent names) so the caller cannot probe for table existence.

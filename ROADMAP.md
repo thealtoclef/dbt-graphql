@@ -120,7 +120,7 @@ The total-scan question ("agent walks 100 pages") is answered by
   control can reason about budget per checkout, not per session.
 
 **Files / scope (sketch, not committed):**
-- `src/dbt_graphql/formatter/graphql.py` — emit `XConnection` /
+- `src/dbt_graphql/graphql/sdl/generator.py` — emit `XConnection` /
   `XEdge` / `PageInfo` SDL when a table opts in.
 - `src/dbt_graphql/graphql/resolvers.py` — new connection resolver path
   alongside the plain-list resolver.
@@ -251,7 +251,7 @@ dbt-graphql allowlist add --query "{ ... }" # manually add a query
 
 ### Policy-Aware Introspection — Pass 2
 
-Pass 1 landed: live-DB enrichment removed from MCP, PKs emitted as `ID`, dbt descriptions emitted as triple-quoted blocks, `@masked` / `@filtered` directives declared and the matching `ColumnDef.masked` / `TableDef.filtered` flags wired through SDL serialization + parser. Plan: [`docs/policy-aware-introspection-plan.md`](docs/policy-aware-introspection-plan.md).
+Pass 1 landed: live-DB enrichment removed from MCP, PKs emitted with `@id` directive (not `ID` scalar — they retain their actual scalar type), dbt descriptions emitted as triple-quoted blocks, `@masked` / `@filtered` directives declared and the matching `ColumnDef.masked` / `TableDef.filtered` flags wired through SDL serialization + parser. Policy introspection plan: deleted — PK→ID conversion was not implemented.
 
 Deferred to pass 2 (single umbrella entry — each item depends on the introspection-carrier decision):
 

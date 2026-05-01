@@ -5,7 +5,7 @@ Column names are validated against the table registry at policy-load time;
 the runtime emit goes through SQLAlchemy's expression language so bind
 parameters, NULL handling, and dialect quirks are not our concern.
 
-Grammar (YAML / dict) — Hasura convention. The example below uses YAML
+Grammar (YAML / dict). The example below uses YAML
 flow style (``{ ... }``) for compactness; block style is equivalent.
 
     row_filter:
@@ -17,10 +17,10 @@ flow style (``{ ... }``) for compactness; block style is equivalent.
         - status: { _in: [active, pending] }
 
 Logical operators: ``_and``, ``_or``, ``_not``.
-Column-level operators (Hasura vocab, cross-dialect via SQLAlchemy):
+Column-level operators (cross-dialect via SQLAlchemy):
   ``_eq``, ``_neq``, ``_gt``, ``_gte``, ``_lt``, ``_lte``
   ``_in``, ``_nin``, ``_is_null``
-  ``_like``, ``_nlike``, ``_ilike``, ``_nilike``
+  ``_like``, ``_nlike``, ``_ilike``, ``_nilike``, ``_regex``, ``_iregex``
 RHS values are literals (str/int/float/bool) or ``{ jwt: <dotted.path> }``
 references that resolve from the request JWT at compile time.
 """
@@ -33,7 +33,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import and_, bindparam, column, not_, or_
 from sqlalchemy.sql.elements import ColumnElement
 
-from ..sql_ops import COMPARISON_OPS, LIST_OPS, LOGICAL_OPS, apply_comparison
+from ..schema.constants import COMPARISON_OPS, LIST_OPS, LOGICAL_OPS
+from ..compiler.operators import apply_comparison
 
 if TYPE_CHECKING:
     from .auth import JWTPayload
@@ -60,13 +61,13 @@ def validate_row_filter(
 
     keys: list[str] = [str(k) for k in node.keys()]
     has_logical = any(k in LOGICAL_OPS for k in keys)
-    has_column = any(not k.startswith("_") for k in keys)
+    has_column = any(k not in LOGICAL_OPS for k in keys)
     if has_logical and has_column:
         raise RowFilterError(
             f"{path or '<root>'}: a node cannot mix logical operators "
             f"({sorted(k for k in keys if k in LOGICAL_OPS)}) with column keys "
-            f"({sorted(k for k in keys if not k.startswith('_'))}). "
-            "Wrap the column key in an explicit `_and`."
+            f"({sorted(k for k in keys if k not in LOGICAL_OPS)}). "
+            "Wrap the column key in an explicit `and`."
         )
     if has_logical and len(keys) > 1:
         raise RowFilterError(
@@ -92,12 +93,12 @@ def validate_row_filter(
                 )
             continue
 
-        if key.startswith("_"):
-            raise RowFilterError(
-                f"{sub_path}: unknown logical operator {key!r}. "
-                f"Logical operators are: {sorted(LOGICAL_OPS)}"
-            )
-        if key not in allowed_columns:
+        if key not in LOGICAL_OPS and key not in allowed_columns:
+            if key.startswith("_"):
+                raise RowFilterError(
+                    f"{sub_path}: unknown operator {key!r}. "
+                    f"Supported logical operators: {sorted(LOGICAL_OPS)}"
+                )
             raise RowFilterError(
                 f"{sub_path}: unknown column {key!r}. "
                 f"Allowed columns on this table: {sorted(allowed_columns)}"
@@ -109,7 +110,7 @@ def _validate_comparison(node: Any, *, path: str) -> None:
     if not isinstance(node, dict):
         raise RowFilterError(
             f"{path}: column comparison must be a mapping like "
-            f"{{ _eq: <value> }}, got {type(node).__name__}"
+            f"{{ eq: <value> }}, got {type(node).__name__}"
         )
     if len(node) != 1:
         raise RowFilterError(
@@ -135,7 +136,7 @@ def _validate_comparison(node: Any, *, path: str) -> None:
             if v is None:
                 raise RowFilterError(
                     f"{path}.{op}[{i}]: NULL is not a valid list element "
-                    "(SQL `IN (NULL)` never matches). Use `_is_null` for "
+                    "(SQL `IN (NULL)` never matches). Use `is_null` for "
                     "null checks."
                 )
             _validate_value(v, path=f"{path}.{op}[{i}]")

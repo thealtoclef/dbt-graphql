@@ -120,7 +120,7 @@ _adapter_cache: dict[str, dict] = {}
 
 def _get_adapter_data(name: str, artifacts: dict) -> dict:
     if name not in _adapter_cache:
-        from dbt_graphql.formatter.graphql import build_registry, format_graphql
+        from dbt_graphql.graphql.sdl.generator import build_registry, format_graphql
         from dbt_graphql.pipeline import extract_project
 
         project = extract_project(artifacts["catalog_path"], artifacts["manifest_path"])

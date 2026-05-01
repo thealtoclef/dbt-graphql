@@ -29,7 +29,7 @@ from loguru import logger
 from opentelemetry import metrics
 from sqlalchemy.sql import ClauseElement
 
-from .config import CacheConfig
+from ..config import CacheConfig
 from .keys import hash_sql
 from .stats import stats
 

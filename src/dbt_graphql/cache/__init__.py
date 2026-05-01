@@ -15,7 +15,7 @@ warehouse-roundtrip cache earns its keep.
 
 from __future__ import annotations
 
-from .config import CacheConfig
+from ..config import CacheConfig
 from .setup import close_cache, setup_cache
 from .stats import CacheStats, stats
 

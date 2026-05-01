@@ -1,6 +1,6 @@
 """Verify the registry → SDL → parse → print_ast pipeline round-trips.
 
-The ``_sdl`` GraphQL field and the MCP ``describe_tables`` tool both
+The ``_sdl`` GraphQL field and the MCP ``describe_table`` tool both
 rely on graphql-core's ``print_ast`` to render the per-request pruned
 ``DocumentNode`` back to text. If ``print_ast`` ever drifts from the
 hand-written ``_registry_to_sdl``, those callers would emit subtly
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from graphql import parse, print_ast
 
-from dbt_graphql.formatter.graphql import build_registry, build_source_doc
+from dbt_graphql.graphql.sdl.generator import build_registry, build_source_doc
 from dbt_graphql.pipeline import extract_project
 
 

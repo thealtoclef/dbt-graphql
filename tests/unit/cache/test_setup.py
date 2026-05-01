@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from cashews import cache
 
-from dbt_graphql.cache.config import CacheConfig
+from dbt_graphql.config import CacheConfig
 from dbt_graphql.cache.setup import close_cache, is_configured, setup_cache
 
 

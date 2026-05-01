@@ -69,10 +69,7 @@ async def test_pool_exhaustion_returns_503_with_retry_after(
                 return await ac.post(
                     "/graphql",
                     json={
-                        "query": (
-                            f"{{ customers {{ nodes(offset: {offset})"
-                            " { customer_id } } }"
-                        )
+                        "query": (f"{{ customers(offset: {offset}) {{ customer_id }}}}")
                     },
                 )
 

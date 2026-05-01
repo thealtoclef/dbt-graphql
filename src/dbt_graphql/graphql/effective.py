@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import copy
 
-from ..formatter.schema import TableDef, TableRegistry
+from ..schema.models import TableDef, TableRegistry
 from .auth import JWTPayload
 from .policy import PolicyEngine, PolicyError
 

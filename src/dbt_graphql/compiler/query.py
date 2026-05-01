@@ -16,8 +16,6 @@ from sqlalchemy import (
     Column,
     Select,
     and_,
-    asc,
-    desc,
     func,
     literal,
     literal_column,
@@ -29,7 +27,10 @@ from sqlalchemy import (
     true,
 )
 
-from ..sql_ops import apply_comparison
+from ..schema.models import ColumnDef, RelationDef, TableDef, TableRegistry
+from ..schema.constants import AGGREGATE_FIELD
+from ..schema.helpers import numeric_columns, scalar_columns
+from ..compiler.operators import apply_comparison, AGG_FUNC_MAP, ORDER_BY_MAP
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.elements import ClauseElement
 from sqlalchemy.sql.expression import FunctionElement
@@ -38,7 +39,6 @@ if TYPE_CHECKING:
     from ..graphql.policy import ResolvedPolicy
 
 from ..graphql.policy import ColumnAccessDenied
-from ..formatter.schema import ColumnDef, RelationDef, TableDef, TableRegistry
 
 ResolvePolicy = Callable[[str], "ResolvedPolicy"]
 
@@ -114,6 +114,7 @@ def _where_to_clause(
     """Recursively compile a ``{T}_bool_exp`` dict to a SQLAlchemy clause."""
     clauses = []
     for key, value in where.items():
+        # Handle combinators (_and, _or, _not)
         if key == "_and":
             clauses.append(
                 and_(
@@ -145,99 +146,6 @@ def _where_to_clause(
             for op, operand in value.items():
                 clauses.append(apply_comparison(col, op, operand))
     return and_(*clauses) if clauses else true()
-
-
-# ---------------------------------------------------------------------------
-# ORDER BY support
-# ---------------------------------------------------------------------------
-
-_ORDER_BY_MAP: dict[str, Any] = {
-    "asc": lambda c: asc(c),
-    "desc": lambda c: desc(c),
-}
-
-
-def _compile_order_by(
-    order_by: list[dict],
-    aliased: Any,
-    tdef: TableDef,
-    resolved_policy: "ResolvedPolicy | None",
-) -> list:
-    clauses = []
-    for item in order_by:
-        for col_name, direction in item.items():
-            if resolved_policy is not None and not resolved_policy.is_column_allowed(
-                col_name
-            ):
-                raise ColumnAccessDenied(tdef.name, [col_name])
-            order_fn = _ORDER_BY_MAP.get(direction)
-            if order_fn is None:
-                raise ValueError(f"Unknown order_by direction: {direction!r}")
-            clauses.append(order_fn(aliased.c[col_name]))
-    return clauses
-
-
-# ---------------------------------------------------------------------------
-# Aggregate support
-# ---------------------------------------------------------------------------
-
-_AGG_FUNC_MAP: dict[str, Any] = {
-    "sum": func.sum,
-    "avg": func.avg,
-    "stddev": func.stddev,
-    "var": func.variance,
-    "min": func.min,
-    "max": func.max,
-}
-
-_NUMERIC_GQL_TYPES = frozenset({"Int", "Float"})
-
-# Aggregate field names live in the same namespace as real columns on the
-# ``{T}_group`` row type. Collisions (e.g. a dbt column literally named
-# ``count`` or ``sum_amount``) are rejected at boot in
-# ``create_graphql_subapp`` — see ``AGGREGATE_FIELD_NAMES`` plumbing there.
-COUNT_FIELD = "count"
-_AGG_PREFIXES = ("sum_", "avg_", "stddev_", "var_", "min_", "max_")
-
-
-def agg_fields_for_table(tdef: TableDef) -> list[tuple[str, str]]:
-    """Return ``[(field_name, gql_scalar)]`` for all aggregate fields of a table.
-
-    Each tuple is ``(synthetic field name on {T}Result/{T}_group, GraphQL
-    scalar this aggregate returns)`` — the second element is what the
-    SDL emits to the right of the colon (``count: Int``,
-    ``sum_Total: Float``, ``min_BillingState: String``, …).
-
-    Always starts with ``("count", "Int")`` — ``COUNT(*)`` is always an
-    integer regardless of column types. Numeric columns (Int, Float, ID)
-    add sum/avg/stddev/var (always Float, since e.g. AVG of Ints is
-    fractional) plus min/max (preserving the column's own scalar). Other
-    columns (String, Boolean, …) get min/max only — lexicographic for
-    strings, lattice min/max for booleans.
-
-    Names are emitted as plain identifiers (no leading underscore) — they
-    are public surface, not private. Double-underscore is reserved by the
-    GraphQL spec for introspection (``__schema``); single-underscore has
-    no formal meaning but reads as "internal", which these public-facing
-    aggregate fields are not. We rely on the boot-time collision guard in
-    ``create_graphql_subapp`` to reject any dbt column whose name matches
-    a synthetic aggregate field.
-    """
-    fields: list[tuple[str, str]] = [(COUNT_FIELD, "Int")]
-    for col in tdef.columns:
-        if col.is_array:
-            continue
-        t = col.gql_type
-        if t in _NUMERIC_GQL_TYPES:
-            min_max_type = "Float" if t == "Float" else "Int"
-            for fn in ("sum", "avg", "stddev", "var"):
-                fields.append((f"{fn}_{col.name}", "Float"))
-            fields.append((f"min_{col.name}", min_max_type))
-            fields.append((f"max_{col.name}", min_max_type))
-        else:
-            fields.append((f"min_{col.name}", t))
-            fields.append((f"max_{col.name}", t))
-    return fields
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +208,353 @@ def _collect_field_names(field_nodes: list) -> set[str]:
     if sel.selection_set is None:
         return set()
     return {f.name.value for f in sel.selection_set.selections}
+
+
+# ---------------------------------------------------------------------------
+# Unified compile_query
+# ---------------------------------------------------------------------------
+
+
+def _is_agg_field(fname: str) -> bool:
+    """Return True if fname is the _aggregate wrapper field."""
+    return fname == AGGREGATE_FIELD
+
+
+def compile_query(
+    tdef: TableDef,
+    field_nodes: list,
+    registry: TableRegistry,
+    dialect: str = "",
+    where: dict | None = None,
+    order_by: list[tuple[str, str]] | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+    distinct: bool | None = None,
+    resolve_policy: ResolvePolicy | None = None,
+) -> Select:
+    """Unified query compiler handling row-only, aggregate-only, and mixed queries.
+
+    Partitions fields into:
+      - dim_cols: real table columns (dimension fields)
+      - agg_cols: aggregate fields (count, count_<col>, sum_<col>, avg_<col>, etc.)
+      - row_only: True when only dimension columns are selected (no aggregates)
+
+    Produces three SQL shapes:
+      - row_only:    SELECT dim_cols FROM t WHERE ... ORDER BY ... LIMIT ...
+      - agg_cols only: SELECT agg_cols FROM t WHERE ...
+      - both:        SELECT dim_cols, agg_cols FROM t WHERE ... GROUP BY dim_cols ...
+
+    Mutual exclusivity checks:
+      - distinct + agg_cols → ValueError
+      - relation fields + agg_cols → ValueError
+    """
+    selection = field_nodes[0] if field_nodes else None
+    if selection is None:
+        return select()
+
+    sub_fields = selection.selection_set.selections if selection.selection_set else []
+    scalars, relations = _extract_scalar_fields(tdef, sub_fields, registry)
+
+    resolved_policy: "ResolvedPolicy | None" = None
+    if resolve_policy is not None:
+        resolved_policy = resolve_policy(tdef.name)
+
+    requested = _collect_field_names(field_nodes)
+    dim_col_names = {c.name for c in tdef.columns if not c.is_array}
+
+    dim_cols = [f for f in requested if f in dim_col_names]
+    agg_cols = [f for f in requested if _is_agg_field(f)]
+    row_only = len(agg_cols) == 0
+
+    # Mutual exclusivity: distinct + aggregates
+    if distinct and agg_cols:
+        raise ValueError("distinct and aggregate fields cannot be selected together")
+
+    # Mutual exclusivity: relations + aggregates
+    if relations and agg_cols:
+        raise ValueError(
+            "aggregate fields cannot be selected alongside relation fields"
+        )
+
+    sa_table = _table_from_def(tdef)
+    aliased = sa_table.alias("_uq")
+
+    # Build projections
+    projections: list = []
+    agg_projections: list = []
+
+    # Dimension columns
+    masks = resolved_policy.masks if resolved_policy is not None else {}
+
+    # Pre-validate all dimension columns to collect all denied ones (backward compat)
+    if resolved_policy is not None:
+        denied = [col for col in dim_cols if not resolved_policy.is_column_allowed(col)]
+        if denied:
+            raise ColumnAccessDenied(tdef.name, denied)
+
+    for name in dim_cols:
+        if resolved_policy is not None and not resolved_policy.is_column_allowed(name):
+            raise ColumnAccessDenied(tdef.name, [name])
+        if name in masks:
+            projections.append(_mask_column(masks[name], name))
+        else:
+            projections.append(aliased.c[name].label(name))
+
+    # Aggregate columns
+    col_map = {c.name: c for c in tdef.columns}
+
+    for fname in sorted(agg_cols):
+        if fname == AGGREGATE_FIELD:
+            # Get operations inside _aggregate and their nested column selections
+            agg_selection = None
+            for node in field_nodes:
+                sel = node
+                if sel.selection_set:
+                    for f in sel.selection_set.selections:
+                        if f.name.value == AGGREGATE_FIELD:
+                            agg_selection = f
+                            break
+
+            if agg_selection is None or agg_selection.selection_set is None:
+                continue
+
+            # Process each operation inside _aggregate
+            for op_field in agg_selection.selection_set.selections:
+                op_name = op_field.name.value
+                op_nested_cols = []
+                if op_field.selection_set:
+                    op_nested_cols = [
+                        f.name.value for f in op_field.selection_set.selections
+                    ]
+
+                if op_name == "count":
+                    # COUNT(*) - no column needed
+                    if op_nested_cols:
+                        # count with specific columns - COUNT(col) for each
+                        for col_name in op_nested_cols:
+                            col_def = col_map.get(col_name)
+                            if col_def is None or col_def.is_array:
+                                continue
+                            if (
+                                resolved_policy is not None
+                                and not resolved_policy.is_column_allowed(col_name)
+                            ):
+                                raise ColumnAccessDenied(tdef.name, [col_name])
+                            internal_name = f"_count_{col_name}"
+                            agg_projections.append(
+                                func.count(aliased.c[col_name]).label(internal_name)
+                            )
+                    else:
+                        # Plain COUNT(*)
+                        agg_projections.append(func.count().label("_count"))
+                    continue
+
+                if op_name == "count_distinct":
+                    # COUNT(DISTINCT col) for each selected column
+                    for col_name in op_nested_cols:
+                        col_def = col_map.get(col_name)
+                        if col_def is None or col_def.is_array:
+                            continue
+                        if (
+                            resolved_policy is not None
+                            and not resolved_policy.is_column_allowed(col_name)
+                        ):
+                            raise ColumnAccessDenied(tdef.name, [col_name])
+                        internal_name = f"_count_distinct_{col_name}"
+                        agg_projections.append(
+                            func.count(aliased.c[col_name].distinct()).label(
+                                internal_name
+                            )
+                        )
+                    continue
+
+                # Map operation name to SQL function
+                agg_fn = AGG_FUNC_MAP.get(op_name)
+                if agg_fn is None:
+                    continue
+
+                # For sum/avg/stddev/var - only use numeric columns
+                # For min/max - use all non-array columns
+                valid_cols = op_nested_cols
+                if not valid_cols:
+                    # Default columns based on operation type
+                    if op_name in ("sum", "avg", "stddev", "var"):
+                        valid_cols = [c.name for c in numeric_columns(tdef.columns)]
+                    else:
+                        valid_cols = [c.name for c in scalar_columns(tdef.columns)]
+
+                for col_name in valid_cols:
+                    col_def = col_map.get(col_name)
+                    if col_def is None or col_def.is_array:
+                        continue
+                    if (
+                        resolved_policy is not None
+                        and not resolved_policy.is_column_allowed(col_name)
+                    ):
+                        raise ColumnAccessDenied(tdef.name, [col_name])
+                    # Internal naming: _sum_price, _avg_price, etc.
+                    internal_name = f"_{op_name}_{col_name}"
+                    agg_projections.append(
+                        agg_fn(aliased.c[col_name]).label(internal_name)
+                    )
+
+    # Build the statement based on query shape
+    if row_only:
+        # Shape 1: row-only (no aggregates)
+        all_projections = projections
+        stmt = select(*all_projections).select_from(aliased)
+
+        if (
+            resolved_policy is not None
+            and resolved_policy.row_filter_clause is not None
+        ):
+            stmt = stmt.where(resolved_policy.row_filter_clause)
+
+        if where:
+            stmt = stmt.where(_where_to_clause(where, aliased, tdef, resolved_policy))
+
+        if order_by:
+            for col_name, direction in order_by:
+                order_fn = ORDER_BY_MAP.get(direction)
+                if order_fn is None:
+                    raise ValueError(f"Unknown order_by direction: {direction!r}")
+                if (
+                    resolved_policy is not None
+                    and not resolved_policy.is_column_allowed(col_name)
+                ):
+                    raise ColumnAccessDenied(tdef.name, [col_name])
+                stmt = stmt.order_by(order_fn(aliased.c[col_name]))
+
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        if offset is not None:
+            stmt = stmt.offset(offset)
+
+        if distinct:
+            stmt = stmt.distinct()
+
+    elif not dim_cols:
+        # Shape 2: aggregates only (no dimensions)
+        all_projections = agg_projections
+        if not all_projections:
+            all_projections = [func.count().label("_count")]
+
+        stmt = select(*all_projections).select_from(aliased)
+
+        if (
+            resolved_policy is not None
+            and resolved_policy.row_filter_clause is not None
+        ):
+            stmt = stmt.where(resolved_policy.row_filter_clause)
+
+        if where:
+            stmt = stmt.where(_where_to_clause(where, aliased, tdef, resolved_policy))
+
+    else:
+        # Shape 3: both dimensions and aggregates → GROUP BY
+        all_projections = projections + agg_projections
+        group_cols = [aliased.c[d] for d in dim_cols]
+
+        stmt = select(*all_projections).select_from(aliased)
+        if group_cols:
+            stmt = stmt.group_by(*group_cols)
+
+        if (
+            resolved_policy is not None
+            and resolved_policy.row_filter_clause is not None
+        ):
+            stmt = stmt.where(resolved_policy.row_filter_clause)
+
+        if where:
+            stmt = stmt.where(_where_to_clause(where, aliased, tdef, resolved_policy))
+
+        if order_by:
+            for col_name, direction in order_by:
+                order_fn = ORDER_BY_MAP.get(direction)
+                if order_fn is None:
+                    raise ValueError(f"Unknown order_by direction: {direction!r}")
+                if col_name in dim_col_names:
+                    if (
+                        resolved_policy is not None
+                        and not resolved_policy.is_column_allowed(col_name)
+                    ):
+                        raise ColumnAccessDenied(tdef.name, [col_name])
+                    stmt = stmt.order_by(order_fn(aliased.c[col_name]))
+                elif col_name == AGGREGATE_FIELD:
+                    # For _aggregate order_by, use the first available aggregate projection
+                    # The caller should specify which aggregate operation to order by
+                    existing_labels = [
+                        p._label for p in all_projections if hasattr(p, "_label")
+                    ]
+                    # Try to find a reasonable aggregate column to order by
+                    # Prefer _count if available, otherwise first aggregate
+                    order_label = None
+                    if "_count" in existing_labels:
+                        order_label = "_count"
+                    elif existing_labels:
+                        order_label = existing_labels[0]
+                    if order_label:
+                        stmt = stmt.order_by(order_fn(literal_column(order_label)))
+                elif col_name.startswith("_") and not col_name.startswith("__"):
+                    # Might be an aggregate column - check if it matches aggregate patterns
+                    # Pattern: _<op>_<col> or _count or _count_distinct_<col>
+                    is_aggregate = False
+                    order_label = None
+
+                    # Check all possible aggregate label patterns
+                    if col_name == "_count":
+                        is_aggregate = True
+                        if "_count" in [
+                            p._label for p in all_projections if hasattr(p, "_label")
+                        ]:
+                            order_label = "_count"
+                    elif col_name.startswith("_count_distinct_"):
+                        col = col_name[len("_count_distinct_") :]
+                        potential_label = f"_count_distinct_{col}"
+                        if potential_label in [
+                            p._label for p in all_projections if hasattr(p, "_label")
+                        ]:
+                            order_label = potential_label
+                            is_aggregate = True
+                    else:
+                        # Check for _sum_, _avg_, _min_, _max_, _stddev_, _var_ patterns
+                        for prefix in (
+                            "_sum_",
+                            "_avg_",
+                            "_min_",
+                            "_max_",
+                            "_stddev_",
+                            "_var_",
+                        ):
+                            if col_name.startswith(prefix):
+                                col = col_name[len(prefix) :]
+                                potential_label = f"{prefix}{col}"
+                                if potential_label in [
+                                    p._label
+                                    for p in all_projections
+                                    if hasattr(p, "_label")
+                                ]:
+                                    order_label = potential_label
+                                    is_aggregate = True
+                                break
+
+                    if is_aggregate and order_label:
+                        stmt = stmt.order_by(order_fn(literal_column(order_label)))
+                        continue
+                else:
+                    if (
+                        resolved_policy is not None
+                        and not resolved_policy.is_column_allowed(col_name)
+                    ):
+                        raise ColumnAccessDenied(tdef.name, [col_name])
+                    stmt = stmt.order_by(order_fn(aliased.c[col_name]))
+
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        if offset is not None:
+            stmt = stmt.offset(offset)
+
+    return stmt
 
 
 def _build_correlated_subquery(
@@ -407,251 +662,3 @@ def _build_correlated_subquery(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-
-def compile_nodes_query(
-    tdef: TableDef,
-    field_nodes: list,
-    registry: TableRegistry,
-    dialect: str = "",
-    limit: int | None = None,
-    offset: int | None = None,
-    where: dict | None = None,
-    order_by: list[dict] | None = None,
-    max_depth: int | None = None,
-    resolve_policy: ResolvePolicy | None = None,
-) -> Select:
-    """Build a SQLAlchemy Core ``Select`` for row data with bool_exp WHERE and ORDER BY.
-
-    ``where`` is a ``{T}_bool_exp`` dict (recursive operators like ``_eq``,
-    ``_and``, ``_or``, etc.). ``order_by`` is a list of single-key dicts
-    mapping column name to an ``order_by`` enum value.
-
-    ``max_depth`` caps relation nesting (None = unlimited). Cycles in the
-    query selection are always rejected regardless of this setting.
-
-    ``resolve_policy`` is a callable that maps a table name to its
-    ``ResolvedPolicy`` (or raises ``TableAccessDenied``). When provided,
-    policy is enforced at every table visited by the query — including
-    nested relations.
-    """
-    selection = field_nodes[0] if field_nodes else None
-    if selection is None:
-        return select()
-
-    sub_fields = selection.selection_set.selections if selection.selection_set else []
-    scalars, relations = _extract_scalar_fields(tdef, sub_fields, registry)
-
-    resolved_policy: "ResolvedPolicy | None" = None
-    if resolve_policy is not None:
-        resolved_policy = resolve_policy(tdef.name)
-        _enforce_strict_columns(tdef.name, scalars, resolved_policy)
-
-    sa_table = _table_from_def(tdef)
-    aliased = sa_table.alias("_parent")
-
-    masks = resolved_policy.masks if resolved_policy is not None else {}
-    cols: list = []
-    for name in scalars:
-        if name in masks:
-            cols.append(_mask_column(masks[name], name))
-        else:
-            cols.append(aliased.c[name].label(name))
-
-    for col, rel, target in relations:
-        child_field_node = next(
-            (f for f in sub_fields if f.name.value == col.name), None
-        )
-        if child_field_node is None or child_field_node.selection_set is None:
-            continue
-
-        child_fields = child_field_node.selection_set.selections
-        subquery = _build_correlated_subquery(
-            parent_aliased=aliased,
-            parent_fk=col.name,
-            rel=rel,
-            target=target,
-            child_fields=child_fields,
-            registry=registry,
-            dialect=dialect,
-            max_depth=max_depth,
-            resolve_policy=resolve_policy,
-        )
-        cols.append(subquery.label(col.name))
-
-    stmt = select(*cols).select_from(aliased)
-
-    if resolved_policy is not None and resolved_policy.row_filter_clause is not None:
-        stmt = stmt.where(resolved_policy.row_filter_clause)
-
-    if where:
-        stmt = stmt.where(_where_to_clause(where, aliased, tdef, resolved_policy))
-
-    if order_by:
-        for clause in _compile_order_by(order_by, aliased, tdef, resolved_policy):
-            stmt = stmt.order_by(clause)
-
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    if offset is not None:
-        stmt = stmt.offset(offset)
-
-    return stmt
-
-
-def compile_aggregate_query(
-    tdef: TableDef,
-    requested_agg_fields: set[str],
-    where: dict | None = None,
-    resolve_policy: ResolvePolicy | None = None,
-) -> Select:
-    """Build a SELECT of aggregate projections over the filtered set.
-
-    ``requested_agg_fields`` is the set of flat names to compute, e.g.
-    ``{"count", "sum_Total", "avg_Total"}``. Only those aggregates appear
-    in the SELECT — unselected ones are skipped.
-    """
-    sa_table = _table_from_def(tdef)
-    aliased = sa_table.alias("_agg")
-
-    resolved_policy: "ResolvedPolicy | None" = None
-    if resolve_policy is not None:
-        resolved_policy = resolve_policy(tdef.name)
-
-    projections: list = []
-
-    if COUNT_FIELD in requested_agg_fields:
-        projections.append(func.count().label(COUNT_FIELD))
-
-    col_map = {c.name: c for c in tdef.columns}
-
-    for fname in sorted(requested_agg_fields):
-        if fname == COUNT_FIELD:
-            continue
-        for prefix in _AGG_PREFIXES:
-            if fname.startswith(prefix):
-                col_name = fname[len(prefix) :]
-                col_def = col_map.get(col_name)
-                if col_def is None or col_def.is_array:
-                    break
-                if (
-                    resolved_policy is not None
-                    and not resolved_policy.is_column_allowed(col_name)
-                ):
-                    raise ColumnAccessDenied(tdef.name, [col_name])
-                agg_fn_name = prefix.strip("_")
-                agg_fn = _AGG_FUNC_MAP.get(agg_fn_name)
-                if agg_fn is not None:
-                    projections.append(agg_fn(aliased.c[col_name]).label(fname))
-                break
-
-    if not projections:
-        projections = [func.count().label(COUNT_FIELD)]
-
-    stmt = select(*projections).select_from(aliased)
-
-    if resolved_policy is not None and resolved_policy.row_filter_clause is not None:
-        stmt = stmt.where(resolved_policy.row_filter_clause)
-
-    if where:
-        stmt = stmt.where(_where_to_clause(where, aliased, tdef, resolved_policy))
-
-    return stmt
-
-
-def compile_group_query(
-    tdef: TableDef,
-    field_nodes: list,
-    where: dict | None = None,
-    order_by: list[dict] | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
-    resolve_policy: ResolvePolicy | None = None,
-) -> Select:
-    """GROUP BY query with auto-derived grouping keys (Cube pattern).
-
-    GROUP BY columns are inferred from whichever dimension fields appear in
-    the selection set — fields whose name matches a table column and does not
-    start with an aggregate prefix (``sum_``, ``avg_``, etc.) or equal
-    ``count``.
-
-    ORDER BY is flat: both dimension column names and aggregate field names
-    (``count``, ``sum_Total``, etc.) are valid keys at the same level.
-    """
-    sa_table = _table_from_def(tdef)
-    aliased = sa_table.alias("_grp")
-
-    resolved_policy: "ResolvedPolicy | None" = None
-    if resolve_policy is not None:
-        resolved_policy = resolve_policy(tdef.name)
-
-    requested = _collect_field_names(field_nodes)
-    dim_col_names = {c.name for c in tdef.columns if not c.is_array}
-
-    # Dimensions are real table columns; aggregate fields (``count``,
-    # ``sum_*``, …) are guaranteed not to collide by the boot-time guard
-    # in ``create_graphql_subapp``. So a requested field is a dimension
-    # iff it's in ``dim_col_names``.
-    dimension_fields = [f for f in requested if f in dim_col_names]
-
-    group_cols = [aliased.c[d] for d in dimension_fields]
-    agg_projections: list = []
-
-    if COUNT_FIELD in requested:
-        agg_projections.append(func.count().label(COUNT_FIELD))
-
-    col_map = {c.name: c for c in tdef.columns}
-
-    for fname in sorted(requested):
-        if fname == COUNT_FIELD or fname in dim_col_names:
-            continue
-        for prefix in _AGG_PREFIXES:
-            if fname.startswith(prefix):
-                col_name = fname[len(prefix) :]
-                col_def = col_map.get(col_name)
-                if col_def is None or col_def.is_array:
-                    break
-                if (
-                    resolved_policy is not None
-                    and not resolved_policy.is_column_allowed(col_name)
-                ):
-                    raise ColumnAccessDenied(tdef.name, [col_name])
-                agg_fn_name = prefix.strip("_")
-                agg_fn = _AGG_FUNC_MAP.get(agg_fn_name)
-                if agg_fn is not None:
-                    agg_projections.append(agg_fn(aliased.c[col_name]).label(fname))
-                break
-
-    stmt = select(*group_cols, *agg_projections).select_from(aliased)
-    if group_cols:
-        stmt = stmt.group_by(*group_cols)
-
-    if resolved_policy is not None and resolved_policy.row_filter_clause is not None:
-        stmt = stmt.where(resolved_policy.row_filter_clause)
-
-    if where:
-        stmt = stmt.where(_where_to_clause(where, aliased, tdef, resolved_policy))
-
-    if order_by:
-        for item in order_by:
-            for key, direction in item.items():
-                order_fn = _ORDER_BY_MAP.get(direction)
-                if order_fn is None:
-                    raise ValueError(f"Unknown order_by direction: {direction!r}")
-                if key in dim_col_names:
-                    if (
-                        resolved_policy is not None
-                        and not resolved_policy.is_column_allowed(key)
-                    ):
-                        raise ColumnAccessDenied(tdef.name, [key])
-                    stmt = stmt.order_by(order_fn(aliased.c[key]))
-                else:
-                    # aggregate field (count, sum_Total, etc.) — use literal label
-                    stmt = stmt.order_by(order_fn(literal_column(key)))
-
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    if offset is not None:
-        stmt = stmt.offset(offset)
-
-    return stmt

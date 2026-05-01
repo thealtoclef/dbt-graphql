@@ -16,183 +16,195 @@ from graphql import DocumentNode, GraphQLSchema
 
 from ..cache import CacheConfig
 from ..compiler.connection import DatabaseManager
-from ..compiler.query import agg_fields_for_table
 from ..config import GraphQLConfig
-from ..formatter.graphql import _description_block, build_source_doc
-from ..formatter.schema import TableRegistry
+from .sdl.generator import _description_block, build_source_doc
+from ..schema.models import TableRegistry
+from ..schema.constants import AGGREGATE_FIELD, STANDARD_GQL_SCALARS
+from ..schema.helpers import numeric_columns, scalar_columns
+from ..schema.constants import (
+    LOGICAL_OPS,
+    SCALAR_FILTER_OPS,
+    _OPS_TAKING_BOOL,
+    LIST_OPS,
+)
 from .auth import JWTPayload
 from .guards import make_query_guard_rules
 from .monitoring import build_graphql_http_handler
 from .policy import AccessPolicy, PolicyEngine
 from .resolvers import create_query_type
 
-_STANDARD_GQL_SCALARS = {"String", "Int", "Float", "Boolean"}
 
-# Global synthetic types are framework-private — leading ``_`` matches the
-# convention set by ``_sdl`` / ``_tables`` / ``_TableInfo``. PK columns
-# keep their underlying scalar (``Int`` / ``String`` / etc.) so they
-# dispatch to the same ``_<Scalar>_comparison_exp`` as any other column
-# of that type — the PK signal travels via the ``@id`` directive in the
-# printed db.graphql artefact and ``Query._sdl``, not through the scalar.
-_GQL_SCALAR_TO_CMP_EXP: dict[str, str] = {
-    "String": "_String_comparison_exp",
-    "Int": "_Int_comparison_exp",
-    "Float": "_Float_comparison_exp",
-    "Boolean": "_Boolean_comparison_exp",
-}
+def _generate_shared_filter_types() -> str:
+    """Generate {Scalar}Filter SDL from operator definitions."""
+    blocks = []
+    for scalar, ops in SCALAR_FILTER_OPS.items():
+        lines = [f"input {scalar}Filter {{"]
+        for op in sorted(ops):
+            if op in _OPS_TAKING_BOOL:
+                rhs = "Boolean"
+            elif op in LIST_OPS:
+                rhs = f"[{scalar}!]"
+            else:
+                rhs = scalar
+            lines.append(f"  {op}: {rhs}")
+        lines.append("}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
-_COMPARISON_EXP_TYPES = """\
-input _String_comparison_exp {
-  _eq: String  _neq: String
-  _gt: String  _gte: String
-  _lt: String  _lte: String
-  _in: [String!]  _nin: [String!]
-  _is_null: Boolean
-  _like: String  _nlike: String
-  _ilike: String  _nilike: String
-}
 
-input _Int_comparison_exp {
-  _eq: Int  _neq: Int
-  _gt: Int  _gte: Int
-  _lt: Int  _lte: Int
-  _in: [Int!]  _nin: [Int!]
-  _is_null: Boolean
-}
+_SHARED_FILTER_TYPES = _generate_shared_filter_types()
 
-input _Float_comparison_exp {
-  _eq: Float  _neq: Float
-  _gt: Float  _gte: Float
-  _lt: Float  _lte: Float
-  _in: [Float!]  _nin: [Float!]
-  _is_null: Boolean
-}
-
-input _Boolean_comparison_exp {
-  _eq: Boolean
-  _is_null: Boolean
-}"""
-
-_ORDER_BY_ENUM = """\
-enum _order_by {
+_ORDER_DIRECTION_ENUM = """\
+enum OrderDirection {
   asc
   desc
 }"""
 
 
 def _build_ariadne_sdl(registry: TableRegistry) -> str:
-    """Build a standard GraphQL SDL (without db.graphql custom directives) for Ariadne.
+    """Build GraphJin-style GraphQL SDL for Ariadne.
 
     Emits per-table:
-    - ``type {T}`` — row type (unchanged from db.graphql)
-    - ``type {T}Result`` — result envelope with ``nodes``, aggregate fields, ``group``
-    - ``type {T}_group`` — GROUP BY row: dimensions + flat aggregate fields
-    - ``input {T}_bool_exp`` — recursive bool_exp WHERE filter
-    - ``input {T}_order_by`` — ORDER BY for ``nodes``
-    - ``input {T}_group_order_by`` — flat ORDER BY for ``group``
+    - ``type {T}`` — row type with real columns AND aggregate fields
+    - ``input {T}Where`` — recursive and/or/not + per-column unprefixed filter inputs
+    - ``input {T}OrderBy`` — every real column and aggregate field → OrderDirection
+    - ``enum {T}Column`` — one value per real scalar column
 
-    Shared framework-private types (``_<Scalar>_comparison_exp``, ``_order_by``)
-    are emitted once. The leading underscore matches the ``_sdl`` / ``_tables``
-    / ``_TableInfo`` convention for synthesized non-dbt surface.
+    Query root: ``Query.{T}(where, order_by, limit, offset, distinct) -> [T!]``
+
+    Shared types (``OrderDirection``, ``StringFilter``, ``IntFilter``, ``FloatFilter``,
+    ``BooleanFilter``) are emitted once before all tables.
     """
     custom_scalars: set[str] = set()
     type_blocks: list[str] = []
-    result_type_blocks: list[str] = []
-    group_type_blocks: list[str] = []
-    bool_exp_defs: list[str] = []
+    where_defs: list[str] = []
     order_by_defs: list[str] = []
-    group_order_by_defs: list[str] = []
+    column_enum_defs: list[str] = []
+    agg_type_defs: list[str] = []
 
     for table_def in registry:
         name = table_def.name
-        agg_fields = agg_fields_for_table(table_def)
 
-        # --- type {T} ---
+        # --- Generate aggregate object types ---
+        numeric_cols = numeric_columns(table_def.columns)
+        all_cols = scalar_columns(table_def.columns)
+
+        # Generate separate named types for each aggregate operation
+        if numeric_cols:
+            # sum type
+            fields = "\n".join(f"  {c.name}: {c.gql_type}" for c in numeric_cols)
+            agg_type_defs.append(f"type {name}_aggregate_sum {{\n{fields}\n}}")
+            # avg type (always Float)
+            fields = "\n".join(f"  {c.name}: Float" for c in numeric_cols)
+            agg_type_defs.append(f"type {name}_aggregate_avg {{\n{fields}\n}}")
+            # stddev type
+            fields = "\n".join(f"  {c.name}: Float" for c in numeric_cols)
+            agg_type_defs.append(f"type {name}_aggregate_stddev {{\n{fields}\n}}")
+            # var type
+            fields = "\n".join(f"  {c.name}: Float" for c in numeric_cols)
+            agg_type_defs.append(f"type {name}_aggregate_var {{\n{fields}\n}}")
+        if all_cols:
+            # count_distinct type
+            fields = "\n".join(f"  {c.name}: Int" for c in all_cols)
+            agg_type_defs.append(
+                f"type {name}_aggregate_count_distinct {{\n{fields}\n}}"
+            )
+            # min type
+            fields = "\n".join(f"  {c.name}: {c.gql_type}" for c in all_cols)
+            agg_type_defs.append(f"type {name}_aggregate_min {{\n{fields}\n}}")
+            # max type
+            fields = "\n".join(f"  {c.name}: {c.gql_type}" for c in all_cols)
+            agg_type_defs.append(f"type {name}_aggregate_max {{\n{fields}\n}}")
+
+        # Single aggregate type referencing the named operation types
+        agg_fields_lines = ["  count: Int!"]
+        if numeric_cols:
+            agg_fields_lines.append(f"  sum: {name}_aggregate_sum")
+            agg_fields_lines.append(f"  avg: {name}_aggregate_avg")
+            agg_fields_lines.append(f"  stddev: {name}_aggregate_stddev")
+            agg_fields_lines.append(f"  var: {name}_aggregate_var")
+        if all_cols:
+            agg_fields_lines.append(
+                f"  count_distinct: {name}_aggregate_count_distinct"
+            )
+            agg_fields_lines.append(f"  min: {name}_aggregate_min")
+            agg_fields_lines.append(f"  max: {name}_aggregate_max")
+
+        agg_type_defs.append(
+            f"type {name}_aggregate {{\n" + "\n".join(agg_fields_lines) + "\n}"
+        )
+
+        # --- type {T} with real columns AND _aggregate field ---
         type_block = _description_block(table_def.description)
         type_block += f"type {name} {{\n"
         for col in table_def.columns:
             type_name = col.gql_type
-            if type_name and type_name not in _STANDARD_GQL_SCALARS:
+            if type_name and type_name not in STANDARD_GQL_SCALARS:
                 custom_scalars.add(type_name)
             wrapped = f"[{type_name}]" if col.is_array else type_name
             if col.not_null:
                 wrapped += "!"
             type_block += _description_block(col.description, indent="  ")
             type_block += f"  {col.name}: {wrapped}\n"
+
+        # _aggregate wrapper field
+        type_block += f"  {AGGREGATE_FIELD}: {name}_aggregate!\n"
+
         type_block += "}"
         type_blocks.append(type_block)
 
-        # --- input {T}_bool_exp ---
+        # --- input {T}Where ---
         lines = [
-            f"input {name}_bool_exp {{",
-            f"  _and: [{name}_bool_exp!]",
-            f"  _or:  [{name}_bool_exp!]",
-            f"  _not: {name}_bool_exp",
+            f"input {name}Where {{",
+            f"  _and: [{name}Where!]",
+            f"  _or: [{name}Where!]",
+            f"  _not: {name}Where",
         ]
         for col in table_def.columns:
             if col.is_array:
                 continue
-            cmp_exp = _GQL_SCALAR_TO_CMP_EXP.get(col.gql_type, "_String_comparison_exp")
-            lines.append(f"  {col.name}: {cmp_exp}")
+            gql_type = col.gql_type
+            filter_type = f"{gql_type}Filter"
+            lines.append(f"  {col.name}: {filter_type}")
         lines.append("}")
-        bool_exp_defs.append("\n".join(lines))
+        where_defs.append("\n".join(lines))
 
-        # --- input {T}_order_by ---
-        lines = [f"input {name}_order_by {{"]
+        # --- input {T}OrderBy ---
+        lines = [f"input {name}OrderBy {{"]
         for col in table_def.columns:
             if not col.is_array:
-                lines.append(f"  {col.name}: _order_by")
+                lines.append(f"  {col.name}: OrderDirection")
+        # _aggregate fields for order_by
+        lines.append(f"  {AGGREGATE_FIELD}: OrderDirection")
         lines.append("}")
         order_by_defs.append("\n".join(lines))
 
-        # --- input {T}_group_order_by (flat: dimensions + aggregate fields) ---
-        lines = [f"input {name}_group_order_by {{"]
-        for col in table_def.columns:
-            if not col.is_array:
-                lines.append(f"  {col.name}: _order_by")
-        for fname, _ in agg_fields:
-            lines.append(f"  {fname}: _order_by")
+        # --- enum {T}Column ---
+        scalar_cols = [
+            c
+            for c in table_def.columns
+            if c.gql_type in STANDARD_GQL_SCALARS and not c.is_array
+        ]
+        lines = [f"enum {name}Column {{"]
+        for col in scalar_cols:
+            lines.append(f"  {col.name}")
         lines.append("}")
-        group_order_by_defs.append("\n".join(lines))
-
-        # --- type {T}Result ---
-        lines = [f"type {name}Result {{"]
-        lines.append(
-            f"  nodes(order_by: [{name}_order_by!], limit: Int, offset: Int): [{name}!]!"
-        )
-        for fname, ftype in agg_fields:
-            lines.append(f"  {fname}: {ftype}")
-        lines.append(
-            f"  group(order_by: [{name}_group_order_by!], limit: Int, offset: Int): [{name}_group!]!"
-        )
-        lines.append("}")
-        result_type_blocks.append("\n".join(lines))
-
-        # --- type {T}_group ---
-        lines = [f"type {name}_group {{"]
-        for col in table_def.columns:
-            if col.is_array:
-                continue
-            lines.append(f"  {col.name}: {col.gql_type}")
-        for fname, ftype in agg_fields:
-            lines.append(f"  {fname}: {ftype}")
-        lines.append("}")
-        group_type_blocks.append("\n".join(lines))
+        column_enum_defs.append("\n".join(lines))
 
     query_fields = [
         _description_block(t.description, indent="  ")
-        + f"  {t.name}(where: {t.name}_bool_exp): {t.name}Result"
+        + f"  {t.name}(where: {t.name}Where, order_by: {t.name}OrderBy, limit: Int, offset: Int, distinct: Boolean): [{t.name}!]!"
         for t in registry
     ]
     query_fields.append(
-        '  "The effective db.graphql SDL for this caller, with full custom directives.\\n'
+        '  """The effective db.graphql SDL for this caller, with full custom directives.\n'
         "If `tables` is given, only those tables are emitted; names the caller cannot "
-        'see are silently skipped."\n'
+        'see are silently skipped."""\n'
         "  _sdl(tables: [String!]): String!"
     )
     query_fields.append(
-        '  "Names and descriptions of tables visible to this caller after policy '
-        'pruning. Use as the cheap index before drilling in via `_sdl(tables: ...)`."\n'
+        '  """Names and descriptions of tables visible to this caller after policy '
+        'pruning. Use as the cheap index before drilling in via `_sdl(tables: ...)`."""\n'
         "  _tables: [_TableInfo!]!"
     )
     query_block = "type Query {\n" + "\n".join(query_fields) + "\n}"
@@ -211,13 +223,12 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     scalar_defs = [f"scalar {s}" for s in sorted(custom_scalars)]
     parts = (
         scalar_defs
-        + [_COMPARISON_EXP_TYPES, _ORDER_BY_ENUM]
-        + bool_exp_defs
+        + [_SHARED_FILTER_TYPES, _ORDER_DIRECTION_ENUM]
+        + column_enum_defs
+        + where_defs
         + order_by_defs
-        + group_order_by_defs
+        + agg_type_defs
         + type_blocks
-        + result_type_blocks
-        + group_type_blocks
         + [table_info_block, query_block]
     )
     return "\n\n".join(parts) + "\n"
@@ -272,18 +283,17 @@ def create_graphql_subapp(
         "_sdl",
         "_tables",
         "_TableInfo",
-        "_order_by",
-        "_String_comparison_exp",
-        "_Int_comparison_exp",
-        "_Float_comparison_exp",
-        "_Boolean_comparison_exp",
+        "OrderDirection",
+        "StringFilter",
+        "IntFilter",
+        "FloatFilter",
+        "BooleanFilter",
     }
     _DERIVED_SUFFIXES = (
-        "Result",
-        "_group",
-        "_bool_exp",
-        "_order_by",
-        "_group_order_by",
+        "Where",
+        "OrderBy",
+        "Column",
+        AGGREGATE_FIELD,
     )
     for t in registry:
         if t.name in _RESERVED_TYPES:
@@ -295,24 +305,38 @@ def create_graphql_subapp(
             if derived in table_names:
                 raise ValueError(
                     f"model name '{derived}' collides with the synthetic "
-                    f"type/input name '{derived}' derived from another model."
+                    f"type/input/enum '{derived}' derived from another model."
                 )
-        # Aggregate field names share a namespace with real columns on
-        # ``{T}_group`` — collisions are rejected here, not silently shadowed.
         col_names = {c.name for c in t.columns}
-        for fname, _ in agg_fields_for_table(t):
-            if fname in col_names:
+
+        # Top-level aggregate field name
+        agg_field_names = {
+            AGGREGATE_FIELD,
+        }
+
+        # Check exact collision: column name exactly matches an aggregate field name
+        for col_name in col_names:
+            if col_name in agg_field_names:
                 raise ValueError(
-                    f"table '{t.name}': column '{fname}' clashes with the "
-                    f"synthetic aggregate field of the same name."
+                    f"table '{t.name}': column '{col_name}' collides with "
+                    f"the aggregate field of the same name."
+                )
+
+        # Reject columns whose names collide with logical operators in Where inputs.
+        # A column named _and, _or, or _not would shadow the _and/_or/_not
+        # logical combinators in {T}Where and produce a GraphQL schema error.
+        for col_name in col_names:
+            if col_name in LOGICAL_OPS:
+                raise ValueError(
+                    f"table '{t.name}': column '{col_name}' collides with the "
+                    f"logical operator of the same name in Where inputs."
                 )
 
     policy_engine = PolicyEngine(access_policy) if access_policy is not None else None
     source_doc = build_source_doc(registry)
     query_type, object_types = create_query_type(registry)
-    gql_schema = make_executable_schema(
-        _build_ariadne_sdl(registry), query_type, *object_types
-    )
+    ariadne_sdl_str = _build_ariadne_sdl(registry)
+    gql_schema = make_executable_schema(ariadne_sdl_str, query_type, *object_types)
 
     validation_rules = make_query_guard_rules(
         max_depth=graphql_config.query_max_depth,

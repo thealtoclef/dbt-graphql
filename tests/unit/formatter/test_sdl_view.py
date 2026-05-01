@@ -4,8 +4,8 @@ from pathlib import Path
 
 from graphql import parse
 
-from dbt_graphql.formatter.graphql import build_registry, build_source_doc
-from dbt_graphql.formatter.sdl_view import effective_document, render_sdl
+from dbt_graphql.graphql.sdl.generator import build_registry, build_source_doc
+from dbt_graphql.graphql.sdl.view import effective_document, render_sdl
 from dbt_graphql.graphql.auth import JWTPayload
 from dbt_graphql.graphql.effective import effective_registry
 from dbt_graphql.graphql.policy import (

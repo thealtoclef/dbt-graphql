@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest_asyncio
 from cashews import cache
 
-from dbt_graphql.cache.config import CacheConfig
+from dbt_graphql.config import CacheConfig
 from dbt_graphql.cache.setup import close_cache, setup_cache
 from dbt_graphql.cache.stats import stats
 

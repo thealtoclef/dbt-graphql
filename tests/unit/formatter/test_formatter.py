@@ -79,12 +79,12 @@ def _sdl_col(
     is_unique: bool = False,
     relation=None,
 ) -> str:
-    from dbt_graphql.formatter.graphql import (
+    from dbt_graphql.graphql.sdl.generator import (
         _column_to_sdl,
         _parse_sql_type,
         _sql_to_gql_scalar,
     )
-    from dbt_graphql.formatter.schema import ColumnDef
+    from dbt_graphql.schema.models import ColumnDef
 
     base, size, is_array = _parse_sql_type(sql_type)
     col = ColumnDef(
@@ -134,27 +134,27 @@ class TestTypeMapping:
 
 class TestParseSqlType:
     def test_simple_type(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         assert _parse_sql_type("INTEGER") == ("INTEGER", "", False)
 
     def test_type_with_size(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         assert _parse_sql_type("VARCHAR(255)") == ("VARCHAR", "255", False)
 
     def test_numeric_with_precision_scale(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         assert _parse_sql_type("NUMERIC(10,2)") == ("NUMERIC", "10,2", False)
 
     def test_double_precision(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         assert _parse_sql_type("DOUBLE PRECISION") == ("DOUBLE PRECISION", "", False)
 
     def test_timestamp_with_time_zone(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         assert _parse_sql_type("TIMESTAMP WITH TIME ZONE") == (
             "TIMESTAMP WITH TIME ZONE",
@@ -163,7 +163,7 @@ class TestParseSqlType:
         )
 
     def test_postgres_array(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         base, size, is_array = _parse_sql_type("TEXT[]")
         assert base == "TEXT"
@@ -171,7 +171,7 @@ class TestParseSqlType:
         assert size == ""
 
     def test_bigquery_array(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         base, size, is_array = _parse_sql_type("ARRAY<STRING>")
         assert base == "STRING"
@@ -179,7 +179,7 @@ class TestParseSqlType:
         assert is_array is True
 
     def test_empty_string(self):
-        from dbt_graphql.formatter.graphql import _parse_sql_type
+        from dbt_graphql.graphql.sdl.generator import _parse_sql_type
 
         assert _parse_sql_type("") == ("", "", False)
 
@@ -208,8 +208,8 @@ class TestColumnDirectives:
         assert "@unique" not in line
 
     def test_masked_directive_emitted_when_flag_set(self):
-        from dbt_graphql.formatter.graphql import _column_to_sdl
-        from dbt_graphql.formatter.schema import ColumnDef
+        from dbt_graphql.graphql.sdl.generator import _column_to_sdl
+        from dbt_graphql.schema.models import ColumnDef
 
         col = ColumnDef(
             name="email", gql_type="String", sql_type="VARCHAR", masked=True
@@ -218,8 +218,8 @@ class TestColumnDirectives:
         assert "@masked" in line
 
     def test_masked_directive_absent_by_default(self):
-        from dbt_graphql.formatter.graphql import _column_to_sdl
-        from dbt_graphql.formatter.schema import ColumnDef
+        from dbt_graphql.graphql.sdl.generator import _column_to_sdl
+        from dbt_graphql.schema.models import ColumnDef
 
         col = ColumnDef(name="email", gql_type="String", sql_type="VARCHAR")
         line = _column_to_sdl(col)
@@ -230,7 +230,7 @@ class TestColumnDirectives:
         assert '@column(type: "NUMERIC", size: "10,2")' in line
 
     def test_relation_directive(self):
-        from dbt_graphql.formatter.schema import RelationDef
+        from dbt_graphql.schema.models import RelationDef
 
         rel = RelationDef(
             target_model="customers",
@@ -268,15 +268,15 @@ class TestNoRelationships:
 
 class TestTableDirectives:
     def test_filtered_directive_emitted_when_flag_set(self):
-        from dbt_graphql.formatter.graphql import _table_to_sdl
-        from dbt_graphql.formatter.schema import TableDef
+        from dbt_graphql.graphql.sdl.generator import _table_to_sdl
+        from dbt_graphql.schema.models import TableDef
 
         sdl = _table_to_sdl(TableDef(name="X", filtered=True))
         assert "@filtered" in sdl
 
     def test_filtered_directive_absent_by_default(self):
-        from dbt_graphql.formatter.graphql import _table_to_sdl
-        from dbt_graphql.formatter.schema import TableDef
+        from dbt_graphql.graphql.sdl.generator import _table_to_sdl
+        from dbt_graphql.schema.models import TableDef
 
         sdl = _table_to_sdl(TableDef(name="X"))
         assert "@filtered" not in sdl
@@ -284,16 +284,16 @@ class TestTableDirectives:
 
 class TestDescriptionEmission:
     def test_table_description_emitted_as_block(self):
-        from dbt_graphql.formatter.graphql import _table_to_sdl
-        from dbt_graphql.formatter.schema import TableDef
+        from dbt_graphql.graphql.sdl.generator import _table_to_sdl
+        from dbt_graphql.schema.models import TableDef
 
         sdl = _table_to_sdl(TableDef(name="X", description="Customer accounts."))
         assert '"""' in sdl
         assert "Customer accounts." in sdl
 
     def test_column_description_emitted_as_block(self):
-        from dbt_graphql.formatter.graphql import _column_to_sdl, _table_to_sdl
-        from dbt_graphql.formatter.schema import ColumnDef, TableDef
+        from dbt_graphql.graphql.sdl.generator import _column_to_sdl, _table_to_sdl
+        from dbt_graphql.schema.models import ColumnDef, TableDef
 
         col = ColumnDef(
             name="email",
@@ -319,7 +319,7 @@ class TestBuildRegistry:
     """build_registry produces the same logical schema as the SDL roundtrip."""
 
     def test_all_tables_present(self):
-        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.graphql.sdl.generator import build_registry
 
         project = _make_project()
         registry = build_registry(project)
@@ -327,7 +327,7 @@ class TestBuildRegistry:
             assert model.name in registry
 
     def test_columns_match_model(self):
-        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.graphql.sdl.generator import build_registry
 
         project = _make_project()
         registry = build_registry(project)
@@ -338,7 +338,7 @@ class TestBuildRegistry:
         assert "first_name" in col_names
 
     def test_pk_flag_set_for_sole_pk_model(self):
-        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.graphql.sdl.generator import build_registry
         from dbt_graphql.ir.models import ColumnInfo, ModelInfo, ProjectInfo
 
         col = ColumnInfo(name="id", type="INTEGER", not_null=True)
@@ -363,7 +363,7 @@ class TestBuildRegistry:
         assert pk_cols[0].name == "id"
 
     def test_relation_wired(self):
-        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.graphql.sdl.generator import build_registry
 
         project = _make_project()
         if not project.relationships:
@@ -379,7 +379,7 @@ class TestBuildRegistry:
         assert found_rel, "expected at least one relation to be wired"
 
     def test_table_database_and_schema_set(self):
-        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.graphql.sdl.generator import build_registry
 
         project = _make_project()
         registry = build_registry(project)
@@ -387,7 +387,7 @@ class TestBuildRegistry:
             assert table.database or table.schema or table.table
 
     def test_exclude_pattern_respected(self):
-        from dbt_graphql.formatter.graphql import build_registry
+        from dbt_graphql.graphql.sdl.generator import build_registry
 
         project = _make_project(exclude_patterns=[r"^stg_"])
         registry = build_registry(project)
@@ -395,8 +395,8 @@ class TestBuildRegistry:
         assert registry.get("customers") is not None
 
     def test_sdl_roundtrip_and_build_registry_same_tables(self):
-        from dbt_graphql.formatter.graphql import build_registry
-        from dbt_graphql.formatter.schema import parse_db_graphql
+        from dbt_graphql.graphql.sdl.generator import build_registry
+        from dbt_graphql.schema import parse_db_graphql
 
         project = _make_project()
         gj = format_graphql(project)
@@ -408,8 +408,8 @@ class TestBuildRegistry:
         assert sdl_tables == direct_tables
 
     def test_sdl_roundtrip_and_build_registry_same_columns(self):
-        from dbt_graphql.formatter.graphql import build_registry
-        from dbt_graphql.formatter.schema import parse_db_graphql
+        from dbt_graphql.graphql.sdl.generator import build_registry
+        from dbt_graphql.schema import parse_db_graphql
 
         project = _make_project()
         gj = format_graphql(project)

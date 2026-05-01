@@ -47,7 +47,7 @@ def test_validate_unknown_column_rejected():
 
 
 def test_validate_unknown_logical_operator_rejected():
-    with pytest.raises(RowFilterError, match="unknown logical operator"):
+    with pytest.raises(RowFilterError, match="unknown operator"):
         validate_row_filter(
             {"_xor": [{"id": {"_eq": 1}}]}, allowed_columns=_TABLE_COLUMNS
         )
@@ -55,9 +55,7 @@ def test_validate_unknown_logical_operator_rejected():
 
 def test_validate_unknown_comparison_operator_rejected():
     with pytest.raises(RowFilterError, match="unknown comparison operator"):
-        validate_row_filter(
-            {"id": {"_similar": "%foo"}}, allowed_columns=_TABLE_COLUMNS
-        )
+        validate_row_filter({"id": {"similar": "%foo"}}, allowed_columns=_TABLE_COLUMNS)
 
 
 def test_validate_in_requires_non_empty_list():

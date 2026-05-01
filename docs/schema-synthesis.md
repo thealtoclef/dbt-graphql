@@ -14,8 +14,8 @@ See [architecture.md](architecture.md) for the pipeline overview and design prin
 - [2. Intermediate representation (`ir/models.py`)](#2-intermediate-representation-irmodelspy)
 - [3. dbt processors (`dbt/`)](#3-dbt-processors-dbt)
 - [4. Lineage extraction](#4-lineage-extraction)
-- [5. SDL emission (`formatter/graphql.py`)](#5-sdl-emission-formattergraphqlpy)
-- [6. SDL parsing & `TableRegistry` (`formatter/schema.py`)](#6-sdl-parsing--tableregistry-formatterschemapy)
+- [5. Schema object + SDL emission (`graphql/sdl/generator.py`)](#5-schema-object--sdl-emission-graphqlsdlgeneratorpy)
+- [6. SDL parsing & `TableRegistry` (`schema/parse.py`)](#6-sdl-parsing--tableregistry-schemaparsepy)
 
 ---
 
@@ -31,7 +31,7 @@ See [architecture.md](architecture.md) for the pipeline overview and design prin
 6. **Merge relationships.** Three sources in priority order: dbt v1.5+ `constraints` > `relationships` tests > JOIN-ON mining (sqlglot). Each `ProcessorRelationship` carries an `origin` tag (`constraint` | `data_test` | `lineage`) that propagates to the IR. Deduplication is by relationship name: whichever tier lands first wins.
 7. **Attach relationships to models.** Each `RelationshipInfo` ends up on both the from-model and the to-model so downstream consumers can navigate edges without rebuilding an index.
 8. **Extract lineage.** Table lineage from `depends_on.nodes` for every model. Column lineage built with sqlglot directly — no optional-dependency gate.
-9. **Build enums dict.** Flattens `{enum_name: [values]}` for formatters that want it.
+9. **Build enums dict.** Flattens `{enum_name: [values]}` for the SDL generator.
 10. **Return `ProjectInfo`.** The single boundary between extraction and everything that follows.
 
 Once `ProjectInfo` is in hand, the rest of the system is deterministic: `build_registry()` → `TableRegistry`, compile GraphQL selections → SQL, execute. In `--output` mode, `_registry_to_sdl()` serialises `TableRegistry` to SDL and writes `db.graphql`.
@@ -141,9 +141,9 @@ No DB-introspection tool (Hasura, pg_graphql, PostGraphile) can produce lineage 
 
 ---
 
-## 5. Schema object + SDL emission (`formatter/graphql.py`)
+## 5. Schema object + SDL emission (`graphql/sdl/generator.py`)
 
-[`src/dbt_graphql/formatter/graphql.py`](../src/dbt_graphql/formatter/graphql.py)
+[`src/dbt_graphql/graphql/sdl/generator.py`](../src/dbt_graphql/graphql/sdl/generator.py)
 
 Three functions with a clear split of responsibility:
 
@@ -195,12 +195,12 @@ For each column:
 
 ---
 
-## 6. SDL parsing & `TableRegistry` (`formatter/schema.py`)
+## 6. SDL parsing & `TableRegistry` (`schema/parse.py`)
 
-[`src/dbt_graphql/formatter/schema.py`](../src/dbt_graphql/formatter/schema.py)
+[`src/dbt_graphql/schema/parse.py`](../src/dbt_graphql/schema/parse.py)
 
-At serve time and compile time, `db.graphql` is re-parsed into typed Python objects (`ColumnDef`, `TableDef`) — the inverse of the formatter. `TableRegistry` is a dict-like wrapper: `registry[name]`, `name in registry`, `iter(registry)`. The compiler and MCP layer both look up tables through it.
+At serve time and compile time, `db.graphql` can be re-parsed into typed Python objects (`ColumnDef`, `TableDef`) — the inverse of the SDL generator. `TableRegistry` is a dict-like wrapper: `registry[name]`, `name in registry`, `iter(registry)`. The compiler and MCP layer both look up tables through it.
 
 Parsing uses `graphql-core`. `_unwrap_type()` walks `NonNullTypeNode` → `ListTypeNode` → `NamedTypeNode` to compute `(type_name, not_null, is_array)`. `_directive_args()` flattens directive arguments into a `dict[str, str]`.
 
-**When is parsing used?** The primary serve path does not use `parse_db_graphql` — it calls `build_registry()` directly from dbt artifacts. `parse_db_graphql` is still useful when you have a pre-built `db.graphql` (e.g. a CI-generated artifact shipped to production without dbt artifacts) and want to reconstruct a `TableRegistry` from it without re-running extraction.
+**When is parsing used?** The primary serve path does not use `parse_db_graphql` — it calls `build_registry()` directly from dbt artifacts. `load_db_graphql` (in `schema/parse.py`) is still useful when you have a pre-built `db.graphql` (e.g. a CI-generated artifact shipped to production without dbt artifacts) and want to reconstruct a `TableRegistry` from it without re-running extraction.

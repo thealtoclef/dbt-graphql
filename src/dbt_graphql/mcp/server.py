@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 from graphql import ExecutionResult, execute, parse, validate
 from graphql.validation import specified_rules
 
-from ..formatter.schema import TableRegistry
+from ..schema.models import TableRegistry
 from ..graphql.app import GraphQLBundle
 from ..graphql.auth import JWTPayload
 from ..graphql.policy import PolicyEngine, PolicyError
@@ -175,7 +175,7 @@ class McpTools:
     queries through the same Ariadne schema with the same per-request
     context — so masks, blocked columns, and row filters apply.
 
-    ``bundle`` is required: ``list_tables`` / ``describe_tables`` route
+    ``bundle`` is required: ``list_tables`` / ``describe_table`` route
     through its executable schema, and ``run_graphql`` executes against
     it. ``policy_engine`` is optional; when ``None`` the tools behave as
     unrestricted schema discovery (dev / unit-test mode), matching the
@@ -221,8 +221,8 @@ class McpTools:
 
         Each entry carries ``name`` and ``description`` — the index-page
         projection an agent uses to triage candidates before drilling in
-        via ``describe_tables``. Structural detail (columns, relations) is
-        intentionally omitted; it belongs to ``describe_tables(names)``.
+        via ``describe_table``. Structural detail (columns, relations) is
+        intentionally omitted; it belongs to ``describe_table(table)``.
 
         Visibility is enforced upstream by the GraphQL ``_tables`` resolver —
         denied tables are never returned. The agent filters client-side
@@ -234,14 +234,16 @@ class McpTools:
             "tables": tables,
             "_meta": {
                 "next_steps": [
-                    "Call describe_tables(names) to get the SDL slice for one or more tables.",
+                    "Call describe_table(table) to get the SDL slice for a single table.",
                     "Call find_path(from, to) to discover multi-hop join paths between tables.",
                 ]
             },
         }
 
-    def describe_tables(self, names: list[str]) -> str:
-        """Return the effective ``db.graphql`` SDL slice for ``names``.
+    def describe_table(self, table: str) -> str:
+        """Return the effective ``db.graphql`` SDL slice for a single table.
+
+        Call multiple times for multiple tables (GraphJin pattern).
 
         The output is plain SDL — type definitions with full custom
         directives (``@table``, ``@column``, ``@relation``, ``@masked``,
@@ -251,7 +253,7 @@ class McpTools:
         """
         result = self._exec_graphql(
             "query Q($t: [String!]) { _sdl(tables: $t) }",
-            variables={"t": list(names)},
+            variables={"t": [table]},  # wrap single table in list
         )
         return result["_sdl"]
 
@@ -305,7 +307,7 @@ class McpTools:
                 "to_table": to_table,
                 "_meta": {
                     "next_steps": [
-                        "Call describe_tables on each endpoint to see which @relation directives "
+                        "Call describe_table on each endpoint to see which @relation directives "
                         "they expose and pick a different starting point."
                     ]
                 },
@@ -382,7 +384,7 @@ class McpTools:
             "downstream": downstream,
             "_meta": {
                 "next_steps": [
-                    "Call describe_tables on upstream or downstream tables for column details, "
+                    "Call describe_table on upstream or downstream tables for column details, "
                     "then write a query and pass it to run_graphql."
                 ]
             },
@@ -531,8 +533,8 @@ def create_mcp_server(
     mcp = FastMCP("dbt-graphql")
 
     mcp.tool(name="list_tables")(_instrument_tool("list_tables", tools.list_tables))
-    mcp.tool(name="describe_tables")(
-        _instrument_tool("describe_tables", tools.describe_tables)
+    mcp.tool(name="describe_table")(
+        _instrument_tool("describe_table", tools.describe_table)
     )
     mcp.tool(name="find_path")(_instrument_tool("find_path", tools.find_path))
     mcp.tool(name="trace_column_lineage")(

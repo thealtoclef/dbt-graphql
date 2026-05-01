@@ -6,9 +6,40 @@ import yaml
 from pydantic import BaseModel, HttpUrl, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from . import defaults
-from .cache.config import CacheConfig
 from .graphql.policy import PolicyEntry
+
+# Default values — single source of truth for AppConfig fields.
+# Keep in sync with docs/configuration.md.
+DEFAULT = {
+    # Monitoring — OTel resource attributes and log level.
+    "MONITORING_SERVICE_NAME": "dbt-graphql",
+    "MONITORING_LOG_LEVEL": "INFO",
+    # Cache — result cache + singleflight.
+    "CACHE_DEFAULT_URL": "mem://?size=10000",
+    "CACHE_TTL": 60,
+    "CACHE_LOCK_SAFETY_TIMEOUT": 10,
+    # DB connection pool.
+    "DB_POOL_SIZE": 20,
+    "DB_POOL_MAX_OVERFLOW": 10,
+    "DB_POOL_TIMEOUT": 10,
+    "DB_POOL_RECYCLE": 1800,
+    "DB_POOL_RETRY_AFTER": 5,
+    # JWT.
+    "JWT_LEEWAY": 30,
+    "JWT_JWKS_CACHE_TTL": 3600,
+    # Query guards.
+    "QUERY_MAX_DEPTH": 5,
+    "QUERY_MAX_FIELDS": 50,
+    "QUERY_MAX_LIMIT": 1000,
+}
+
+
+class CacheConfig(BaseModel):
+    """Cache configuration for result cache + singleflight."""
+
+    url: str = DEFAULT["CACHE_DEFAULT_URL"]
+    ttl: int = DEFAULT["CACHE_TTL"]
+    lock_safety_timeout: int = DEFAULT["CACHE_LOCK_SAFETY_TIMEOUT"]
 
 
 class PoolConfig(BaseModel):
@@ -20,13 +51,13 @@ class PoolConfig(BaseModel):
     so the API returns 503+Retry-After before the LB resets the connection.
     """
 
-    size: int = defaults.DB_POOL_SIZE
-    max_overflow: int = defaults.DB_POOL_MAX_OVERFLOW
-    timeout: float = defaults.DB_POOL_TIMEOUT
-    recycle: int = defaults.DB_POOL_RECYCLE
+    size: int = DEFAULT["DB_POOL_SIZE"]
+    max_overflow: int = DEFAULT["DB_POOL_MAX_OVERFLOW"]
+    timeout: float = DEFAULT["DB_POOL_TIMEOUT"]
+    recycle: int = DEFAULT["DB_POOL_RECYCLE"]
     # Emitted as ``Retry-After: <value>`` on 503 responses (seconds, per
-    # RFC 9110 §10.2.3). See ``DB_POOL_RETRY_AFTER`` in defaults.py.
-    retry_after: int = defaults.DB_POOL_RETRY_AFTER
+    # RFC 9110 §10.2.3). See ``DEFAULT["DB_POOL_RETRY_AFTER"]``.
+    retry_after: int = DEFAULT["DB_POOL_RETRY_AFTER"]
 
 
 class DbConfig(BaseModel):
@@ -74,11 +105,11 @@ class MetricsConfig(_OTLPSignalConfig):
 
 
 class LogsConfig(_OTLPSignalConfig):
-    level: str = defaults.MONITORING_LOG_LEVEL
+    level: str = DEFAULT["MONITORING_LOG_LEVEL"]
 
 
 class MonitoringConfig(BaseModel):
-    service_name: str = defaults.MONITORING_SERVICE_NAME
+    service_name: str = DEFAULT["MONITORING_SERVICE_NAME"]
     traces: TracesConfig = TracesConfig()
     metrics: MetricsConfig = MetricsConfig()
     logs: LogsConfig = LogsConfig()
@@ -87,10 +118,10 @@ class MonitoringConfig(BaseModel):
 class GraphQLConfig(BaseModel):
     """Query guard limits applied to all incoming GraphQL operations."""
 
-    query_max_depth: int = defaults.QUERY_MAX_DEPTH
-    query_max_fields: int = defaults.QUERY_MAX_FIELDS
+    query_max_depth: int = DEFAULT["QUERY_MAX_DEPTH"]
+    query_max_fields: int = DEFAULT["QUERY_MAX_FIELDS"]
     # ``None`` disables the list-limit cap entirely.
-    query_max_limit: int | None = defaults.QUERY_MAX_LIMIT
+    query_max_limit: int | None = DEFAULT["QUERY_MAX_LIMIT"]
 
 
 class JWTConfig(BaseModel):
@@ -101,12 +132,12 @@ class JWTConfig(BaseModel):
     algorithms: list[str] = []
     audience: str | list[str] | None = None
     issuer: str | None = None
-    leeway: int = defaults.JWT_LEEWAY
+    leeway: int = DEFAULT["JWT_LEEWAY"]
     required_claims: list[str] = ["exp"]
     roles_claim: str = "scope"
 
     jwks_url: HttpUrl | None = None
-    jwks_cache_ttl: int = defaults.JWT_JWKS_CACHE_TTL
+    jwks_cache_ttl: int = DEFAULT["JWT_JWKS_CACHE_TTL"]
     key_url: HttpUrl | None = None
     key_env: str | None = None
     key_file: Path | None = None

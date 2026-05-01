@@ -14,7 +14,7 @@ See [architecture.md](architecture.md) for the design principles that govern thi
 - [2. Why correlated subqueries, not LATERAL joins](#2-why-correlated-subqueries-not-lateral-joins)
 - [3. Dialect-aware JSON aggregation](#3-dialect-aware-json-aggregation)
 - [4. Three compilers (`compile_nodes_query`, `compile_aggregate_query`, `compile_group_query`)](#4-three-compilers)
-- [5. Hasura-vocab dispatch (`sql_ops.py`)](#5-hasura-vocab-dispatch-sql_opspy)
+- [5. Hasura-vocab dispatch (`schema/operators.py`)](#5-hasura-vocab-dispatch-schemaoperatorspy)
 - [6. Connection management (`compiler/connection.py`)](#6-connection-management-compilerconnectionpy)
 
 ---
@@ -26,7 +26,7 @@ Given a GraphQL field like:
 ```graphql
 {
   orders(where: { status: { _eq: "completed" } }) {
-    nodes(order_by: [{ amount: desc }], limit: 10) {
+    nodes(order_by: { amount: desc }, limit: 10) {
       order_id
       amount
       customer {
@@ -34,13 +34,16 @@ Given a GraphQL field like:
         name
       }
     }
-    count
-    sum_amount
+    _aggregate {
+      count
+      sum { amount }
+      avg { amount }
+    }
   }
 }
 ```
 
-the resolver chain produces **two** SQLAlchemy `Select`s — one for `nodes`, one batched aggregate for all sibling aggregate fields:
+the resolver chain produces **two** SQLAlchemy `Select`s — one for `nodes`, one batched aggregate:
 
 ```sql
 -- nodes
@@ -55,8 +58,8 @@ WHERE _parent.status = 'completed'
 ORDER BY _parent.amount DESC
 LIMIT 10;
 
--- aggregates (one round-trip, all count + sum_* columns the table exposes)
-SELECT count(*) AS count, sum(_agg.amount) AS sum_amount, ...
+-- aggregates (one round-trip, all requested aggregate functions)
+SELECT count(*) AS count, sum(_agg.amount) AS sum_amount, avg(_agg.amount) AS avg_amount
 FROM orders AS _agg
 WHERE _agg.status = 'completed';
 ```
@@ -89,7 +92,7 @@ SQL generation stays dialect-agnostic until the moment of rendering.
 
 ### `compile_nodes_query`
 
-Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus optional `where` (Hasura `_bool_exp` dict), `order_by` (list of single-key dicts), `limit`, `offset`, `max_depth`, `resolve_policy`.
+Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus optional `where` (Hasura `_bool_exp` dict), `order_by` (single object with column keys), `limit`, `offset`, `max_depth`, `resolve_policy`.
 
 1. `_extract_scalar_fields()` partitions the selection into direct columns and FK-backed relations.
 2. For each relation: `_build_correlated_subquery` builds a correlated subquery that aggregates child rows into a JSON array, correlated on the FK equality.
@@ -101,11 +104,11 @@ Inputs: a `TableDef`, the GraphQL field node list, the `TableRegistry`, plus opt
 
 ### `compile_aggregate_query`
 
-Inputs: a `TableDef`, a `requested_agg_fields` set (e.g. `{"count", "sum_Total"}`), `where`, `resolve_policy`. Emits `SELECT count(*)/sum(col)/...`. Resolvers always pass the *full* table aggregate set so the result can be cached on the carrier dict and shared across siblings — the marginal cost of a few extra aggregates is far less than per-field round-trips. Unsupported names (unknown column, array column) are silently dropped; if the projection ends up empty, the SELECT falls back to `count`.
+Inputs: a `TableDef`, the requested aggregate fields from the `_aggregate` selection set (e.g. `{"count", "sum_amount", "avg_price"}`), `where`, `resolve_policy`. Emits `SELECT count(*)/sum(col)/...`. Resolvers pass the fields actually requested in the `_aggregate` block so the SELECT covers exactly what the client asked for — one DB round-trip per request regardless of how many aggregate sub-fields were selected. Unsupported names (unknown column, array column) are silently dropped; if the projection ends up empty, the SELECT falls back to `count`.
 
 ### `compile_group_query`
 
-Inputs: a `TableDef`, the GraphQL field nodes for `{T}_group`'s selection set, `where`, flat `order_by`, `limit`, `offset`, `resolve_policy`. Cube-style: GROUP BY columns are auto-derived from whichever real column names appear in the selection. The dimension/aggregate split is by set membership against the table's column list — `count`, `sum_<col>` etc. cannot collide with real columns thanks to the boot-time guard in `create_graphql_subapp`. ORDER BY accepts either a dimension column or an aggregate alias (`count`, `sum_Total`); aggregates are emitted via `literal_column(label)` so the underlying engine can ORDER BY the projection alias.
+Inputs: a `TableDef`, the GraphQL field nodes for `{T}_group`'s selection set, `where`, single-object `order_by`, `limit`, `offset`, `resolve_policy`. Cube-style: GROUP BY columns are auto-derived from whichever real column names appear in the selection. The dimension/aggregate split is by set membership against the table's column list — aggregate function names like `count`, `sum` etc. live inside their own sub-objects within `_aggregate`, so they cannot collide with real columns. ORDER BY accepts either a dimension column or an aggregate alias (`count`, `sum_Total`); aggregates are emitted via `literal_column(label)` so the underlying engine can ORDER BY the projection alias.
 
 **Not supported (explicitly):**
 - Filtering or ordering on nested relation fields.
@@ -114,9 +117,9 @@ Inputs: a `TableDef`, the GraphQL field nodes for `{T}_group`'s selection set, `
 
 ---
 
-## 5. Hasura-vocab dispatch (`sql_ops.py`)
+## 5. Hasura-vocab dispatch (`schema/operators.py`)
 
-`src/dbt_graphql/sql_ops.py` is the single source of truth for translating Hasura comparison operators (`_eq`, `_neq`, `_gt`, `_in`, `_nin`, `_is_null`, `_like`, `_ilike`, …) to SQLAlchemy clauses. Both the GraphQL `{T}_bool_exp` compiler and the policy `row_filter` DSL go through `apply_comparison(col, op, value)` — same op names, same SQL semantics, same NULL handling. The module lives at the package root (not under `compiler/`) to avoid a circular import (`compiler/__init__` → `query` → `graphql.policy` → `graphql.row_filter`).
+`src/dbt_graphql/schema/operators.py` is the single source of truth for translating Hasura comparison operators (`_eq`, `_neq`, `_gt`, `_in`, `_nin`, `_is_null`, `_like`, `_ilike`, …) to SQLAlchemy clauses. Both the GraphQL `{T}_bool_exp` compiler and the policy `row_filter` DSL go through `apply_comparison(col, op, value)` — same op names, same SQL semantics, same NULL handling. The module lives in `schema/` (shared runtime types and constants) alongside the other types and helpers consumed by both the compiler and the GraphQL layer.
 
 ---
 

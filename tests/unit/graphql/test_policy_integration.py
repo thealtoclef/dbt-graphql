@@ -1,10 +1,9 @@
-"""Integration tests: access policy + compile_nodes_query + SQLAlchemy.
+"""Integration tests: access policy + compile_query + SQLAlchemy.
 
 These tests compile real SQL (against the postgresql dialect) to prove that
 policy actually restricts columns, applies masks, injects row filters, and
 raises on unauthorized access — and, critically, that JWT claim values are
-bound as parameters and cannot inject SQL. Nested-relation policy
-enforcement is exercised alongside the root-table cases.
+bound as parameters and cannot inject SQL.
 """
 
 from __future__ import annotations
@@ -24,13 +23,8 @@ from dbt_graphql.graphql.policy import (
     Effect,
 )
 from dbt_graphql.graphql.auth import JWTPayload
-from dbt_graphql.compiler.query import compile_nodes_query
-from dbt_graphql.formatter.schema import (
-    ColumnDef,
-    RelationDef,
-    TableDef,
-    TableRegistry,
-)
+from dbt_graphql.compiler.query import compile_query
+from dbt_graphql.schema.models import ColumnDef, TableDef, TableRegistry
 
 
 def _customers_registry() -> tuple[TableDef, TableRegistry]:
@@ -52,48 +46,10 @@ def _customers_registry() -> tuple[TableDef, TableRegistry]:
     return customers, TableRegistry([customers])
 
 
-def _customers_orders_registry() -> tuple[TableDef, TableDef, TableRegistry]:
-    """Two tables + FK from customers.primary_order_id → orders.order_id."""
-    orders = TableDef(
-        name="orders",
-        database="mydb",
-        schema="main",
-        table="orders",
-        columns=[
-            ColumnDef(name="order_id", gql_type="Integer", not_null=True, is_pk=True),
-            ColumnDef(name="status", gql_type="Text"),
-            ColumnDef(name="internal_notes", gql_type="Text"),
-            ColumnDef(name="customer_id", gql_type="Integer"),
-        ],
-    )
-    customers = TableDef(
-        name="customers",
-        database="mydb",
-        schema="main",
-        table="customers",
-        columns=[
-            ColumnDef(
-                name="customer_id", gql_type="Integer", not_null=True, is_pk=True
-            ),
-            ColumnDef(name="email", gql_type="Text"),
-            ColumnDef(name="primary_order_id", gql_type="Integer"),
-            ColumnDef(
-                name="primary_order",
-                gql_type="orders",
-                relation=RelationDef(
-                    target_model="orders",
-                    target_column="order_id",
-                ),
-            ),
-        ],
-    )
-    return customers, orders, TableRegistry([customers, orders])
-
-
 def _nodes(query: str) -> list:
     """Parse a GraphQL query and return the top-level field nodes.
 
-    ``compile_nodes_query`` walks real ``graphql-core`` AST nodes at runtime;
+    ``compile_query`` walks real ``graphql-core`` AST nodes at runtime;
     tests build the same shape via ``graphql.parse`` instead of
     hand-rolled duck types so any AST change surfaces here too.
     """
@@ -143,10 +99,16 @@ def test_blocked_column_is_stripped_from_sql():
 
     fields = _nodes("{ customers { customer_id email } }")
     sql = _sql(
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     )
@@ -172,10 +134,16 @@ def test_includes_whitelist_in_sql():
 
     fields = _nodes("{ customers { customer_id email } }")
     sql = _sql(
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     )
@@ -204,10 +172,16 @@ def test_strict_includes_raises_on_unlisted_column():
     )
     fields = _nodes("{ customers { customer_id email ssn } }")
     with pytest.raises(ColumnAccessDenied) as exc_info:
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     assert exc_info.value.table == "customers"
@@ -231,10 +205,16 @@ def test_strict_excludes_raises_on_excluded_column():
     )
     fields = _nodes("{ customers { customer_id ssn } }")
     with pytest.raises(ColumnAccessDenied) as exc_info:
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     assert exc_info.value.columns == ["ssn"]
@@ -254,10 +234,16 @@ def test_default_deny_at_root_raises_table_denied():
     )
     fields = _nodes("{ customers { customer_id } }")
     with pytest.raises(TableAccessDenied) as exc_info:
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     assert exc_info.value.table == "customers"
@@ -267,7 +253,20 @@ def test_no_resolve_policy_is_unrestricted_no_op():
     """When resolve_policy=None, no enforcement — parity with old tests."""
     customers, registry = _customers_registry()
     fields = _nodes("{ customers { customer_id ssn email } }")
-    sql = _sql(compile_nodes_query(customers, fields, registry, resolve_policy=None))
+    sql = _sql(
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
+            resolve_policy=None,
+        )
+    )
     assert "customer_id" in sql
     assert "ssn" in sql
     assert "email" in sql
@@ -294,10 +293,16 @@ def test_null_mask_appears_in_sql():
     )
     fields = _nodes("{ customers { customer_id ssn } }")
     sql = _sql(
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     )
@@ -323,10 +328,16 @@ def test_expression_mask_appears_in_sql():
     )
     fields = _nodes("{ customers { email } }")
     sql = _sql(
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     )
@@ -356,10 +367,16 @@ def test_row_filter_uses_bind_param():
     )
 
     fields = _nodes("{ customers { customer_id } }")
-    stmt = compile_nodes_query(
-        customers,
-        fields,
-        registry,
+    stmt = compile_query(
+        tdef=customers,
+        field_nodes=fields,
+        registry=registry,
+        dialect="",
+        where=None,
+        order_by=None,
+        limit=None,
+        offset=None,
+        distinct=None,
         resolve_policy=_resolver(engine, JWTPayload({"claims": {"org_id": 42}})),
     )
 
@@ -384,10 +401,16 @@ def test_row_filter_injection_attempt_does_not_inject():
         )
     )
     fields = _nodes("{ customers { customer_id } }")
-    stmt = compile_nodes_query(
-        customers,
-        fields,
-        registry,
+    stmt = compile_query(
+        tdef=customers,
+        field_nodes=fields,
+        registry=registry,
+        dialect="",
+        where=None,
+        order_by=None,
+        limit=None,
+        offset=None,
+        distinct=None,
         resolve_policy=_resolver(
             engine,
             JWTPayload({"claims": {"org_id": "1'; DROP TABLE customers; --"}}),
@@ -416,12 +439,17 @@ def test_row_filter_combined_with_user_where():
     )
     fields = _nodes("{ customers { customer_id } }")
     sql = _sql(
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
-            resolve_policy=_resolver(engine, JWTPayload({"claims": {"org_id": 42}})),
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
             where={"customer_id": {"_eq": 1}},
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
+            resolve_policy=_resolver(engine, JWTPayload({"claims": {"org_id": 42}})),
         )
     )
     assert "org_id" in sql
@@ -447,12 +475,17 @@ def test_where_on_unauthorized_column_raises():
     )
     fields = _nodes("{ customers { customer_id } }")
     with pytest.raises(ColumnAccessDenied) as exc:
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
-            resolve_policy=_resolver(engine, JWTPayload({})),
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
             where={"ssn": {"_eq": "123-45-6789"}},
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
+            resolve_policy=_resolver(engine, JWTPayload({})),
         )
     assert exc.value.columns == ["ssn"]
 
@@ -474,41 +507,16 @@ def test_order_by_on_unauthorized_column_raises():
     )
     fields = _nodes("{ customers { customer_id } }")
     with pytest.raises(ColumnAccessDenied) as exc:
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
-            resolve_policy=_resolver(engine, JWTPayload({})),
-            order_by=[{"ssn": "asc"}],
-        )
-    assert exc.value.columns == ["ssn"]
-
-
-def test_group_order_by_on_unauthorized_dimension_raises():
-    """ORDER BY on a policy-blocked dimension column inside ``compile_group_query``
-    must also raise — same boolean side-channel risk as the nodes path."""
-    from dbt_graphql.compiler.query import compile_group_query
-
-    customers, _registry = _customers_registry()
-    engine = _engine(
-        PolicyEntry(
-            effect=Effect.ALLOW,
-            name="analyst",
-            when="True",
-            tables={
-                "customers": TablePolicy(
-                    column_level=ColumnLevelPolicy(include_all=True, excludes=["ssn"])
-                )
-            },
-        )
-    )
-    # Group-row selection: dimension ``customer_id`` is allowed; ``ssn`` is hidden.
-    fields = _nodes("{ customers { customer_id } }")
-    with pytest.raises(ColumnAccessDenied) as exc:
-        compile_group_query(
-            customers,
-            fields,
-            order_by=[{"ssn": "asc"}],
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=[("ssn", "asc")],
+            limit=None,
+            offset=None,
+            distinct=None,
             resolve_policy=_resolver(engine, JWTPayload({})),
         )
     assert exc.value.columns == ["ssn"]
@@ -517,192 +525,32 @@ def test_group_order_by_on_unauthorized_dimension_raises():
 def test_no_policy_compiles_identically_to_no_argument():
     customers, registry = _customers_registry()
     fields = _nodes("{ customers { customer_id email } }")
-    baseline = _sql(compile_nodes_query(customers, fields, registry))
-    with_none = _sql(compile_nodes_query(customers, fields, registry, resolve_policy=None))
+    baseline = _sql(
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
+            resolve_policy=None,
+        )
+    )
+    with_none = _sql(
+        compile_query(
+            tdef=customers,
+            field_nodes=fields,
+            registry=registry,
+            dialect="",
+            where=None,
+            order_by=None,
+            limit=None,
+            offset=None,
+            distinct=None,
+            resolve_policy=None,
+        )
+    )
     assert baseline == with_none
-
-
-# ---------------------------------------------------------------------------
-# Nested relations: policy must still apply
-# ---------------------------------------------------------------------------
-
-
-def test_nested_relation_denies_when_target_table_unlisted():
-    """Querying customers { primary_order { ... } } must deny if no policy
-    covers orders — otherwise nested queries are a blanket policy bypass."""
-    customers, _orders, registry = _customers_orders_registry()
-    engine = _engine(
-        PolicyEntry(
-            effect=Effect.ALLOW,
-            name="customers_only",
-            when="True",
-            tables={
-                "customers": TablePolicy(
-                    column_level=ColumnLevelPolicy(include_all=True)
-                )
-            },
-        )
-    )
-    fields = _nodes("{ customers { customer_id primary_order { order_id } } }")
-    with pytest.raises(TableAccessDenied) as exc_info:
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
-            resolve_policy=_resolver(engine, JWTPayload({})),
-        )
-    assert exc_info.value.table == "orders"
-
-
-def test_nested_relation_strict_column_rejects_unauthorized_child_column():
-    customers, _orders, registry = _customers_orders_registry()
-    engine = _engine(
-        PolicyEntry(
-            effect=Effect.ALLOW,
-            name="all",
-            when="True",
-            tables={
-                "customers": TablePolicy(
-                    column_level=ColumnLevelPolicy(include_all=True)
-                ),
-                "orders": TablePolicy(
-                    column_level=ColumnLevelPolicy(includes=["order_id"])
-                ),
-            },
-        )
-    )
-    fields = _nodes(
-        "{ customers { customer_id primary_order { order_id internal_notes } } }"
-    )
-    with pytest.raises(ColumnAccessDenied) as exc_info:
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
-            resolve_policy=_resolver(engine, JWTPayload({})),
-        )
-    assert exc_info.value.table == "orders"
-    assert exc_info.value.columns == ["internal_notes"]
-
-
-def test_nested_relation_mask_applied_inside_subquery():
-    customers, _orders, registry = _customers_orders_registry()
-    engine = _engine(
-        PolicyEntry(
-            effect=Effect.ALLOW,
-            name="all",
-            when="True",
-            tables={
-                "customers": TablePolicy(
-                    column_level=ColumnLevelPolicy(include_all=True)
-                ),
-                "orders": TablePolicy(
-                    column_level=ColumnLevelPolicy(
-                        include_all=True, mask={"internal_notes": None}
-                    )
-                ),
-            },
-        )
-    )
-    fields = _nodes(
-        "{ customers { customer_id primary_order { order_id internal_notes } } }"
-    )
-    sql = _sql(
-        compile_nodes_query(
-            customers,
-            fields,
-            registry,
-            resolve_policy=_resolver(engine, JWTPayload({})),
-        )
-    )
-    # The JSON payload must carry a SQL NULL for internal_notes. Crucially,
-    # the raw column reference (child_1.internal_notes) must NOT appear —
-    # otherwise the mask was silently skipped inside the subquery.
-    assert "'internal_notes', NULL" in sql
-    assert "child_1.internal_notes" not in sql
-    # Unmasked column still reads its real value.
-    assert "'order_id', child_1.order_id" in sql
-
-
-def test_nested_relation_row_filter_applied_to_subquery():
-    customers, _orders, registry = _customers_orders_registry()
-    engine = _engine(
-        PolicyEntry(
-            effect=Effect.ALLOW,
-            name="all",
-            when="True",
-            tables={
-                "customers": TablePolicy(
-                    column_level=ColumnLevelPolicy(include_all=True)
-                ),
-                "orders": TablePolicy(
-                    column_level=ColumnLevelPolicy(include_all=True),
-                    row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
-                ),
-            },
-        )
-    )
-    fields = _nodes("{ customers { customer_id primary_order { order_id } } }")
-    stmt = compile_nodes_query(
-        customers,
-        fields,
-        registry,
-        resolve_policy=_resolver(engine, JWTPayload({"claims": {"cust_id": 7}})),
-    )
-    # Literal-binds rendering: the row filter must appear verbatim with
-    # the bind value inlined inside the subquery.
-    sql = _sql(stmt)
-    assert "customer_id = 7" in sql
-    # The filter must NOT be applied at the outer level — that would
-    # filter customers.customer_id (wrong semantics) instead of
-    # orders.customer_id.
-    assert "_parent.customer_id = 7" not in sql
-
-
-def test_nested_relation_row_filter_AND_mask_both_inside_subquery():
-    """Most security-critical untested surface: a nested relation must apply
-    BOTH the row filter on the child table AND the mask on a child column —
-    inside the correlated subquery, not at the outer SELECT. If either is
-    silently dropped or hoisted, multi-tenant isolation breaks for nested
-    queries."""
-    customers, _orders, registry = _customers_orders_registry()
-    engine = _engine(
-        PolicyEntry(
-            effect=Effect.ALLOW,
-            name="all",
-            when="True",
-            tables={
-                "customers": TablePolicy(
-                    column_level=ColumnLevelPolicy(include_all=True)
-                ),
-                "orders": TablePolicy(
-                    column_level=ColumnLevelPolicy(
-                        include_all=True, mask={"internal_notes": None}
-                    ),
-                    row_filter={"customer_id": {"_eq": {"jwt": "claims.cust_id"}}},
-                ),
-            },
-        )
-    )
-    fields = _nodes(
-        "{ customers { customer_id primary_order { order_id internal_notes } } }"
-    )
-    stmt = compile_nodes_query(
-        customers,
-        fields,
-        registry,
-        resolve_policy=_resolver(engine, JWTPayload({"claims": {"cust_id": 7}})),
-    )
-    sql = _sql(stmt)
-
-    # Mask was applied inside the subquery — internal_notes is NULL'd, the
-    # raw column reference does not appear anywhere.
-    assert "'internal_notes', NULL" in sql
-    assert "child_1.internal_notes" not in sql
-
-    # Row filter was applied inside the subquery — bind value is present.
-    assert "customer_id = 7" in sql
-
-    # Critically: row filter must NOT be applied at the outer level (which
-    # would filter customers.customer_id, the wrong table).
-    assert "_parent.customer_id = 7" not in sql

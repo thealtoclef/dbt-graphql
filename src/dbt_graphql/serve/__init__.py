@@ -6,7 +6,7 @@ from loguru import logger
 from starlette.applications import Starlette
 
 from ..config import AppConfig
-from ..formatter.schema import TableRegistry
+from ..schema.models import TableRegistry
 from ..graphql.policy import AccessPolicy
 from .app import create_app
 

@@ -18,7 +18,7 @@ Flow:
                                       db.graphql file  (--output mode)
 
 The same ``render_sdl`` is used by the GraphQL ``_sdl`` field and the MCP
-``describe_tables`` tool, so file output and live SDL are byte-identical.
+``describe_table`` tool, so file output and live SDL are byte-identical.
 """
 
 from __future__ import annotations
@@ -28,8 +28,15 @@ import re
 from graphql import DocumentNode, parse
 from pydantic import BaseModel
 
-from ..ir.models import ProjectInfo, RelationshipInfo
-from .schema import ColumnDef, ColumnLineageRef, RelationDef, TableDef, TableRegistry
+from ...ir.models import ProjectInfo, RelationshipInfo
+from ...schema.models import (
+    ColumnDef,
+    ColumnLineageRef,
+    RelationDef,
+    TableDef,
+    TableRegistry,
+)
+from .view import render_sdl
 
 # Explicit int aliases that don't end with "INT" (e.g. INTEGER, UINTEGER, INT64).
 _INT_EXACT = frozenset({"INT", "INT2", "INT4", "INT8", "INT64", "INTEGER", "UINTEGER"})
@@ -86,8 +93,6 @@ class GraphQLResult(BaseModel):
 
 def format_graphql(project: ProjectInfo) -> GraphQLResult:
     """Convert domain-neutral ProjectInfo into GraphQL db schema."""
-    from .sdl_view import render_sdl
-
     registry = build_registry(project)
     return GraphQLResult(db_graphql=render_sdl(build_source_doc(registry)))
 

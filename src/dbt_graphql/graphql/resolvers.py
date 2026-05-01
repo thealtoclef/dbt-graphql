@@ -1,77 +1,185 @@
 from __future__ import annotations
 
-import asyncio
 import functools
 from typing import Any
 
-from ariadne import ObjectType, QueryType
+from ariadne import QueryType
 from graphql import GraphQLError
+from graphql.language import ListValueNode, ObjectValueNode, VariableNode
 from loguru import logger
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from ..cache.result import execute_with_cache
-from ..compiler.query import (
-    agg_fields_for_table,
-    compile_aggregate_query,
-    compile_group_query,
-    compile_nodes_query,
-)
+from ..compiler.query import compile_query
 from ..config import CacheConfig
-from ..formatter.schema import TableDef
-from ..formatter.sdl_view import effective_document, render_sdl
+from ..schema.constants import AGGREGATE_FIELD
 from .effective import effective_registry
 from .policy import PolicyError
 
 # GraphQL extension code paired with the HTTP handler's 503 elevation.
 POOL_TIMEOUT_CODE = "POOL_TIMEOUT"
 
-# Key used to stash the lazy-computed aggregate result on the carrier dict.
-_AGG_FUTURE_KEY = "__agg_future__"
+# Nested aggregate field names that need restructuring
+_NESTED_AGG_FIELDS = frozenset(
+    {
+        AGGREGATE_FIELD,
+    }
+)
 
 
-def create_query_type(registry) -> tuple[QueryType, list[ObjectType]]:
-    """Build the GraphQL ``Query`` resolver set plus per-table ``ObjectType`` bindings.
+def _restructure_nested_aggregates(
+    rows: list[dict[str, Any]],
+    field_nodes: list,
+) -> list[dict[str, Any]]:
+    """Restructure flat aggregate results into nested GraphQL response format.
 
-    Returns a ``(QueryType, [ObjectType, ...])`` tuple. The caller must pass
-    both to ``make_executable_schema`` so Ariadne can resolve sub-fields on
-    ``{T}Result`` and ``{T}_group``.
+    When querying `orders { _aggregate { sum { price quantity } count } }`, the SQL returns
+    flat keys like `{"_sum_price": 100, "_sum_quantity": 200, "_count": 10}`.
+    This function restructures them to `{"_aggregate": {"sum": {"price": 100, "quantity": 200}, "count": 10}}`.
+    """
+    if not rows or not field_nodes:
+        return rows
+
+    # Get the selection set from the first field node
+    selection = field_nodes[0]
+    if not selection.selection_set:
+        return rows
+
+    # Find the _aggregate field and its nested selections
+    agg_field_node = None
+    for field in selection.selection_set.selections:
+        if field.name.value == AGGREGATE_FIELD:
+            agg_field_node = field
+            break
+
+    if agg_field_node is None or agg_field_node.selection_set is None:
+        return rows
+
+    # Build a map of operations to their selected columns
+    # e.g., {"sum": ["price", "quantity"], "count": [], "count_distinct": ["action"]}
+    op_selections: dict[str, list[str]] = {}
+    for op_field in agg_field_node.selection_set.selections:
+        op_name = op_field.name.value
+        if op_field.selection_set:
+            op_selections[op_name] = [
+                f.name.value for f in op_field.selection_set.selections
+            ]
+        else:
+            op_selections[op_name] = []
+
+    # Restructure each row
+    result_rows = []
+    for row in rows:
+        new_row = {"_aggregate": {}}
+        for key, value in row.items():
+            # Check if this key matches any aggregate operation pattern
+            restructured = False
+
+            # Special case: count_distinct keys must be checked before count
+            # because "_count_distinct_action".startswith("_count_") is True
+            if key.startswith("_count_distinct_"):
+                if "count_distinct" in op_selections:
+                    col_name = key[len("_count_distinct_") :]
+                    op_cols = op_selections["count_distinct"]
+                    if col_name in op_cols or not op_cols:
+                        new_row["_aggregate"].setdefault("count_distinct", {})[
+                            col_name
+                        ] = value
+                        restructured = True
+
+            if not restructured:
+                for op_name, op_cols in op_selections.items():
+                    # Skip count_distinct - already handled above
+                    if op_name == "count_distinct":
+                        continue
+                    # Handle bare aggregate keys like "_count" (no column suffix)
+                    bare_key = f"_{op_name}"
+                    if key == bare_key and not op_cols:
+                        new_row["_aggregate"][op_name] = value
+                        restructured = True
+                        break
+                    # Other ops have format: _sum_price, _avg_price, _count_email, etc.
+                    prefix = f"_{op_name}_"
+                    if key.startswith(prefix):
+                        col_name = key[len(prefix) :]
+                        if col_name:
+                            if op_name not in new_row["_aggregate"]:
+                                new_row["_aggregate"][op_name] = {}
+                            new_row["_aggregate"][op_name][col_name] = value
+                            restructured = True
+                        break
+            if not restructured:
+                new_row[key] = value
+        result_rows.append(new_row)
+
+    return result_rows
+
+
+def parse_order_by(info, arg_name="order_by"):
+    """Read order_by from the AST in literal source order.
+
+    Returns a list of (field_name, direction) tuples suitable for compile_query.
+    Handles:
+      - inline list form: order_by: [{col1: asc, col2: desc}] → ListValueNode
+      - inline object form: order_by: {col1: asc, col2: desc} → ObjectValueNode
+      - variable form: order_by: $vars → VariableNode
+    """
+    if not info.field_nodes:
+        return []
+    field = info.field_nodes[0]
+    for arg in field.arguments:
+        if arg.name.value != arg_name:
+            continue
+        v = arg.value
+        if isinstance(v, ListValueNode):
+            # Inline list form: [{col1: asc}, {col2: desc}]
+            result = []
+            for item in v.values:
+                if isinstance(item, ObjectValueNode):
+                    for f in item.fields:
+                        result.append((f.name.value, f.value.value))
+            return result
+        if isinstance(v, ObjectValueNode):
+            return [(f.name.value, f.value.value) for f in v.fields]
+        if isinstance(v, VariableNode):
+            var = info.variable_values.get(v.name.value, {}) or {}
+            return list(var.items())
+    return []
+
+
+def create_query_type(registry) -> tuple[QueryType, list]:
+    """Build the GraphQL ``Query`` resolver set.
+
+    Returns a ``(QueryType, [])`` tuple. The object_types list is empty
+    since we no longer use the {T}Result envelope pattern.
     """
     query_type = QueryType()
-    object_types: list[ObjectType] = []
 
     for table_def in registry:
         name = table_def.name
         query_type.set_field(name, _make_root_resolver(name))
 
-        result_ot = ObjectType(f"{name}Result")
-        result_ot.set_field("nodes", _make_nodes_resolver(name))
-        result_ot.set_field("group", _make_group_resolver(name))
-
-        all_agg = [fname for fname, _ in agg_fields_for_table(table_def)]
-        for fname in all_agg:
-            result_ot.set_field(fname, _make_aggregate_field_resolver(fname, table_def))
-
-        object_types.append(result_ot)
-
     query_type.set_field("_sdl", _resolve_sdl)
     query_type.set_field("_tables", _resolve_tables)
-    return query_type, object_types
+    return query_type, []
 
 
 def _resolve_sdl(_, info, tables: list[str] | None = None) -> str:
     """Return the effective db.graphql SDL for the current caller.
 
-    Computed per-request from the caller's JWT and the active policy
-    engine; never cached across users. When ``tables`` is provided the
-    output is intersected with the caller's visible set — names not
-    visible (denied or nonexistent) are silently skipped.
+    Produces policy-pruned SDL with full custom directives
+    (@table, @column, @relation, @masked, @filtered).
+    When tables is given, only those tables are emitted.
     """
+    from .sdl.view import effective_document, render_sdl
+
     ctx = info.context
-    eff = effective_registry(
+    eff_reg = effective_registry(
         ctx["registry"], ctx.get("jwt_payload"), ctx.get("policy_engine")
     )
-    restrict = set(tables) if tables is not None else None
-    return render_sdl(effective_document(ctx["source_doc"], eff, restrict_to=restrict))
+    restrict_to = set(tables) if tables is not None else None
+    doc = effective_document(ctx["source_doc"], eff_reg, restrict_to=restrict_to)
+    return render_sdl(doc)
 
 
 def _resolve_tables(_, info) -> list[dict]:
@@ -90,21 +198,16 @@ def _resolve_tables(_, info) -> list[dict]:
 
 
 def _make_root_resolver(table_name: str):
-    """Return a carrier dict — no DB call. Sub-field resolvers read ``where`` from it."""
+    """Return a resolver that executes a unified query and returns rows directly."""
 
-    def resolve_root(_, _info, where: dict | None = None) -> dict:
-        return {"where": where, "_table": table_name}
-
-    return resolve_root
-
-
-def _make_nodes_resolver(table_name: str):
-    async def resolve_nodes(
-        parent: dict,
+    async def resolve_root(
+        _,
         info,
-        order_by: list[dict] | None = None,
+        where: dict | None = None,
+        order_by: dict | None = None,  # Ariadne coerces input object to dict
         limit: int | None = None,
         offset: int | None = None,
+        distinct: list | None = None,
     ) -> list[dict[str, Any]]:
         ctx = info.context
         tdef = ctx["registry"].get(table_name)
@@ -112,22 +215,26 @@ def _make_nodes_resolver(table_name: str):
         cache_cfg: CacheConfig = ctx["cache_config"]
         resolve_policy = _make_resolve_policy(ctx)
 
+        # Parse order_by from AST to get source order (list of tuples)
+        order_by_parsed = parse_order_by(info)
+
         try:
-            stmt = compile_nodes_query(
+            stmt = compile_query(
                 tdef=tdef,
                 field_nodes=info.field_nodes,
                 registry=ctx["registry"],
                 dialect=db.dialect_name,
-                where=parent.get("where"),
-                order_by=order_by,
+                where=where,
+                order_by=order_by_parsed,
                 limit=limit,
                 offset=offset,
+                distinct=distinct,
                 resolve_policy=resolve_policy,
             )
         except PolicyError as exc:
             raise _to_graphql_error(exc) from exc
 
-        logger.debug("nodes {}: {}", table_name, stmt)
+        logger.debug("query {}: {}", table_name, stmt)
 
         try:
             rows = await execute_with_cache(
@@ -139,111 +246,14 @@ def _make_nodes_resolver(table_name: str):
         except SAPoolTimeoutError as exc:
             raise _pool_timeout_error(db) from exc
 
-        logger.debug("nodes {} returned {} rows", table_name, len(rows))
+        logger.debug("query {} returned {} rows", table_name, len(rows))
+
+        # Restructure flat aggregate results into nested GraphQL format
+        rows = _restructure_nested_aggregates(rows, info.field_nodes)
+
         return rows
 
-    return resolve_nodes
-
-
-def _make_aggregate_field_resolver(field_name: str, tdef: TableDef):
-    """Return a resolver that lazily computes ALL aggregates once per request.
-
-    The first aggregate field resolver to run fires ``compile_aggregate_query``
-    and stores an ``asyncio.Future`` on the carrier dict. All sibling aggregate
-    field resolvers await that same Future, so only one DB round-trip occurs
-    regardless of how many aggregate fields were selected.
-
-    Exceptions are pre-translated to ``GraphQLError`` *before* being attached
-    to the future so siblings awaiting the future surface the same client-
-    facing error the originator did, not a raw ``PolicyError`` /
-    ``SAPoolTimeoutError``.
-    """
-    all_agg_fields = {fname for fname, _ in agg_fields_for_table(tdef)}
-
-    async def resolve_agg_field(parent: dict, info) -> Any:
-        if _AGG_FUTURE_KEY not in parent:
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future = loop.create_future()
-            parent[_AGG_FUTURE_KEY] = future
-            ctx = info.context
-            db = ctx["db"]
-            cache_cfg: CacheConfig = ctx["cache_config"]
-            resolve_policy = _make_resolve_policy(ctx)
-            try:
-                stmt = compile_aggregate_query(
-                    tdef=tdef,
-                    requested_agg_fields=all_agg_fields,
-                    where=parent.get("where"),
-                    resolve_policy=resolve_policy,
-                )
-                rows = await execute_with_cache(
-                    stmt,
-                    dialect_name=db.dialect_name,
-                    runner=db.execute,
-                    cfg=cache_cfg,
-                )
-            except PolicyError as exc:
-                err = _to_graphql_error(exc)
-                future.set_exception(err)
-                raise err from exc
-            except SAPoolTimeoutError as exc:
-                err = _pool_timeout_error(db)
-                future.set_exception(err)
-                raise err from exc
-            except Exception as exc:
-                future.set_exception(exc)
-                raise
-            future.set_result(rows[0] if rows else {})
-
-        row = await parent[_AGG_FUTURE_KEY]
-        return row.get(field_name)
-
-    return resolve_agg_field
-
-
-def _make_group_resolver(table_name: str):
-    async def resolve_group(
-        parent: dict,
-        info,
-        order_by: list[dict] | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[dict[str, Any]]:
-        ctx = info.context
-        tdef = ctx["registry"].get(table_name)
-        db = ctx["db"]
-        cache_cfg: CacheConfig = ctx["cache_config"]
-        resolve_policy = _make_resolve_policy(ctx)
-
-        try:
-            stmt = compile_group_query(
-                tdef=tdef,
-                field_nodes=info.field_nodes,
-                where=parent.get("where"),
-                order_by=order_by,
-                limit=limit,
-                offset=offset,
-                resolve_policy=resolve_policy,
-            )
-        except PolicyError as exc:
-            raise _to_graphql_error(exc) from exc
-
-        logger.debug("group {}: {}", table_name, stmt)
-
-        try:
-            rows = await execute_with_cache(
-                stmt,
-                dialect_name=db.dialect_name,
-                runner=db.execute,
-                cfg=cache_cfg,
-            )
-        except SAPoolTimeoutError as exc:
-            raise _pool_timeout_error(db) from exc
-
-        logger.debug("group {} returned {} rows", table_name, len(rows))
-        return rows
-
-    return resolve_group
+    return resolve_root
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ from dbt_graphql.graphql.policy import (
     TablePolicy,
     Effect,
 )
-from dbt_graphql.formatter.graphql import build_registry
+from dbt_graphql.graphql.sdl.generator import build_registry
 from dbt_graphql.pipeline import extract_project
 from .conftest import JWT_TEST_SECRET, make_test_jwt_config
 
@@ -265,15 +265,13 @@ class TestMCPHTTPtoolsList:
         names = {t["name"] for t in tools}
         expected = {
             "list_tables",
-            "describe_tables",
+            "describe_table",
             "find_path",
             "trace_column_lineage",
             "run_graphql",
         }
         assert expected == names, f"Tool surface drift: {expected ^ names}"
-        # Singular describe_table was removed in favour of describe_tables.
-        assert "describe_table" not in names
-        # build_query and explore_relationships were folded into describe_tables
+        # build_query and explore_relationships were folded into describe_table
         # (SDL @relation directives) and run_graphql (validate_only).
         assert "build_query" not in names
         assert "explore_relationships" not in names
@@ -308,21 +306,19 @@ class TestMCPlistTablesHTTP:
         assert len(result["_meta"]["next_steps"]) > 0
 
 
-class TestMCPdescribeTablesHTTP:
-    """Exercise describe_tables through the HTTP transport.
+class TestMCPdescribeTableHTTP:
+    """Exercise describe_table through the HTTP transport.
 
     The tool returns plain SDL text — not JSON — so we read it from the
     MCP ``content[0].text`` field instead of ``structuredContent``.
     """
 
-    def _call_text(
-        self, client: TestClient, names: list[str]
-    ) -> tuple[str | None, dict]:
+    def _call_text(self, client: TestClient, table: str) -> tuple[str | None, dict]:
         result = _mcp_post(
             client,
             _mcp_json_request(
                 "tools/call",
-                {"name": "describe_tables", "arguments": {"names": names}},
+                {"name": "describe_table", "arguments": {"table": table}},
             ),
         )
         tool_result = result["result"]
@@ -332,16 +328,15 @@ class TestMCPdescribeTablesHTTP:
 
     def test_returns_sdl_for_named_table(self, mcp_client):
         with mcp_client() as client:
-            text, tool_result = self._call_text(client, ["customers"])
+            text, tool_result = self._call_text(client, "customers")
         assert tool_result.get("isError") is not True, tool_result
         assert text is not None
         assert "type customers " in text
         assert "type orders " not in text
-        assert "@table" in text
 
     def test_unknown_name_silently_skipped(self, mcp_client):
         with mcp_client() as client:
-            text, tool_result = self._call_text(client, ["nope_does_not_exist"])
+            text, tool_result = self._call_text(client, "nope_does_not_exist")
         assert tool_result.get("isError") is not True
         assert "nope_does_not_exist" not in (text or "")
         assert "type customers " not in (text or "")
@@ -362,9 +357,9 @@ class TestMCPdescribeTablesHTTP:
             ]
         )
         with mcp_client(access_policy=policy) as client:
-            denied_text, denied_res = self._call_text(client, ["orders"])
+            denied_text, denied_res = self._call_text(client, "orders")
             unknown_text, unknown_res = self._call_text(
-                client, ["definitely_not_a_table"]
+                client, "definitely_not_a_table"
             )
         # Silent skip — neither is an error, and neither leaks the name.
         assert denied_res.get("isError") is not True
@@ -385,12 +380,12 @@ class TestMCPrunGraphqlHTTP:
             result = _mcp_call_tool(
                 client,
                 "run_graphql",
-                {"query": "query { customers { nodes { customer_id first_name } } }"},
+                {"query": "query { customers { customer_id first_name } }"},
             )
         assert "data" in result or "errors" in result
         if "data" in result:
             assert "customers" in result["data"]
-            assert result["data"]["customers"]["nodes"] == rows
+            assert result["data"]["customers"] == rows
 
     def test_run_graphql_invalid_query(self, mcp_client):
         with mcp_client(rows=[]) as client:
@@ -409,7 +404,7 @@ class TestMCPrunGraphqlHTTP:
                 client,
                 "run_graphql",
                 {
-                    "query": "query { customers { nodes { customer_id } } }",
+                    "query": "query { customers { customer_id } }",
                     "validate_only": True,
                 },
             )
@@ -566,15 +561,15 @@ class TestMCPPolicyHTTP:
         assert "customers" in names
         assert "orders" not in names
 
-    def test_describe_tables_filters_blocked_columns(self, mcp_client):
-        """describe_tables returns SDL; the excluded column must not appear."""
+    def test_describe_table_filters_blocked_columns(self, mcp_client):
+        """describe_table returns SDL; the excluded column must not appear."""
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
             result = _mcp_post(
                 client,
                 _mcp_json_request(
                     "tools/call",
-                    {"name": "describe_tables", "arguments": {"names": ["customers"]}},
+                    {"name": "describe_table", "arguments": {"table": "customers"}},
                 ),
             )
         tool_result = result["result"]
@@ -582,7 +577,7 @@ class TestMCPPolicyHTTP:
         assert "customer_id" in text
         assert "email" not in text
 
-    def test_describe_tables_silently_skips_unauthorized_table(self, mcp_client):
+    def test_describe_table_silently_skips_unauthorized_table(self, mcp_client):
         """A denied table is silently skipped — same shape as nonexistent."""
         policy = self._customers_only_policy()
         with mcp_client(access_policy=policy) as client:
@@ -590,7 +585,7 @@ class TestMCPPolicyHTTP:
                 client,
                 _mcp_json_request(
                     "tools/call",
-                    {"name": "describe_tables", "arguments": {"names": ["orders"]}},
+                    {"name": "describe_table", "arguments": {"table": "orders"}},
                 ),
             )
         tool_result = result["result"]
@@ -641,7 +636,7 @@ class TestMCPPolicyHTTP:
             result = _mcp_call_tool(
                 client,
                 "run_graphql",
-                {"query": "query { customers { nodes { customer_id first_name } } }"},
+                {"query": "query { customers { customer_id first_name } }"},
                 headers=_bearer({"sub": "u1", "claims": {"cust_id": 1}}),
             )
         # Verify the SQL was compiled with the row filter

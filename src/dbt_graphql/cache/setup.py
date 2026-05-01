@@ -10,7 +10,7 @@ from __future__ import annotations
 from cashews import cache
 from loguru import logger
 
-from .config import CacheConfig
+from ..config import CacheConfig
 
 _CONFIGURED: bool = False
 

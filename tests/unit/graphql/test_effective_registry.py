@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from dbt_graphql.formatter.graphql import build_registry
+from dbt_graphql.graphql.sdl.generator import build_registry
 from dbt_graphql.graphql.auth import JWTPayload
 from dbt_graphql.graphql.effective import effective_registry
 from dbt_graphql.graphql.policy import (

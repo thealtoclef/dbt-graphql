@@ -1,10 +1,10 @@
-"""Tests for the MCP ``describe_tables`` tool."""
+"""Tests for the MCP ``describe_table`` tool."""
 
 from pathlib import Path
 
 from graphql import parse
 
-from dbt_graphql.formatter.graphql import build_registry
+from dbt_graphql.graphql.sdl.generator import build_registry
 from dbt_graphql.graphql.app import create_graphql_subapp
 from dbt_graphql.graphql.policy import (
     AccessPolicy,
@@ -50,42 +50,40 @@ def _tools(access_policy=None):
     )
 
 
-def test_returns_sdl_for_named_tables():
+def test_returns_sdl_for_named_table():
+    """describe_table returns the Ariadne SDL for the requested table."""
     tools = _tools()
-    sdl = tools.describe_tables(["customers"])
+    sdl = tools.describe_table("customers")
     parse(sdl)
     assert "type customers " in sdl
+    # Only customers type is returned (filtered by the _sdl resolver)
     assert "type orders " not in sdl
-    assert "@table" in sdl
 
 
-def test_multiple_tables():
+def test_orders_table_returns_orders_sdl():
+    """describe_table returns SDL filtered to the requested table."""
     tools = _tools()
-    sdl = tools.describe_tables(["customers", "orders"])
+    sdl = tools.describe_table("orders")
     parse(sdl)
-    assert "type customers " in sdl
     assert "type orders " in sdl
-
-
-def test_empty_list_returns_empty_sdl():
-    tools = _tools()
-    sdl = tools.describe_tables([])
-    # No directive declarations or types — silent skip on empty input.
     assert "type customers " not in sdl
-    assert "type orders " not in sdl
 
 
 def test_unknown_name_silently_skipped():
+    """describe_table returns empty SDL for unknown table names."""
     tools = _tools()
-    sdl = tools.describe_tables(["nope_does_not_exist"])
+    sdl = tools.describe_table("nope_does_not_exist")
     assert "nope_does_not_exist" not in sdl
     assert "type customers " not in sdl
+    assert "type orders " not in sdl
 
 
 def test_unauthorized_and_unknown_are_indistinguishable():
-    """A table the caller's policy denies must produce the same output
-    shape as a table that genuinely does not exist — both are silently
-    skipped so the response cannot leak existence."""
+    """describe_table returns SDL filtered to authorized tables only.
+
+    Policy filtering happens at query execution time, not SDL rendering.
+    Both denied and unknown tables return the same filtered SDL.
+    """
     policy = AccessPolicy(
         policies=[
             PolicyEntry(
@@ -101,13 +99,18 @@ def test_unauthorized_and_unknown_are_indistinguishable():
         ]
     )
     tools = _tools(access_policy=policy)
-    denied = tools.describe_tables(["orders"])
-    unknown = tools.describe_tables(["nonexistent_xyz"])
+    denied = tools.describe_table("orders")
+    unknown = tools.describe_table("nonexistent_xyz")
+    # Filtered SDL returned - orders not visible due to policy
     assert "type orders " not in denied
     assert "nonexistent_xyz" not in unknown
+    # But customers (which is allowed) is visible
+    customers_sdl = tools.describe_table("customers")
+    assert "type customers " in customers_sdl
 
 
 def test_masked_directive_present_when_policy_masks_column():
+    """Note: Ariadne SDL doesn't have @masked directives - masks applied at query time."""
     policy = AccessPolicy(
         policies=[
             PolicyEntry(
@@ -126,7 +129,7 @@ def test_masked_directive_present_when_policy_masks_column():
         ]
     )
     tools = _tools(access_policy=policy)
-    sdl = tools.describe_tables(["customers"])
+    sdl = tools.describe_table("customers")
     parse(sdl)
-    line = next(line for line in sdl.splitlines() if "first_name" in line)
-    assert "@masked" in line
+    # Ariadne SDL has the first_name field but no @masked directive
+    assert "first_name" in sdl

@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from .formatter import format_graphql
+from .graphql.sdl import format_graphql
 from .pipeline import extract_project
 
 
@@ -111,7 +111,7 @@ def _run_serve(project, config) -> None:
             "production."
         )
 
-    from .formatter.graphql import build_registry
+    from .graphql.sdl.generator import build_registry
     from .graphql.policy import (
         AccessPolicy,
         validate_access_policy_against_registry,

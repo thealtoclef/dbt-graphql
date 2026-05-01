@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from dbt_graphql.formatter.graphql import build_registry
+from dbt_graphql.graphql.sdl.generator import build_registry
 from dbt_graphql.graphql.app import create_graphql_subapp
 from dbt_graphql.graphql.policy import (
     AccessPolicy,
@@ -99,7 +99,7 @@ class TestUsageGuide:
     def test_contains_workflow_sections(self):
         text = McpTools.usage_guide_text()
         assert "list_tables" in text
-        assert "describe_tables" in text
+        assert "describe_table" in text
         assert "find_path" in text
         assert "run_graphql" in text
         assert "validate_only" in text
@@ -211,17 +211,18 @@ class TestPolicyFiltering:
         assert "customers" in names
         assert "orders" not in names
 
-    def test_describe_tables_filters_blocked_columns(self):
+    def test_describe_table_filters_blocked_columns(self):
         tools = _make_policy_tools()
-        sdl = tools.describe_tables(["customers"])
+        sdl = tools.describe_table("customers")
         # "email" is excluded by policy; the SDL slice must omit it.
         assert "customer_id" in sdl
         assert "email" not in sdl
 
-    def test_describe_tables_silently_skips_denied_table(self):
+    def test_describe_table_silently_skips_denied_table(self):
+        """Note: describe_table returns SDL filtered to allowed tables only."""
         tools = _make_policy_tools()
-        sdl = tools.describe_tables(["orders"])
-        # Denied table is silently skipped — same shape as nonexistent.
+        sdl = tools.describe_table("orders")
+        # Filtered SDL returned - orders not visible due to policy
         assert "type orders " not in sdl
 
     def test_find_path_unauthorized_endpoint_returns_not_found(self):
@@ -255,13 +256,10 @@ class TestRunGraphqlWithBundle:
         # "run cache.setup(...) before using cache" on the first hit.
         bundle = _bundle_with([{"customer_id": 1}, {"customer_id": 2}])
         tools = McpTools(bundle.registry, bundle=bundle)
-        result = await tools.run_graphql(
-            "query { customers { nodes { customer_id } } }"
-        )
+        # New GraphJin-style query: direct selection on type, not {T}Result envelope
+        result = await tools.run_graphql("query { customers { customer_id } }")
         assert "errors" not in result
-        assert result["data"] == {
-            "customers": {"nodes": [{"customer_id": 1}, {"customer_id": 2}]}
-        }
+        assert result["data"] == {"customers": [{"customer_id": 1}, {"customer_id": 2}]}
 
     def test_parse_error_raises_typed_signal(self):
         # Direct (un-wrapped) callers receive the typed _ToolReturnedError;
@@ -278,9 +276,7 @@ class TestRunGraphqlWithBundle:
         bundle = _bundle_with([{"customer_id": 1}])
         tools = McpTools(bundle.registry, bundle=bundle)
         result = asyncio.run(
-            tools.run_graphql(
-                "query { customers { nodes { customer_id } } }", validate_only=True
-            )
+            tools.run_graphql("query { customers { customer_id } }", validate_only=True)
         )
         assert result == {"validation": "ok"}
         # Execution skipped — fake DB recorded zero queries.

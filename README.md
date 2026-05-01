@@ -53,7 +53,7 @@ serve:
 ## Query layer
 
 Each table exposes one root field that returns a `{T}Result` envelope —
-paginated rows, inline aggregates, and Cube-style GROUP BY share the same
+paginated rows, nested aggregates, and Cube-style GROUP BY share the same
 filter and the same DB round-trip when their fields are siblings.
 
 ```graphql
@@ -64,17 +64,21 @@ filter and the same DB round-trip when their fields are siblings.
       { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
     ]
   }) {
-    nodes(order_by: [{ amount: desc }], limit: 50) {
+    nodes(order_by: { amount: desc }, limit: 50) {
       order_id amount status
       customer { customer_id name }   # nested via correlated subquery (no LATERAL)
     }
-    count
-    sum_amount
-    avg_amount
-    group(order_by: [{ count: desc }]) {
-      status
+    _aggregate {
       count
-      sum_amount
+      sum { amount }
+      avg { amount }
+    }
+    group(order_by: { count: desc }) {
+      status
+      _aggregate {
+        count
+        sum { amount }
+      }
     }
   }
 }
@@ -84,13 +88,14 @@ filter and the same DB round-trip when their fields are siblings.
   `_eq` / `_neq` / `_gt` / `_gte` / `_lt` / `_lte` / `_in` / `_nin` / `_is_null`
   / `_like` / `_nlike` / `_ilike` / `_nilike`. The same operator set is reused
   by access-policy `row_filter` blocks.
-- **`{T}_order_by`** (and `{T}_group_order_by`): flat `column: asc | desc`.
-- **Aggregates**: `count` always; `sum_<col>` / `avg_<col>` / `stddev_<col>` /
-  `var_<col>` for numeric columns; `min_<col>` / `max_<col>` for every scalar
-  column. Selecting any combination fires one batched SELECT per request.
+- **`{T}_order_by`** (and `{T}_group_order_by`): single object with `column: asc | desc`.
+- **`distinct: true`** on the root field adds a plain `DISTINCT` to the nodes query.
+- **Aggregates**: nested under `_aggregate { ... }`. `count` always; `sum` / `avg` /
+  `stddev` / `var` contain numeric columns; `count_distinct` / `min` / `max`
+  contain all scalar columns. Selecting any combination fires one batched SELECT per request.
 - **`group`**: GROUP BY columns are auto-derived from whichever real-column
-  fields you select on `{T}_group` — no separate root entry, no nested
-  `aggregate { sum { col } }`.
+  fields you select on `{T}_group` — no separate root entry. Aggregates inside
+  `group` are also nested under `_aggregate`.
 
 WHERE / ORDER BY references to columns the caller's policy hides raise
 `FORBIDDEN_COLUMN` at compile time so callers cannot probe hidden values
@@ -174,7 +179,7 @@ See [`config.example.yml`](config.example.yml) and
 ## Documentation
 
 - [**Architecture & Design**](docs/architecture.md) — pipeline, design principles, and landscape comparison.
-- [**Schema Synthesis**](docs/schema-synthesis.md) — dbt extraction, IR, formatter, and lineage in depth.
+- [**Schema Synthesis**](docs/schema-synthesis.md) — dbt extraction, IR, SDL generation, and lineage in depth.
 - [**GraphQL API**](docs/graphql.md) — sub-app, resolvers, auth, observability.
 - [**Compiler**](docs/compiler.md) — GraphQL → SQL with correlated subqueries.
 - [**Caching & Burst Protection**](docs/caching.md) — result cache + singleflight between resolver and warehouse.

@@ -1,5 +1,5 @@
 from .ir.models import ProjectInfo, ModelInfo, RelationshipInfo, ColumnInfo
-from .formatter import GraphQLResult, format_graphql
+from .graphql.sdl import GraphQLResult, format_graphql
 from .pipeline import extract_project
 
 __all__ = [

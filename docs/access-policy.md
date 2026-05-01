@@ -36,7 +36,7 @@ Each GraphQL **and MCP** request is evaluated against the policy using the
 `Authorization: Bearer <jwt>` header. Both transports share the same
 `AuthenticationMiddleware` and the same `AccessPolicy`, so a caller's
 column allow-list, masks, and row filters apply identically to direct
-`/graphql` calls and to MCP tools (`list_tables`, `describe_tables`,
+`/graphql` calls and to MCP tools (`list_tables`, `describe_table`,
 `run_graphql`, …). See [mcp.md § Authorization model](mcp.md#authorization-model).
 
 When `security.enabled` is false (the default), JWTs are not verified and
@@ -172,7 +172,7 @@ path.
 `_eq`, `_neq`, `_lt`, `_lte`, `_gt`, `_gte`, `_in`, `_nin`, `_is_null`,
 `_like`, `_nlike`, `_ilike`, `_nilike`. The same operator vocabulary is
 shared with the GraphQL `{T}_bool_exp` filter — both call sites dispatch
-through `dbt_graphql.sql_ops.apply_comparison`, the single source of
+through `dbt_graphql.schema.operators.apply_comparison`, the single source of
 truth for Hasura-vocab → SQLAlchemy translation. RHS values are either:
 
 - a literal scalar (`str`, `int`, `float`, `bool`),

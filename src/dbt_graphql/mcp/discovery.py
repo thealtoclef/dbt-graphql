@@ -1,6 +1,6 @@
 """Schema-graph adjacency for MCP relationship tools.
 
-``list_tables`` and ``describe_tables`` route through GraphQL ``_tables`` /
+``list_tables`` and ``describe_table`` route through GraphQL ``_tables`` /
 ``_sdl(tables)`` instead — this module covers only graph traversal
 (``find_path``) which has no GraphQL equivalent. Adjacency is derived
 from the ``TableRegistry`` ``relation`` fields, i.e. the same view the
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from dbt_graphql.formatter.schema import TableRegistry
+from dbt_graphql.schema.models import TableRegistry
 
 
 @dataclass

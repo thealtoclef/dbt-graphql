@@ -23,7 +23,7 @@ from starlette.routing import Mount
 from ..cache import CacheConfig, close_cache, setup_cache
 from ..compiler.connection import DatabaseManager
 from ..config import DbConfig, GraphQLConfig, JWTConfig, PoolConfig
-from ..formatter.schema import TableRegistry
+from ..schema.models import TableRegistry
 from ..graphql.app import GraphQLBundle, create_graphql_subapp
 from ..graphql.auth import auth_on_error, build_auth_backend
 from ..graphql.monitoring import instrument_sqlalchemy, instrument_starlette
@@ -54,7 +54,7 @@ def create_app(
     ``PolicyEngine`` — so policy enforcement is structurally shared.
 
     ``cache_config`` defaults to an in-memory cache (see
-    ``defaults.CACHE_DEFAULT_URL``). The cache always runs; there is no
+    ``CacheConfig`` default). The cache always runs; there is no
     off switch.
     """
     db = DatabaseManager(db_url=db_url, config=config, pool=pool_config)

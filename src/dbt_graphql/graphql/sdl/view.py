@@ -23,7 +23,7 @@ from graphql import (
     print_ast,
 )
 
-from .schema import TableRegistry
+from ...schema.models import TableRegistry
 
 
 def effective_document(

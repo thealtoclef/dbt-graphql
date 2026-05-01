@@ -1,6 +1,6 @@
 """Tests for the SDL parser (schema.py)."""
 
-from dbt_graphql.formatter.schema import parse_db_graphql
+from dbt_graphql.schema import parse_db_graphql
 
 
 SDL = """\

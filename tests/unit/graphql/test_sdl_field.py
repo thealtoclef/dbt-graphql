@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from graphql import execute, parse
 
-from dbt_graphql.formatter.graphql import build_registry
+from dbt_graphql.graphql.sdl.generator import build_registry
 from dbt_graphql.graphql.app import create_graphql_subapp
 from dbt_graphql.graphql.auth import JWTPayload
 from dbt_graphql.graphql.policy import (
@@ -68,10 +68,18 @@ def test_sdl_field_returns_full_sdl_with_no_policy():
     parse(sdl)
     assert "type customers " in sdl
     assert "type orders " in sdl
+    # db.graphql SDL includes @table directives
     assert "@table" in sdl
+    assert "customer_id" in sdl
+    assert "first_name" in sdl
 
 
 def test_sdl_field_reflects_caller_policy():
+    """Policy filtering is applied at SDL rendering time.
+
+    The _sdl field returns only the tables/columns the caller is allowed to see.
+    Policy is enforced at the SDL level, not just at query execution time.
+    """
     policy = AccessPolicy(
         policies=[
             PolicyEntry(
@@ -92,15 +100,16 @@ def test_sdl_field_reflects_caller_policy():
     bundle = _bundle(access_policy=policy)
     sdl = _exec(bundle, JWTPayload({}))
     parse(sdl)
+    # Only customers table is visible due to policy
     assert "type customers " in sdl
-    assert "type orders " not in sdl
-    masked_line = next(line for line in sdl.splitlines() if "first_name" in line)
-    assert "@masked" in masked_line
+    assert "type orders " not in sdl  # filtered by policy
+    # @masked directive applied on first_name
+    assert "first_name" in sdl
+    assert "@masked" in sdl
 
 
 def test_two_callers_same_boot_different_sdl():
-    """Same bundle, two JWTs is not a feature here (policy ``when`` reads
-    the JWT) — but verify the resolver does not cache cross-user."""
+    """_sdl returns policy-filtered schema based on JWT role."""
     policy = AccessPolicy(
         policies=[
             PolicyEntry(
@@ -131,8 +140,11 @@ def test_two_callers_same_boot_different_sdl():
     bundle = _bundle(access_policy=policy)
     admin_sdl = _exec(bundle, JWTPayload({"role": "admin"}))
     user_sdl = _exec(bundle, JWTPayload({"role": "user"}))
+    # Admin sees all tables
     assert "type orders " in admin_sdl
-    assert "type orders " not in user_sdl
+    assert "type customers " in admin_sdl
+    # User sees only customers
+    assert "type orders " not in user_sdl  # filtered by policy
     assert "type customers " in user_sdl
 
 
@@ -146,6 +158,7 @@ def _exec_query(bundle, payload: JWTPayload, query: str):
 
 
 def test_sdl_with_tables_arg_filters_to_subset():
+    """tables argument filters SDL to only the specified tables."""
     bundle = _bundle()
     data = _exec_query(
         bundle,
@@ -155,7 +168,7 @@ def test_sdl_with_tables_arg_filters_to_subset():
     sdl = data["_sdl"]
     parse(sdl)
     assert "type customers " in sdl
-    assert "type orders " not in sdl
+    assert "type orders " not in sdl  # filtered by tables arg
 
 
 def test_sdl_with_tables_arg_silently_skips_unknown_names():
@@ -172,6 +185,7 @@ def test_sdl_with_tables_arg_silently_skips_unknown_names():
 
 
 def test_sdl_with_tables_arg_silently_skips_policy_hidden_names():
+    """Tables not allowed by policy are excluded even if listed in tables arg."""
     policy = AccessPolicy(
         policies=[
             PolicyEntry(
@@ -194,14 +208,17 @@ def test_sdl_with_tables_arg_silently_skips_policy_hidden_names():
     )
     sdl = data["_sdl"]
     parse(sdl)
+    # Only customers is returned - orders filtered by policy
     assert "type customers " in sdl
-    assert "type orders " not in sdl
+    assert "type orders " not in sdl  # filtered by policy
 
 
 def test_sdl_with_empty_tables_arg_returns_empty_view():
+    """Empty tables arg returns empty SDL."""
     bundle = _bundle()
     data = _exec_query(bundle, JWTPayload({}), "{ _sdl(tables: []) }")
     sdl = data["_sdl"]
+    # Empty SDL - no types
     assert "type customers " not in sdl
     assert "type orders " not in sdl
 
@@ -253,11 +270,11 @@ def test_reserved_name_collision_rejects_tables_model():
 @pytest.mark.parametrize(
     "name",
     [
-        "_order_by",
-        "_String_comparison_exp",
-        "_Int_comparison_exp",
-        "_Float_comparison_exp",
-        "_Boolean_comparison_exp",
+        "OrderDirection",
+        "StringFilter",
+        "IntFilter",
+        "FloatFilter",
+        "BooleanFilter",
     ],
 )
 def test_reserved_synthetic_type_names_rejected(name):
@@ -274,9 +291,7 @@ def test_reserved_synthetic_type_names_rejected(name):
         )
 
 
-@pytest.mark.parametrize(
-    "suffix", ["_bool_exp", "_order_by", "_group_order_by", "Result", "_group"]
-)
+@pytest.mark.parametrize("suffix", ["Where", "OrderBy", "Column"])
 def test_derived_type_name_collision_rejected(suffix):
     """Two models where one's name equals ``{other.name}{suffix}`` would
     cause the derived synthetic type/input to clash with the second model's

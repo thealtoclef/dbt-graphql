@@ -2,14 +2,14 @@
 
 The directive surfaces dbt-derived lineage in the GraphQL SDL so the same
 schema text is the source of truth for ``--output``, the ``_sdl`` field,
-and the MCP ``describe_tables`` tool.
+and the MCP ``describe_table`` tool.
 """
 
 from pathlib import Path
 
-from dbt_graphql.formatter.graphql import build_registry, build_source_doc
-from dbt_graphql.formatter.schema import parse_db_graphql
-from dbt_graphql.formatter.sdl_view import effective_document, render_sdl
+from dbt_graphql.graphql.sdl.generator import build_registry, build_source_doc
+from dbt_graphql.schema import parse_db_graphql
+from dbt_graphql.graphql.sdl.view import effective_document, render_sdl
 from dbt_graphql.graphql.auth import JWTPayload
 from dbt_graphql.graphql.effective import effective_registry
 from dbt_graphql.graphql.policy import (

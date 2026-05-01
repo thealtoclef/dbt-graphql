@@ -60,7 +60,7 @@ Primary pipeline (both modes):
 Side export (`--output DIR` only — no server is started):
 
 ```
-  TableRegistry  ──▶  _registry_to_sdl()        ──▶  db.graphql
+  TableRegistry  ──▶  _registry_to_sdl() (graphql/sdl/)  ──▶  db.graphql
 ```
 
 Lineage is embedded in `db.graphql` via the `@lineage` directive (type-level
@@ -69,7 +69,7 @@ Lineage is embedded in `db.graphql` via the `@lineage` directive (type-level
 
 Entry point: [`src/dbt_graphql/pipeline.py`](../src/dbt_graphql/pipeline.py) — `extract_project()`.
 
-The extraction + SDL-emission phase (the dbt processors, IR, formatter, and lineage builder) is called the **schema synthesis** phase. See [schema-synthesis.md](schema-synthesis.md) for the full step-by-step.
+The extraction + SDL-emission phase (the dbt processors, IR, SDL generator, and lineage builder) is called the **schema synthesis** phase. See [schema-synthesis.md](schema-synthesis.md) for the full step-by-step.
 
 ---
 
@@ -85,7 +85,7 @@ Consequence: dbt-graphql **cannot** invent metadata the dbt project doesn't have
 
 ### 3.2 A single format-agnostic IR
 
-`ProjectInfo` is the boundary between dbt and formatters. Every formatter, compiler, and MCP tool consumes `ProjectInfo` — never `manifest.json` directly. This is what makes it tractable to add alternative output formats (OpenAPI, JSON Schema, Malloy, …) or swap the upstream source without touching the rest of the code.
+`ProjectInfo` is the boundary between dbt and everything that follows. Every SDL generator, compiler, and MCP tool consumes `ProjectInfo` — never `manifest.json` directly. This is what makes it tractable to add alternative output formats (OpenAPI, JSON Schema, Malloy, …) or swap the upstream source without touching the rest of the code.
 
 ### 3.3 Dataclasses for processors, Pydantic for IR
 
@@ -120,7 +120,7 @@ SQL is emitted via SQLAlchemy Core so we get dialect-aware rendering for free. W
 
 [`src/dbt_graphql/ir/models.py`](../src/dbt_graphql/ir/models.py)
 
-`ProjectInfo` is the single boundary between extraction and everything that follows. Four Pydantic models — `ColumnInfo`, `ModelInfo`, `RelationshipInfo`, `ProjectInfo` — carry the full dbt semantics into formatters, compilers, and the MCP layer. None of these ever look at `manifest.json` directly.
+`ProjectInfo` is the single boundary between extraction and everything that follows. Four Pydantic models — `ColumnInfo`, `ModelInfo`, `RelationshipInfo`, `ProjectInfo` — carry the full dbt semantics into SDL generators, compilers, and the MCP layer. None of these ever look at `manifest.json` directly.
 
 See [schema-synthesis.md § 2](schema-synthesis.md#2-intermediate-representation-irmodelspy) for the full field-level design notes.
 
