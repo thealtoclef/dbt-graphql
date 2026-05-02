@@ -31,6 +31,7 @@ DEFAULT = {
     "QUERY_MAX_DEPTH": 5,
     "QUERY_MAX_FIELDS": 50,
     "QUERY_MAX_LIMIT": 1000,
+    "QUERY_DEFAULT_LIMIT": 100,
 }
 
 
@@ -122,6 +123,19 @@ class GraphQLConfig(BaseModel):
     query_max_fields: int = DEFAULT["QUERY_MAX_FIELDS"]
     # ``None`` disables the list-limit cap entirely.
     query_max_limit: int | None = DEFAULT["QUERY_MAX_LIMIT"]
+    query_default_limit: int = DEFAULT["QUERY_DEFAULT_LIMIT"]
+
+    @model_validator(mode="after")
+    def _validate_pagination_defaults(self) -> GraphQLConfig:
+        if (
+            self.query_max_limit is not None
+            and self.query_default_limit > self.query_max_limit
+        ):
+            raise ValueError(
+                f"query_default_limit ({self.query_default_limit}) must be <= "
+                f"query_max_limit ({self.query_max_limit})"
+            )
+        return self
 
 
 class JWTConfig(BaseModel):

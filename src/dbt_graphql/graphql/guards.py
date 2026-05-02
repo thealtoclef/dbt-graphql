@@ -19,6 +19,8 @@ from graphql.language import (
 )
 from graphql.validation import ValidationContext, ValidationRule
 
+from ..schema.constants import LIMIT_ARG
+
 __all__ = [
     "MAX_DEPTH_CODE",
     "MAX_FIELDS_CODE",
@@ -39,9 +41,6 @@ _INTROSPECTION_FIELDS = frozenset(
         "__type",
     }
 )
-
-# Argument names commonly used to bound list resolvers.
-_LIMIT_ARGS = ("limit", "first")
 
 
 def _is_introspection(name: str) -> bool:
@@ -110,10 +109,10 @@ def make_query_guard_rules(
     are pure AST checks — no schema lookup needed — so they run before
     type-validation rules and short-circuit cheaply.
 
-    ``max_limit`` (when set) caps integer literals on ``limit:`` /
-    ``first:`` arguments. This addresses the analytics-cost axis that depth
-    and field count don't: a single-field query selecting a million rows is
-    far more expensive than a 50-field projection.
+    ``max_limit`` (when set) caps integer literals on LIMIT_ARG. This
+    addresses the analytics-cost axis that depth and field count don't: a
+    single-field query selecting a million rows is far more expensive than
+    a 50-field projection.
     """
 
     class QueryShapeRule(ValidationRule):
@@ -178,7 +177,7 @@ def make_query_guard_rules(
         cap = max_limit
 
         class LimitRule(ValidationRule):
-            """Caps integer literals on ``limit:`` / ``first:`` arguments.
+            """Caps integer literals on LIMIT_ARG.
 
             Variables bypass this check by design — they are bound at
             execution and the rule runs at validation; resolvers are
@@ -188,7 +187,7 @@ def make_query_guard_rules(
 
             def enter_field(self, node: FieldNode, *_: object) -> None:
                 for arg in node.arguments or ():
-                    if arg.name.value not in _LIMIT_ARGS:
+                    if arg.name.value != LIMIT_ARG:
                         continue
                     if not isinstance(arg.value, IntValueNode):
                         continue

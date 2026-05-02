@@ -405,6 +405,13 @@ class McpTools:
         uses — wired through ``GraphQLBundle.validation_rules`` so the two
         transports cannot drift. Returns ``{data, errors}``.
 
+        Every root field returns a ``{T}Result`` connection wrapper:
+
+        ``{table_name}(first: Int, after: String, order_by: ..., where: ..., distinct: Boolean): {T}Result!``
+
+        Access rows inside ``nodes { ... }`` and cursor metadata inside
+        ``pageInfo { hasNextPage endCursor }``.
+
         Args:
             query: The GraphQL operation source.
             variables: Optional variable bindings for the operation.

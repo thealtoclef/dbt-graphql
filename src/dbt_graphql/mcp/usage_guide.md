@@ -55,7 +55,7 @@ is validated against three limits before execution:
 
 - **Depth** — maximum selection-set nesting depth. Default 5.
 - **Fields** — maximum total leaf fields in the operation. Default 50.
-- **List limit** — caps integer literals on `limit:` / `first:` arguments.
+- **List limit** — caps integer literals on `first:` argument.
   Default 1000. Variables bypass this rule by design (validation runs
   before binding); the resolver applies a runtime cap when accepting a
   variable for pagination.
@@ -72,10 +72,14 @@ you can nest them in the query and filter related rows server-side:
 ```graphql
 query {
   customers {
-    customer_id
-    orders(where: { status: { _eq: "pending" } }) {
-      order_id
-      status
+    nodes {
+      customer_id
+      orders(where: { status: { _eq: "pending" } }) {
+        nodes {
+          order_id
+          status
+        }
+      }
     }
   }
 }
@@ -83,6 +87,48 @@ query {
 
 The `where` argument accepts boolean expressions (`_and`, `_or`, `_eq`,
 `_in`, `_is_null`, …). Omitting `where` returns all related rows.
+
+## Cursor Pagination
+
+Every root field returns a ``{T}Result`` connection wrapper:
+
+```
+{T}Result {
+  nodes: [T!]!
+  pageInfo: PageInfo
+}
+```
+
+- **`nodes`** — the list of rows for the current page.
+- **`pageInfo`** — cursor metadata: ``{ hasNextPage: Boolean!, endCursor: String }``.
+  Requires ``order_by`` to be set.
+- **`first`** (Int, default 100, capped at ``query_max_limit``) — page size.
+- **`order_by`** (``{T}OrderBy``) — sort order AND cursor-column definitions.
+  Must form a unique key (PK, all unique columns, or GROUP BY dimensions).
+  Required to get ``pageInfo`` and use ``after``. All order_by columns must
+  be selected in ``nodes { ... }``.
+- **`after`** (String) — opaque cursor from a previous page's ``endCursor``.
+  Requires ``order_by``. Pass it unchanged as ``after`` on the next request.
+
+Basic pagination pattern:
+
+```graphql
+query {
+  orders(first: 50, order_by: { order_id: ASC }) {
+    nodes {
+      order_id
+      status
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+Take the ``endCursor`` from the response and pass it as ``after`` on the next
+request to get the next page.
 
 ## Row Filters Are Invisible to the Caller
 

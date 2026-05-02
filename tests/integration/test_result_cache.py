@@ -145,9 +145,13 @@ class TestCacheEndToEnd:
         client, counter = cached_client()
         try:
             with client as c:
-                rows1 = _gql(c, "{ customers { customer_id first_name } }")["customers"]
+                rows1 = _gql(c, "{ customers { nodes { customer_id first_name } } }")[
+                    "customers"
+                ]["nodes"]
                 first = counter["n"]
-                rows2 = _gql(c, "{ customers { customer_id first_name } }")["customers"]
+                rows2 = _gql(c, "{ customers { nodes { customer_id first_name } } }")[
+                    "customers"
+                ]["nodes"]
                 second = counter["n"]
             assert first >= 1
             assert second == first
@@ -161,9 +165,9 @@ class TestCacheEndToEnd:
         client, counter = cached_client()
         try:
             with client as c:
-                _gql(c, "{ customers { customer_id } }")
+                _gql(c, "{ customers { nodes { customer_id } } }")
                 after_first = counter["n"]
-                _gql(c, "{ orders { order_id } }")
+                _gql(c, "{ orders { nodes { order_id } } }")
                 after_second = counter["n"]
             assert after_second > after_first  # second query hit the warehouse
         finally:
@@ -176,12 +180,12 @@ class TestCacheEndToEnd:
             with client as c:
                 _gql(
                     c,
-                    "{ customers(where: {customer_id: {_eq: 1}}) { customer_id } }",
+                    "{ customers(where: {customer_id: {_eq: 1}}) { nodes { customer_id } } }",
                 )
                 first = counter["n"]
                 _gql(
                     c,
-                    "{ customers(where: {customer_id: {_eq: 2}}) { customer_id } }",
+                    "{ customers(where: {customer_id: {_eq: 2}}) { nodes { customer_id } } }",
                 )
                 second = counter["n"]
             assert second > first
@@ -198,9 +202,9 @@ class TestCacheEndToEnd:
         client, counter = cached_client()
         try:
             with client as c:
-                _gql(c, "{ customers { customer_id first_name } }")
+                _gql(c, "{ customers { nodes { customer_id first_name } } }")
                 first = counter["n"]
-                _gql(c, "{ customers { first_name customer_id } }")
+                _gql(c, "{ customers { nodes { first_name customer_id } } }")
                 second = counter["n"]
             assert second > first
         finally:
@@ -245,14 +249,14 @@ class TestTenantIsolation:
             with client as c:
                 rows_a = _gql(
                     c,
-                    "{ customers { customer_id } }",
+                    "{ customers { nodes { customer_id } } }",
                     headers=_bearer({"sub": "a", "claims": {"cust_id": 1}}),
-                )["customers"]
+                )["customers"]["nodes"]
                 rows_b = _gql(
                     c,
-                    "{ customers { customer_id } }",
+                    "{ customers { nodes { customer_id } } }",
                     headers=_bearer({"sub": "b", "claims": {"cust_id": 2}}),
-                )["customers"]
+                )["customers"]["nodes"]
             # Each user sees only their own row — never the other's.
             assert all(r["customer_id"] == 1 for r in rows_a)
             assert all(r["customer_id"] == 2 for r in rows_b)
@@ -269,13 +273,13 @@ class TestTenantIsolation:
             with client as c:
                 _gql(
                     c,
-                    "{ customers { customer_id } }",
+                    "{ customers { nodes { customer_id } } }",
                     headers=_bearer({"sub": "a", "claims": {"cust_id": 1}}),
                 )
                 first = counter["n"]
                 _gql(
                     c,
-                    "{ customers { customer_id } }",
+                    "{ customers { nodes { customer_id } } }",
                     headers=_bearer({"sub": "a", "claims": {"cust_id": 1}}),
                 )
                 second = counter["n"]
@@ -299,7 +303,7 @@ class TestTenantIsolation:
             with client as c:
                 _gql(
                     c,
-                    "{ customers { customer_id } }",
+                    "{ customers { nodes { customer_id } } }",
                     headers=_bearer(
                         {
                             "sub": "a",
@@ -312,7 +316,7 @@ class TestTenantIsolation:
                 first = counter["n"]
                 _gql(
                     c,
-                    "{ customers { customer_id } }",
+                    "{ customers { nodes { customer_id } } }",
                     headers=_bearer(
                         {
                             "sub": "a",

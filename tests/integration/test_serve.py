@@ -46,9 +46,13 @@ def _gql(client, query: str, headers: dict | None = None) -> dict:
 
 
 def _gql_error(client, query: str, headers: dict | None = None) -> dict:
-    """Expect a GraphQL error; return the first error dict."""
+    """Expect a GraphQL error; return the first error dict.
+
+    Ariadne returns HTTP 400 for resolver-raised GraphQLErrors
+    when the test client uses raise_server_exceptions=True.
+    """
     resp = client.post("/graphql", json={"query": query}, headers=headers or {})
-    assert resp.status_code == 200
+    assert resp.status_code == 400, f"expected 400, got {resp.status_code}: {resp.text}"
     body = resp.json()
     assert "errors" in body and body["errors"], body
     return body["errors"][0]
@@ -79,7 +83,9 @@ def client_with_tiny_limits(serve_adapter_env):
         db_url=serve_adapter_env["db_url"],
         jwt_config=make_test_jwt_config(),
         security_enabled=True,
-        graphql_config=GraphQLConfig(query_max_depth=3, query_max_fields=3),
+        graphql_config=GraphQLConfig(
+            query_max_depth=3, query_max_fields=3, query_max_limit=10000
+        ),
     )
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -94,12 +100,16 @@ class TestGraphQLHTTP:
     def test_query_all_customers(self, client):
         resp = client.post(
             "/graphql",
-            json={"query": "{ customers { customer_id first_name last_name } }"},
+            json={
+                "query": (
+                    "{ customers { nodes { customer_id first_name last_name } } }"
+                )
+            },
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "errors" not in data, data.get("errors")
-        rows = data["data"]["customers"]
+        rows = data["data"]["customers"]["nodes"]
         assert len(rows) > 0
         assert "customer_id" in rows[0]
         assert "first_name" in rows[0]
@@ -107,31 +117,31 @@ class TestGraphQLHTTP:
     def test_query_all_orders(self, client):
         resp = client.post(
             "/graphql",
-            json={"query": "{ orders { order_id status } }"},
+            json={"query": ("{ orders { nodes { order_id status } } }")},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "errors" not in data, data.get("errors")
-        assert len(data["data"]["orders"]) > 0
+        assert len(data["data"]["orders"]["nodes"]) > 0
 
-    def test_query_with_limit(self, client):
+    def test_query_with_first(self, client):
         resp = client.post(
             "/graphql",
-            json={"query": "{ customers(limit: 1) { customer_id } }"},
+            json={"query": ("{ customers(first: 1) { nodes { customer_id } } }")},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "errors" not in data, data.get("errors")
-        assert len(data["data"]["customers"]) == 1
+        assert len(data["data"]["customers"]["nodes"]) == 1
 
     def test_query_selected_fields_only(self, client):
         resp = client.post(
             "/graphql",
-            json={"query": "{ customers { first_name } }"},
+            json={"query": ("{ customers { nodes { first_name } } }")},
         )
         assert resp.status_code == 200
         data = resp.json()
-        rows = data["data"]["customers"]
+        rows = data["data"]["customers"]["nodes"]
         assert all("first_name" in r for r in rows)
         assert all("customer_id" not in r for r in rows)
 
@@ -175,22 +185,23 @@ class TestGraphQLHTTP:
             json={
                 "query": (
                     "{ customers(where: { customer_id: { _eq: 1 } }) "
-                    "{ customer_id first_name } }"
+                    "{ nodes { customer_id first_name } } }"
                 )
             },
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "errors" not in data, data.get("errors")
-        rows = data["data"]["customers"]
+        rows = data["data"]["customers"]["nodes"]
         assert len(rows) == 1
         assert rows[0]["customer_id"] == 1
 
     def test_where_in_filter(self, client):
         rows = _gql(
             client,
-            "{ customers(where: { customer_id: { _in: [1, 2] } }) { customer_id } }",
-        )["customers"]
+            "{ customers(where: { customer_id: { _in: [1, 2] } }) "
+            "{ nodes { customer_id } } }",
+        )["customers"]["nodes"]
         assert {r["customer_id"] for r in rows} == {1, 2}
 
     def test_where_logical_combinators(self, client):
@@ -198,8 +209,8 @@ class TestGraphQLHTTP:
             client,
             "{ customers(where: { _or: ["
             "{ customer_id: { _eq: 1 } }, { customer_id: { _eq: 2 } }] }) "
-            "{ customer_id } }",
-        )["customers"]
+            "{ nodes { customer_id } } }",
+        )["customers"]["nodes"]
         assert {r["customer_id"] for r in rows} == {1, 2}
 
     def test_where_is_null(self, client):
@@ -207,33 +218,38 @@ class TestGraphQLHTTP:
         rows = _gql(
             client,
             "{ customers(where: { customer_id: { _is_null: false } }) "
-            "{ customer_id } }",
-        )["customers"]
+            "{ nodes { customer_id } } }",
+        )["customers"]["nodes"]
         assert len(rows) > 0
 
     def test_order_by_desc(self, client):
         rows = _gql(
             client,
-            "{ customers(order_by: { customer_id: desc }, limit: 3) { customer_id } }",
-        )["customers"]
+            "{ customers(order_by: { customer_id: desc }, first: 3) "
+            "{ nodes { customer_id } } }",
+        )["customers"]["nodes"]
         ids = [r["customer_id"] for r in rows]
         assert ids == sorted(ids, reverse=True)
 
     def test_inline_aggregates_count(self, client):
-        body = _gql(client, "{ customers { _aggregate { count } } }")
-        assert isinstance(body["customers"][0]["_aggregate"]["count"], int)
-        assert body["customers"][0]["_aggregate"]["count"] > 0
+        body = _gql(
+            client,
+            "{ customers { nodes { _aggregate { count } } } }",
+        )
+        assert isinstance(body["customers"]["nodes"][0]["_aggregate"]["count"], int)
+        assert body["customers"]["nodes"][0]["_aggregate"]["count"] > 0
 
     def test_inline_aggregate_batched_single_round_trip(self, client):
         # All four fields must come back populated from one envelope —
         # they share a single DB round-trip via the batching future.
         body = _gql(
             client,
-            "{ customers { _aggregate { count } } orders(limit: 1) { order_id } }",
+            "{ customers { nodes { _aggregate { count } } } "
+            "orders(first: 1) { nodes { order_id } } }",
         )
-        assert body["customers"][0]["_aggregate"]["count"] > 0
-        assert len(body["orders"]) == 1
-        assert "order_id" in body["orders"][0]
+        assert body["customers"]["nodes"][0]["_aggregate"]["count"] > 0
+        assert len(body["orders"]["nodes"]) == 1
+        assert "order_id" in body["orders"]["nodes"][0]
 
     def test_where_filter_no_match_returns_empty(self, client):
         resp = client.post(
@@ -241,14 +257,14 @@ class TestGraphQLHTTP:
             json={
                 "query": (
                     "{ customers(where: { customer_id: { _eq: 9999 } }) "
-                    "{ customer_id } }"
+                    "{ nodes { customer_id } } }"
                 )
             },
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "errors" not in data, data.get("errors")
-        assert data["data"]["customers"] == []
+        assert data["data"]["customers"]["nodes"] == []
 
 
 class TestQueryGuardsHTTP:
@@ -258,17 +274,21 @@ class TestQueryGuardsHTTP:
         # customers → nodes → 2 leaves: depth=3, leaves=2 — fits depth=3, fields=3.
         resp = client_with_tiny_limits.post(
             "/graphql",
-            json={"query": "{ customers { customer_id first_name } }"},
+            json={"query": ("{ customers { nodes { customer_id first_name } } }")},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "errors" not in data, data.get("errors")
 
     def test_query_exceeding_depth_returns_400(self, client_with_tiny_limits):
-        # customers → orders → customer → customer_id: depth=4, exceeds limit of 3.
+        # customers → nodes → orders → customer → customer_id: depth=4, exceeds limit of 3.
         resp = client_with_tiny_limits.post(
             "/graphql",
-            json={"query": "{ customers { orders { customer { customer_id } } } }"},
+            json={
+                "query": (
+                    "{ customers { nodes { orders { customer { customer_id } } } } }"
+                )
+            },
         )
         assert resp.status_code == 400
         body = resp.json()
@@ -282,7 +302,7 @@ class TestQueryGuardsHTTP:
         # 5 leaf fields exceeds limit of 3.
         resp = client_with_tiny_limits.post(
             "/graphql",
-            json={"query": "{ customers { c1 c2 c3 c4 c5 } }"},
+            json={"query": ("{ customers { nodes { c1 c2 c3 c4 c5 } } }")},
         )
         assert resp.status_code == 400
         body = resp.json()
@@ -310,7 +330,7 @@ class TestAuthHTTP:
         bad = pyjwt.encode({"sub": "u"}, "wrong-secret", algorithm="HS256")
         resp = client.post(
             "/graphql",
-            json={"query": "{ customers { customer_id } }"},
+            json={"query": ("{ customers { nodes { customer_id } } }")},
             headers={"Authorization": f"Bearer {bad}"},
         )
         assert resp.status_code == 401
@@ -321,7 +341,7 @@ class TestAuthHTTP:
     def test_garbage_token_returns_401(self, client):
         resp = client.post(
             "/graphql",
-            json={"query": "{ customers { customer_id } }"},
+            json={"query": ("{ customers { nodes { customer_id } } }")},
             headers={"Authorization": "Bearer not.a.jwt"},
         )
         assert resp.status_code == 401
@@ -329,13 +349,16 @@ class TestAuthHTTP:
 
     def test_missing_token_treated_as_anonymous(self, client):
         """No Authorization header → reaches resolvers as anonymous (200)."""
-        resp = client.post("/graphql", json={"query": "{ customers { customer_id } }"})
+        resp = client.post(
+            "/graphql",
+            json={"query": ("{ customers { nodes { customer_id } } }")},
+        )
         assert resp.status_code == 200
 
     def test_non_bearer_scheme_treated_as_anonymous(self, client):
         resp = client.post(
             "/graphql",
-            json={"query": "{ customers { customer_id } }"},
+            json={"query": ("{ customers { nodes { customer_id } } }")},
             headers={"Authorization": "Basic dXNlcjpwYXNz"},
         )
         assert resp.status_code == 200
@@ -345,7 +368,7 @@ class TestAuthHTTP:
 # Policy-aware fixtures
 # ---------------------------------------------------------------------------
 
-_ALL_CUST = "{ customers { customer_id first_name last_name } }"
+_ALL_CUST = "{ customers { nodes { customer_id first_name last_name } } }"
 
 
 @pytest.fixture
@@ -399,7 +422,7 @@ class TestPolicyHTTP:
     def test_no_policy_returns_all_columns(self, policy_client):
         """When access.yml is not configured at all, no enforcement runs."""
         with policy_client(None) as c:
-            rows = _gql(c, _ALL_CUST)["customers"]
+            rows = _gql(c, _ALL_CUST)["customers"]["nodes"]
         assert len(rows) > 0
         assert all(
             r["first_name"] is not None and r["last_name"] is not None for r in rows
@@ -407,7 +430,7 @@ class TestPolicyHTTP:
 
     def test_include_all_allows_every_column(self, policy_client):
         with policy_client(_full_access_policy()) as c:
-            rows = _gql(c, _ALL_CUST)["customers"]
+            rows = _gql(c, _ALL_CUST)["customers"]["nodes"]
         assert len(rows) > 0
         assert all(r["first_name"] is not None for r in rows)
 
@@ -435,7 +458,10 @@ class TestPolicyHTTP:
             )
         )
         with policy_client(policy) as c:
-            rows = _gql(c, "{ customers { customer_id } }")["customers"]
+            rows = _gql(
+                c,
+                "{ customers { nodes { customer_id } } }",
+            )["customers"]["nodes"]
         assert len(rows) > 0
         assert all(r["customer_id"] is not None for r in rows)
 
@@ -461,7 +487,7 @@ class TestPolicyHTTP:
             )
         )
         with policy_client(policy) as c:
-            rows = _gql(c, _ALL_CUST)["customers"]
+            rows = _gql(c, _ALL_CUST)["customers"]["nodes"]
         assert all("last_name" in r for r in rows)
         assert all(r["last_name"] is None for r in rows)
         assert all(r["first_name"] is not None for r in rows)
@@ -476,7 +502,7 @@ class TestPolicyHTTP:
         with policy_client(policy) as c:
             rows = _gql(
                 c, _ALL_CUST, headers=_bearer({"sub": "u1", "claims": {"cust_id": 1}})
-            )["customers"]
+            )["customers"]["nodes"]
         assert len(rows) == 1
         assert rows[0]["customer_id"] == 1
 
@@ -511,13 +537,13 @@ class TestPolicyHTTP:
             # analyst — listed columns OK
             rows = _gql(
                 c, _ALL_CUST, headers=_bearer({"sub": "u1", "groups": ["analysts"]})
-            )["customers"]
+            )["customers"]["nodes"]
             assert all(r["first_name"] is not None for r in rows)
 
             # finance — broader policy allows the same query
             rows = _gql(
                 c, _ALL_CUST, headers=_bearer({"sub": "u2", "groups": ["finance"]})
-            )["customers"]
+            )["customers"]["nodes"]
             assert all(r["first_name"] is not None for r in rows)
 
     def test_anon_has_own_policy(self, policy_client):
@@ -547,13 +573,16 @@ class TestPolicyHTTP:
         )
         with policy_client(policy) as c:
             # Anonymous can see customer_id only
-            rows = _gql(c, "{ customers { customer_id } }")["customers"]
+            rows = _gql(
+                c,
+                "{ customers { nodes { customer_id } } }",
+            )["customers"]["nodes"]
             assert all(r["customer_id"] is not None for r in rows)
 
             # Authenticated user gets the broader policy
             rows = _gql(c, _ALL_CUST, headers=_bearer({"sub": "u1", "groups": []}))[
                 "customers"
-            ]
+            ]["nodes"]
             assert all(r["first_name"] is not None for r in rows)
 
     def test_default_deny_table_without_policy_returns_forbidden(self, policy_client):
@@ -610,7 +639,193 @@ class TestPolicyHTTP:
         with policy_client(policy) as c:
             rows = _gql(
                 c,
-                "{ orders { order_id status } }",
+                "{ orders { nodes { order_id status } } }",
                 headers=_bearer({"sub": "u1", "claims": {"cust_id": 1}}),
-            )["orders"]
+            )["orders"]["nodes"]
         assert len(rows) > 0
+
+
+# ---------------------------------------------------------------------------
+# Pagination Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPagination:
+    """Integration tests for cursor-based pagination via the HTTP endpoint."""
+
+    def test_first_returns_nodes_and_page_info(self, client):
+        """Basic first query with order_by returns nodes array and pageInfo."""
+        resp = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ customers(first: 5, order_by: { customer_id: asc }) { nodes { customer_id } "
+                    "pageInfo { hasNextPage endCursor } } }"
+                )
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        result = data["data"]["customers"]
+        assert "nodes" in result
+        assert "pageInfo" in result
+        assert isinstance(result["nodes"], list)
+        assert len(result["nodes"]) <= 5
+        assert "hasNextPage" in result["pageInfo"]
+        assert "endCursor" in result["pageInfo"]
+
+    def test_first_with_order_by(self, client):
+        """order_by enables cursor pagination and controls sort order."""
+        resp = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ customers(first: 3, order_by: { customer_id: asc }) "
+                    "{ nodes { customer_id } "
+                    "pageInfo { hasNextPage endCursor } } }"
+                )
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        result = data["data"]["customers"]
+        assert len(result["nodes"]) == 3
+        # With order_by we get proper cursors
+        assert result["pageInfo"]["endCursor"] is not None
+        assert result["pageInfo"]["hasNextPage"] is not None
+
+    def test_has_next_page_true_when_more_rows(self, client):
+        """When first=2 and more rows exist, hasNextPage is true."""
+        resp = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ customers(first: 2, order_by: { customer_id: asc }) "
+                    "{ nodes { customer_id } "
+                    "pageInfo { hasNextPage endCursor } } }"
+                )
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        result = data["data"]["customers"]
+        # With more than 2 customers, hasNextPage should be True
+        # (The jaffle shop has 5 customers by default)
+        assert result["pageInfo"]["hasNextPage"] is True
+
+    def test_has_next_page_false_at_end(self, client):
+        """When first=100 and fewer rows exist, hasNextPage is false."""
+        resp = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ customers(first: 100, order_by: { customer_id: asc }) "
+                    "{ nodes { customer_id } "
+                    "pageInfo { hasNextPage endCursor } } }"
+                )
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        result = data["data"]["customers"]
+        assert result["pageInfo"]["hasNextPage"] is False
+
+    def test_pagination_with_cursors(self, client):
+        """Fetch first page, then next page using endCursor as after."""
+        # First page
+        resp1 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ customers(first: 2, order_by: { customer_id: asc }) "
+                    "{ nodes { customer_id } "
+                    "pageInfo { hasNextPage endCursor } } }"
+                )
+            },
+        )
+        assert resp1.status_code == 200
+        data1 = resp1.json()
+        assert "errors" not in data1, data1.get("errors")
+        first_page = data1["data"]["customers"]
+        first_ids = [n["customer_id"] for n in first_page["nodes"]]
+        end_cursor = first_page["pageInfo"]["endCursor"]
+
+        # Second page using endCursor as 'after'
+        resp2 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    '{ customers(first: 2, after: "%s", order_by: { customer_id: asc }) '
+                    "{ nodes { customer_id } "
+                    "pageInfo { hasNextPage endCursor } } }" % end_cursor
+                )
+            },
+        )
+        assert resp2.status_code == 200
+        data2 = resp2.json()
+        assert "errors" not in data2, data2.get("errors")
+        second_page = data2["data"]["customers"]
+        second_ids = [n["customer_id"] for n in second_page["nodes"]]
+
+        # No overlap between pages
+        assert len(set(first_ids) & set(second_ids)) == 0
+
+    def test_query_default_limit(self, client):
+        """When first is not specified, query_default_limit is applied."""
+        resp = client.post(
+            "/graphql",
+            json={"query": "{ customers { nodes { customer_id } } }"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        # Should use default limit (100) and return up to 100 rows
+        assert len(data["data"]["customers"]["nodes"]) <= 100
+
+    def test_first_capped_at_max_limit(self, client_with_tiny_limits):
+        """first=5000 with query_max_limit=10000 is allowed (below max)."""
+        resp = client_with_tiny_limits.post(
+            "/graphql",
+            json={"query": "{ customers(first: 5000) { nodes { customer_id } } }"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        # Should be capped to 3 (query_max_fields for tiny limits)
+        # But more importantly it should not error
+        assert len(data["data"]["customers"]["nodes"]) <= 100
+
+    def test_after_without_order_by_returns_error(self, client):
+        """Using 'after' without 'order_by' raises an error."""
+        # First get a valid cursor with order_by
+        resp1 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ customers(first: 1, order_by: { customer_id: asc }) "
+                    "{ nodes { customer_id } pageInfo { endCursor } } }"
+                )
+            },
+        )
+        cursor = resp1.json()["data"]["customers"]["pageInfo"]["endCursor"]
+
+        # Now try to use it without order_by
+        # GraphQLError with raise_server_exceptions=True → HTTP 400
+        resp2 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    '{ customers(after: "%s") '
+                    "{ nodes { customer_id } pageInfo { endCursor } } }" % cursor
+                )
+            },
+        )
+        assert resp2.status_code == 400
+        body = resp2.json()
+        assert "errors" in body
+        err = body["errors"][0]
+        assert err["extensions"]["code"] == "CURSOR_REQUIRES_ORDER_BY"

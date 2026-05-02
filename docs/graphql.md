@@ -25,7 +25,7 @@ See [architecture.md](architecture.md) for the design principles that govern thi
 
 `db.graphql` uses custom directives (`@table`, `@column`, `@relation`, `@unique`, `@masked`, `@filtered`) that Ariadne's schema builder doesn't understand. At serve time, `_build_ariadne_sdl(registry: TableRegistry)` derives a clean executable schema directly from the `TableRegistry`.
 
-The schema exposes **one root field per table** that returns a flat list of row objects — no envelope. For each `TableDef` it emits:
+The schema exposes **one root field per table** that returns a `{T}Result` connection wrapper. For each `TableDef` it emits:
 
 - **`type {T}`** — the row type. One field per column, plus a `_aggregate` field for inline aggregates and relation fields for FK-backed columns.
 - **`type {T}Aggregate`** — aggregate wrapper with per-function sub-objects:
@@ -36,6 +36,7 @@ The schema exposes **one root field per table** that returns a flat list of row 
   - `count_distinct: {T}AggregateCountDistinct` — all scalar columns.
   - `min: {T}AggregateMin` / `max: {T}AggregateMax` — all scalar columns.
 - **Per-operation aggregate types** (`{T}AggregateSum`, `{T}AggregateAvg`, etc.) — named types containing the relevant columns as fields.
+- **`type {T}Result`** — connection wrapper with `nodes: [{T}!]!` and `pageInfo: PageInfo!`.
 - **`input {T}Where`** — recursive Hasura-style WHERE filter. `AND` / `OR` / `NOT` plus per-column typed filter inputs.
 - **`input {T}OrderBy`** — per-column ordering. Each column and `_aggregate` map to `OrderDirection`.
 - **`enum {T}Column`** — one value per scalar column.
@@ -43,15 +44,23 @@ The schema exposes **one root field per table** that returns a flat list of row 
 The query field is:
 
 ```graphql
-{T}(where: {T}Where, order_by: {T}OrderBy, limit: Int, offset: Int, distinct: Boolean): [{T}!]!
+{T}(where: {T}Where, order_by: {T}OrderBy, first: Int, after: String, distinct: Boolean): {T}Result!
 ```
 
-Pagination (`limit`, `offset`), ordering (`order_by`), and deduplication (`distinct`) are arguments on the root field. `where` filters rows; the same filter applies to aggregates since they are computed over the same result set.
+Pagination uses cursor-based `first` / `after` — see [pagination.md](pagination.md) for the full reference. `where` filters rows; the same filter applies to aggregates since they are computed over the same result set.
 
 ### Shared types emitted once per schema
 
 - **`StringFilter`**, **`IntFilter`**, **`FloatFilter`**, **`BooleanFilter`** — per-scalar comparison inputs containing the valid operators for that type (e.g., `StringFilter` includes `_like`, `_ilike`, `_regex`; `IntFilter` does not).
 - **`enum OrderDirection { asc desc }`** — direction for order-by fields.
+- **`type PageInfo`** — pagination metadata returned inside every `{T}Result.pageInfo`:
+
+  ```graphql
+  type PageInfo {
+    endCursor: String
+    hasNextPage: Boolean!
+  }
+  ```
 
 ### Aggregate batching
 
@@ -61,20 +70,30 @@ Selecting `_aggregate` alongside dimension columns compiles into a single SELECT
 
 ```graphql
 {
-  orders(where: {
-    _and: [
-      { status: { _in: ["completed", "shipped"] } },
-      { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
-    ]
-  }) {
-    order_id
-    amount
-    status
-    customer { customer_id name }
-    _aggregate {
-      count
-      sum { amount }
-      avg { amount }
+  orders(
+    where: {
+      _and: [
+        { status: { _in: ["completed", "shipped"] } },
+        { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
+      ]
+    }
+    order_by: [{order_id: asc}]
+    first: 10
+  ) {
+    nodes {
+      order_id
+      amount
+      status
+      customer { customer_id name }
+      _aggregate {
+        count
+        sum { amount }
+        avg { amount }
+      }
+    }
+    pageInfo {
+      endCursor
+      hasNextPage
     }
   }
 }
@@ -123,7 +142,7 @@ State that resolvers need (`TableRegistry`, `DatabaseManager`, JWT payload, `Pol
 
 Per request, the resolver chain is a single step:
 
-1. **`Query.{T}`** (async) — calls `compile_query()` with the field nodes, `where`, `order_by`, `limit`, `offset`, `distinct`, and the policy resolver. Executes the resulting `Select` via `execute_with_cache()` (result cache + singleflight). Then restructures flat aggregate keys (`_count`, `_sum_price`, etc.) into the nested `{ count: N, sum: { price: X } }` shape that the GraphQL `_aggregate` field expects. Returns the rows directly.
+1. **`Query.{T}`** (async) — calls `compile_query()` or `compile_connection_query()` with the field nodes, `where`, `order_by`, `first`, `after`, `distinct`, and the policy resolver. For cursor-paginated queries (when `order_by` is provided with unique columns), fetches `first + 1` rows to detect `hasNextPage`. Executes the resulting `Select` via `execute_with_cache()` (result cache + singleflight). Then restructures flat aggregate keys (`_count`, `_sum_price`, etc.) into the nested `{ count: N, sum: { price: X } }` shape that the GraphQL `_aggregate` field expects. Returns a `{T}Result` object with `nodes` and `pageInfo`.
 
 No N+1 — nested relations on `{T}` rows are resolved inside the same SELECT via correlated subqueries (see [compiler.md](compiler.md)).
 

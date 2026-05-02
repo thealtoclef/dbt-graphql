@@ -1,7 +1,7 @@
-"""Resolver-layer behavior for the unified root resolver.
+"""Resolver-layer behavior for the connection resolver.
 
-Tests the simplified resolver that calls compile_query directly
-and returns rows without the {T}Result carrier dict pattern.
+Tests the connection resolver that wraps results in a ``{T}Result``
+with ``nodes`` and ``pageInfo``.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from dbt_graphql.cache import CacheConfig
+from dbt_graphql.config import GraphQLConfig
 from dbt_graphql.schema.models import ColumnDef, TableDef
-from dbt_graphql.graphql.resolvers import _make_root_resolver, parse_order_by
+from dbt_graphql.graphql.resolvers import _make_connection_resolver, parse_order_by
 
 
 def _tdef() -> TableDef:
@@ -36,14 +37,26 @@ def _make_info(db, field_nodes=None) -> MagicMock:
         "jwt_payload": {},
         "policy_engine": None,
         "cache_config": CacheConfig(),
+        "graphql_config": GraphQLConfig(),
     }
-    info.field_nodes = field_nodes or []
+    if field_nodes is None:
+        # Create default field_nodes with nodes selection for connection resolver
+        nodes_selection = MagicMock()
+        nodes_selection.name.value = "nodes"
+        nodes_selection.selection_set.selections = []
+
+        field_node = MagicMock()
+        field_node.selection_set.selections = [nodes_selection]
+        field_nodes = [field_node]
+    info.field_nodes = field_nodes
     return info
 
 
 @pytest.mark.asyncio
-async def test_root_resolver_returns_rows_directly(monkeypatch, fresh_cache):
-    """The root resolver returns a list of dicts, not a carrier dict."""
+async def test_connection_resolver_returns_nodes_and_page_info(
+    monkeypatch, fresh_cache
+):
+    """The connection resolver returns a dict with nodes and pageInfo."""
     del fresh_cache
 
     fake_row = {"InvoiceId": 1, "Total": 100.0}
@@ -64,17 +77,19 @@ async def test_root_resolver_returns_rows_directly(monkeypatch, fresh_cache):
     info = _make_info(db)
     info.context["registry"] = registry
 
-    resolver = _make_root_resolver("Invoice")
+    resolver = _make_connection_resolver("Invoice")
     result = await resolver(None, info, where=None)
 
-    assert isinstance(result, list)
-    assert result == [fake_row]
+    assert isinstance(result, dict)
+    assert "nodes" in result
+    assert "pageInfo" in result
+    assert result["nodes"] == [fake_row]
     assert execute_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_root_resolver_calls_compile_query(monkeypatch, fresh_cache):
-    """The root resolver calls compile_query with correct arguments."""
+async def test_connection_resolver_calls_compile_query(monkeypatch, fresh_cache):
+    """The connection resolver calls compile_query with correct arguments when no order_by."""
     del fresh_cache
 
     compile_calls = []
@@ -98,8 +113,8 @@ async def test_root_resolver_calls_compile_query(monkeypatch, fresh_cache):
     info = _make_info(db)
     info.context["registry"] = registry
 
-    resolver = _make_root_resolver("Invoice")
-    await resolver(None, info, where={"InvoiceId": {"_eq": 1}}, limit=10)
+    resolver = _make_connection_resolver("Invoice")
+    await resolver(None, info, where={"InvoiceId": {"_eq": 1}}, first=10)
 
     assert len(compile_calls) == 1
     call = compile_calls[0]

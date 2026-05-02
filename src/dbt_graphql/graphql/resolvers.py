@@ -6,13 +6,14 @@ from typing import Any
 from ariadne import QueryType
 from graphql import GraphQLError
 from graphql.language import ListValueNode, ObjectValueNode, VariableNode
-from loguru import logger
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from ..cache.result import execute_with_cache
-from ..compiler.query import compile_query
-from ..config import CacheConfig
+from ..compiler.query import compile_query, compile_connection_query
+from ..config import CacheConfig, GraphQLConfig
 from ..schema.constants import AGGREGATE_FIELD
+from ..schema.models import TableDef
+from .cursors import CursorPayload, encode_cursor, decode_cursor
 from .effective import effective_registry
 from .policy import PolicyError
 
@@ -150,14 +151,14 @@ def parse_order_by(info, arg_name="order_by"):
 def create_query_type(registry) -> tuple[QueryType, list]:
     """Build the GraphQL ``Query`` resolver set.
 
-    Returns a ``(QueryType, [])`` tuple. The object_types list is empty
-    since we no longer use the {T}Result envelope pattern.
+    Returns a ``(QueryType, [])`` tuple. Each table field returns a
+    ``{T}Result`` connection wrapper with ``nodes`` and ``pageInfo``.
     """
     query_type = QueryType()
 
     for table_def in registry:
         name = table_def.name
-        query_type.set_field(name, _make_root_resolver(name))
+        query_type.set_field(name, _make_connection_resolver(name))
 
     query_type.set_field("_sdl", _resolve_sdl)
     query_type.set_field("_tables", _resolve_tables)
@@ -197,68 +198,297 @@ def _resolve_tables(_, info) -> list[dict]:
     return [{"name": t.name, "description": t.description} for t in eff]
 
 
-def _make_root_resolver(table_name: str):
-    """Return a resolver that executes a unified query and returns rows directly."""
+def _extract_nodes_selection(field_nodes):
+    """Extract the inner `nodes { ... }` selection set from the connection wrapper."""
+    if not field_nodes:
+        raise GraphQLError(
+            "Missing field selection for connection query.",
+            extensions={"code": "INTERNAL_ERROR"},
+        )
+    top = field_nodes[0]
+    if not top.selection_set:
+        raise GraphQLError(
+            "Connection query requires a `nodes` selection.",
+            extensions={"code": "MISSING_NODES_SELECTION"},
+        )
+    for child in top.selection_set.selections:
+        if child.name.value == "nodes" and child.selection_set:
+            return [child]
+    raise GraphQLError(
+        "Connection query must include a `nodes { ... }` selection. "
+        "Add `nodes { ... }` to your query.",
+        extensions={"code": "MISSING_NODES_SELECTION"},
+    )
 
-    async def resolve_root(
+
+def _make_connection_resolver(table_name: str):
+    """Return a resolver that executes a connection query with cursor pagination."""
+
+    async def resolve_connection(
         _,
         info,
-        where: dict | None = None,
-        order_by: dict | None = None,  # Ariadne coerces input object to dict
-        limit: int | None = None,
-        offset: int | None = None,
-        distinct: list | None = None,
-    ) -> list[dict[str, Any]]:
+        where=None,
+        order_by=None,
+        first=None,
+        after=None,
+        distinct=None,
+    ):
         ctx = info.context
         tdef = ctx["registry"].get(table_name)
         db = ctx["db"]
         cache_cfg: CacheConfig = ctx["cache_config"]
         resolve_policy = _make_resolve_policy(ctx)
+        graphql_config: GraphQLConfig = ctx["graphql_config"]
 
-        # Parse order_by from AST to get source order (list of tuples)
-        order_by_parsed = parse_order_by(info)
+        inner_field_nodes = _extract_nodes_selection(info.field_nodes)
 
+        order_by_parsed = parse_order_by(info, arg_name="order_by")
+
+        # Early check: order_by columns must be in the nodes selection
+        if order_by_parsed:
+            selected_cols = _extract_selected_column_names(inner_field_nodes)
+            for col, _ in order_by_parsed:
+                if col not in selected_cols:
+                    raise GraphQLError(
+                        f"order_by column '{col}' is not in the nodes selection.",
+                        extensions={"code": "ORDER_BY_NOT_IN_SELECTION"},
+                    )
+
+        if after and not order_by_parsed:
+            raise GraphQLError(
+                "Cannot use 'after' without 'order_by'.",
+                extensions={"code": "CURSOR_REQUIRES_ORDER_BY"},
+            )
+
+        effective_first = (
+            first if first is not None else graphql_config.query_default_limit
+        )
+        if graphql_config.query_max_limit is not None:
+            effective_first = min(effective_first, graphql_config.query_max_limit)
+
+        page_info_selected = _page_info_selected(info.field_nodes)
+
+        if page_info_selected and not order_by_parsed:
+            raise GraphQLError(
+                "Cannot select 'pageInfo' without 'order_by'.",
+                extensions={"code": "ORDER_BY_REQUIRED"},
+            )
+
+        if order_by_parsed:
+            # Compute dimension columns from selection for GROUP BY uniqueness
+            requested = _collect_field_names(inner_field_nodes)
+            dim_col_names = {c.name for c in tdef.columns if not c.is_array}
+            dim_cols = {f for f in requested if f in dim_col_names}
+            _validate_order_by_uniqueness(tdef, order_by_parsed, dim_cols)
+
+        if not order_by_parsed:
+            try:
+                stmt = compile_query(
+                    tdef=tdef,
+                    field_nodes=inner_field_nodes,
+                    registry=ctx["registry"],
+                    where=where,
+                    order_by=order_by_parsed,
+                    limit=effective_first,
+                    distinct=distinct if distinct is not None else False,
+                    resolve_policy=resolve_policy,
+                )
+                rows = await execute_with_cache(
+                    stmt,
+                    dialect_name=db.dialect_name,
+                    runner=db.execute,
+                    cfg=cache_cfg,
+                )
+            except PolicyError as e:
+                raise _to_graphql_error(e)
+            except SAPoolTimeoutError:
+                raise _pool_timeout_error(db)
+            rows = _restructure_nested_aggregates(rows, inner_field_nodes)
+            return {
+                "nodes": rows,
+                "pageInfo": {
+                    "endCursor": None,
+                    "hasNextPage": False,
+                },
+            }
+
+        # Decode cursor if provided
+        cursor_values = None
+        if after:
+            payload = decode_cursor(after)
+            if not payload:
+                raise GraphQLError(
+                    "Invalid or expired cursor", extensions={"code": "INVALID_CURSOR"}
+                )
+            # Compare order_by specs (directions only, not values)
+            cursor_order_by = _normalize_order_by_for_comparison(
+                [entry[:2] for entry in payload.order_by]
+            )
+            query_order_by = _normalize_order_by_for_comparison(order_by_parsed)
+            if cursor_order_by != query_order_by:
+                raise GraphQLError(
+                    "Cursor was created for a different order_by. "
+                    "Start a fresh query without 'after'.",
+                    extensions={"code": "CURSOR_ORDER_BY_MISMATCH"},
+                )
+            # Compare WHERE clause - different filters = different result set
+            cursor_where = payload.where or None
+            query_where = where or None
+            if cursor_where != query_where:
+                raise GraphQLError(
+                    "Cursor was created for a different filter. "
+                    "Start a fresh query without 'after'.",
+                    extensions={"code": "CURSOR_WHERE_MISMATCH"},
+                )
+            cursor_values = {entry[0]: entry[2] for entry in payload.order_by}
+
+        # Compile + execute with LIMIT first+1
         try:
-            stmt = compile_query(
+            stmt = compile_connection_query(
                 tdef=tdef,
-                field_nodes=info.field_nodes,
+                field_nodes=inner_field_nodes,
                 registry=ctx["registry"],
-                dialect=db.dialect_name,
                 where=where,
                 order_by=order_by_parsed,
-                limit=limit,
-                offset=offset,
-                distinct=distinct,
+                cursor_values=cursor_values,
+                limit=effective_first,
+                distinct=distinct if distinct is not None else False,
                 resolve_policy=resolve_policy,
             )
-        except PolicyError as exc:
-            raise _to_graphql_error(exc) from exc
-
-        logger.debug("query {}: {}", table_name, stmt)
-
-        try:
             rows = await execute_with_cache(
                 stmt,
                 dialect_name=db.dialect_name,
                 runner=db.execute,
                 cfg=cache_cfg,
             )
-        except SAPoolTimeoutError as exc:
-            raise _pool_timeout_error(db) from exc
+        except PolicyError as e:
+            raise _to_graphql_error(e)
+        except SAPoolTimeoutError:
+            raise _pool_timeout_error(db)
+        rows = _restructure_nested_aggregates(rows, inner_field_nodes)
 
-        logger.debug("query {} returned {} rows", table_name, len(rows))
+        has_next_page = len(rows) > effective_first
+        if has_next_page:
+            rows = rows[:effective_first]
 
-        # Restructure flat aggregate results into nested GraphQL format
-        rows = _restructure_nested_aggregates(rows, info.field_nodes)
+        # Build cursors using order_by columns
+        end_cursor = None
+        if rows:
+            last_row = rows[-1]
+            end_cursor = encode_cursor(
+                CursorPayload(
+                    order_by=[
+                        [col, direction, last_row[col]]
+                        for col, direction in order_by_parsed
+                    ],
+                    where=where,
+                )
+            )
 
-        return rows
+        return {
+            "nodes": rows,
+            "pageInfo": {
+                "endCursor": end_cursor,
+                "hasNextPage": has_next_page,
+            },
+        }
 
-    return resolve_root
+    return resolve_connection
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _page_info_selected(field_nodes: list) -> bool:
+    """Check if pageInfo is selected in the GraphQL query."""
+    if not field_nodes:
+        return False
+    top = field_nodes[0]
+    if not top.selection_set:
+        return False
+    for child in top.selection_set.selections:
+        if child.name.value == "pageInfo":
+            return True
+    return False
+
+
+def _extract_selected_column_names(field_nodes: list) -> set[str]:
+    """Extract column names from the nodes { ... } selection set."""
+    if not field_nodes:
+        return set()
+    sel = field_nodes[0]
+    if not sel.selection_set:
+        return set()
+    return {f.name.value for f in sel.selection_set.selections}
+
+
+def _collect_field_names(field_nodes: list) -> list[str]:
+    """Return the list of field names selected in the first field node's selection set.
+
+    Returns a list (not set) to preserve order.
+    """
+    if not field_nodes:
+        return []
+    sel = field_nodes[0]
+    if sel.selection_set is None:
+        return []
+    return [f.name.value for f in sel.selection_set.selections]
+
+
+def _normalize_order_by_for_comparison(
+    order_by: list[tuple[str, str]] | list[list[str]],
+) -> list[tuple[str, str]]:
+    """Normalize order_by for comparison by standardizing direction format.
+
+    Preserves source column order since column ordering is semantically significant
+    for cursor predicates.
+    """
+    normalized = []
+    for item in order_by:
+        col = item[0]
+        direction = item[1].lower() if len(item) > 1 else "asc"
+        normalized.append((col, direction))
+    return normalized
+
+
+def _validate_order_by_uniqueness(
+    tdef: TableDef,
+    order_by_parsed: list[tuple[str, str]],
+    dim_cols: set[str] | None = None,
+) -> None:
+    """Validate that order_by columns form a unique key.
+
+    Raises GraphQLError if order_by does not guarantee uniqueness.
+    """
+    if not order_by_parsed:
+        return
+
+    order_by_cols = {col for col, _ in order_by_parsed}
+    pk_cols = {col.name for col in tdef.columns if col.is_pk}
+
+    # Valid if order_by covers all PK columns (only when pk_cols is non-empty)
+    if pk_cols and pk_cols.issubset(order_by_cols):
+        return
+
+    # Also valid if all order_by columns are individually unique
+    unique_cols = {col.name for col in tdef.columns if col.is_unique}
+    if order_by_cols.issubset(unique_cols):
+        return
+
+    # Also valid if order_by columns match GROUP BY dimensions (aggregate queries)
+    if dim_cols and order_by_cols.issubset(dim_cols):
+        return
+
+    # Not valid - could cause duplicate/skip rows
+    raise GraphQLError(
+        f"order_by columns must form a unique key. "
+        f"Got: {[col for col, _ in order_by_parsed]}, "
+        f"PK: {sorted(pk_cols) if pk_cols else 'none'}, "
+        f"unique: {sorted(unique_cols) if unique_cols else 'none'}",
+        extensions={"code": "ORDER_BY_NOT_UNIQUE"},
+    )
 
 
 def _make_resolve_policy(ctx: dict):

@@ -192,7 +192,7 @@ class TestLimitRule:
         assert _validate(q, max_limit=100) == []
 
     def test_inline_limit_above_cap_emits_max_limit_code(self):
-        q = "{ customers(limit: 1000000) { customer_id } }"
+        q = "{ customers(first: 1000000) { customer_id } }"
         errors = _validate(q, max_limit=1000)
         assert MAX_LIMIT_CODE in _codes(errors)
 
@@ -202,12 +202,12 @@ class TestLimitRule:
         assert MAX_LIMIT_CODE in _codes(errors)
 
     def test_nested_list_limit_capped(self):
-        q = "{ customers { orders(limit: 10000) { order_id } } }"
+        q = "{ customers { orders(first: 10000) { order_id } } }"
         errors = _validate(q, max_limit=1000)
         assert MAX_LIMIT_CODE in _codes(errors)
 
     def test_no_cap_disables_rule(self):
-        q = "{ customers(limit: 10000000) { customer_id } }"
+        q = "{ customers(first: 10000000) { customer_id } }"
         # max_limit=None → rule not registered
         assert _validate(q, max_limit=None) == []
 

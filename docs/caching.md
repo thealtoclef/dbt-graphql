@@ -134,7 +134,7 @@ What does **not** automatically share an entry, even when the user might intuiti
 
 - **Different GraphQL field order** (`{ id name }` vs `{ name id }`). The SELECT column order differs → different SQL → different key. This is correct: response field order is part of the GraphQL contract.
 - **Different `where` argument values, same shape**. Different binds → different keys. Correct.
-- **Different `limit` / `offset`**. SA emits these into the SQL string → different keys. Correct.
+- **Different `first` / `after` (cursor)**. SA emits these into the SQL string → different keys. Correct.
 
 There is no separate "tenant key" or claim-tracking machinery. Cross-tenant safety falls out of the SQL itself.
 

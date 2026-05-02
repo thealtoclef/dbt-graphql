@@ -7,6 +7,9 @@ NUMERIC_GQL_TYPES = frozenset({"Int", "Float"})
 STANDARD_GQL_SCALARS = frozenset({"String", "Int", "Float", "Boolean"})
 AGGREGATE_FIELD = "_aggregate"
 
+# GraphQL argument name for limit
+LIMIT_ARG = "first"
+
 # Operator constants
 LOGICAL_OPS = frozenset({"_and", "_or", "_not"})
 LIST_OPS = frozenset({"_in", "_nin"})

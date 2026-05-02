@@ -52,34 +52,53 @@ serve:
 
 ## Query layer
 
-Each table exposes one root field that returns a flat list of row objects.
+Each table exposes one root field that returns a `{T}Result!` envelope with
+`nodes` (a flat list of row objects) and `pageInfo` (pagination metadata).
 Columns, nested relations, and inline aggregates are selected as sibling
-fields on the same type — one `SELECT`, one DB round-trip.
+fields inside `nodes` — one `SELECT`, one DB round-trip.
 
 ```graphql
 {
-  orders(where: {
-    _and: [
-      { status: { _in: ["completed", "shipped"] } },
-      { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
-    ]
-  }, order_by: { amount: desc }, limit: 50) {
-    order_id amount status
-    customer { customer_id name }   # nested via correlated subquery (no LATERAL)
-    _aggregate {
-      count
-      sum { amount }
-      avg { amount }
+  orders(
+    where: {
+      _and: [
+        { status: { _in: ["completed", "shipped"] } },
+        { _or: [{ amount: { _gte: 100 } }, { vip: { _eq: true } }] }
+      ]
+    },
+    order_by: { amount: desc },
+    first: 50
+  ) {
+    nodes {
+      order_id amount status
+      customer { customer_id name }   # nested via correlated subquery (no LATERAL)
+      _aggregate {
+        count
+        sum { amount }
+        avg { amount }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
     }
   }
 }
 ```
 
+- **`first`**: maximum rows to return. When `order_by` is absent, acts as a
+  plain LIMIT — returns `{T}Result` with `hasNextPage: false` and no cursors.
+  When `order_by` is provided with unique columns, cursor pagination is
+  enabled and `hasNextPage` reflects whether more rows exist.
+- **`after`**: cursor token to resume from a previous page. Requires `order_by`.
 - **`{T}Where`** (Hasura-inspired filter): `_and` / `_or` / `_not` plus per-column
   `_eq` / `_neq` / `_gt` / `_gte` / `_lt` / `_lte` / `_in` / `_nin` / `_is_null`
   / `_like` / `_nlike` / `_ilike` / `_nilike`. The same operator set is reused
   by access-policy `row_filter` blocks.
-- **`{T}OrderBy`**: per-column ordering with `asc | desc`.
+- **`{T}OrderBy`**: per-column ordering with `asc | desc`. Serves as both sort
+  order and cursor columns. All order_by columns must be selected in
+  `nodes { ... }`. Must form a unique key. Required when using `after` cursors
+  or selecting `pageInfo`.
 - **`distinct: true`** on the root field adds a plain `DISTINCT` to the SELECT.
 - **Aggregates**: nested under `_aggregate { ... }` as a field on `{T}`. `count`
   always; `sum` / `avg` / `stddev` / `var` contain numeric columns;

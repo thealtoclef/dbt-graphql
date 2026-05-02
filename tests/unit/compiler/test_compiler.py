@@ -127,53 +127,14 @@ class TestRowOnlyQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
-            where=None,
-            order_by=None,
-            limit=None,
-            offset=None,
-            distinct=None,
-            resolve_policy=None,
-        )
-        sql = _sql(stmt)
-        assert "InvoiceId" in sql
-        assert "CustomerId" in sql
-
-    def test_limit(self):
-        invoice, registry = _make_invoice_registry()
-        fn = _field_node("Invoice", [_field_node("InvoiceId")])
-        stmt = compile_query(
-            tdef=invoice,
-            field_nodes=[fn],
-            registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=10,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
         sql = _sql(stmt)
         assert "LIMIT 10" in sql
-
-    def test_offset(self):
-        invoice, registry = _make_invoice_registry()
-        fn = _field_node("Invoice", [_field_node("InvoiceId")])
-        stmt = compile_query(
-            tdef=invoice,
-            field_nodes=[fn],
-            registry=registry,
-            dialect="",
-            where=None,
-            order_by=None,
-            limit=10,
-            offset=20,
-            distinct=None,
-            resolve_policy=None,
-        )
-        sql = _sql(stmt)
-        assert "OFFSET 20" in sql
 
     def test_distinct(self):
         invoice, registry = _make_invoice_registry()
@@ -182,11 +143,9 @@ class TestRowOnlyQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=None,
-            offset=None,
             distinct=True,
             resolve_policy=None,
         )
@@ -208,11 +167,9 @@ class TestAggregateOnlyQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -231,11 +188,9 @@ class TestAggregateOnlyQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -262,11 +217,9 @@ class TestAggregateOnlyQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -302,11 +255,9 @@ class TestMixedQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -330,11 +281,9 @@ class TestMixedQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -362,11 +311,9 @@ class TestMixedQueries:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -387,11 +334,9 @@ class TestOrderBy:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=[("CustomerId", "asc")],
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -406,11 +351,9 @@ class TestOrderBy:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=[("CustomerId", "desc")],
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -426,11 +369,9 @@ class TestOrderBy:
                 tdef=invoice,
                 field_nodes=[fn],
                 registry=registry,
-                dialect="",
                 where=None,
                 order_by=[("CustomerId", "sideways")],
                 limit=None,
-                offset=None,
                 distinct=None,
                 resolve_policy=None,
             )
@@ -444,11 +385,9 @@ class TestOrderBy:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where=None,
             order_by=[("BillingState", "asc"), ("CustomerId", "desc")],
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -477,11 +416,9 @@ class TestMutualExclusivityErrors:
                 tdef=invoice,
                 field_nodes=[fn],
                 registry=registry,
-                dialect="",
                 where=None,
                 order_by=None,
                 limit=None,
-                offset=None,
                 distinct=True,
                 resolve_policy=None,
             )
@@ -502,11 +439,9 @@ class TestMutualExclusivityErrors:
                 tdef=registry["orders"],
                 field_nodes=[fn],
                 registry=registry,
-                dialect="",
                 where=None,
                 order_by=None,
                 limit=None,
-                offset=None,
                 distinct=None,
                 resolve_policy=None,
             )
@@ -528,11 +463,9 @@ class TestWhereOperators:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where={"InvoiceId": {op: value}},
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -619,7 +552,6 @@ class TestBoolExpressions:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where={
                 "_and": [
                     {"InvoiceId": {"_eq": 1}},
@@ -628,7 +560,6 @@ class TestBoolExpressions:
             },
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -642,7 +573,6 @@ class TestBoolExpressions:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where={
                 "_or": [
                     {"InvoiceId": {"_eq": 1}},
@@ -651,7 +581,6 @@ class TestBoolExpressions:
             },
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -665,11 +594,9 @@ class TestBoolExpressions:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where={"_not": {"InvoiceId": {"_eq": 1}}},
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -684,7 +611,6 @@ class TestBoolExpressions:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where={
                 "_and": [
                     {"CustomerId": {"_eq": 1}},
@@ -698,7 +624,6 @@ class TestBoolExpressions:
             },
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -713,11 +638,9 @@ class TestBoolExpressions:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where={},
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=None,
         )
@@ -757,11 +680,9 @@ class TestPolicyEnforcement:
                 tdef=invoice,
                 field_nodes=[fn],
                 registry=registry,
-                dialect="",
                 where=None,
                 order_by=None,
                 limit=None,
-                offset=None,
                 distinct=None,
                 resolve_policy=resolver,
             )
@@ -778,11 +699,9 @@ class TestPolicyEnforcement:
                 tdef=invoice,
                 field_nodes=[fn],
                 registry=registry,
-                dialect="",
                 where=None,
                 order_by=None,
                 limit=None,
-                offset=None,
                 distinct=None,
                 resolve_policy=resolver,
             )
@@ -799,11 +718,9 @@ class TestPolicyEnforcement:
                 tdef=invoice,
                 field_nodes=[fn],
                 registry=registry,
-                dialect="",
                 where=None,
                 order_by=[("Total", "asc")],
                 limit=None,
-                offset=None,
                 distinct=None,
                 resolve_policy=resolver,
             )
@@ -820,11 +737,9 @@ class TestPolicyEnforcement:
                 tdef=invoice,
                 field_nodes=[fn],
                 registry=registry,
-                dialect="",
                 where={"Total": {"_eq": 100}},
                 order_by=None,
                 limit=None,
-                offset=None,
                 distinct=None,
                 resolve_policy=resolver,
             )
@@ -839,11 +754,9 @@ class TestPolicyEnforcement:
             tdef=invoice,
             field_nodes=[fn],
             registry=registry,
-            dialect="",
             where={"Total": {"_eq": 100}},
             order_by=None,
             limit=None,
-            offset=None,
             distinct=None,
             resolve_policy=resolver,
         )

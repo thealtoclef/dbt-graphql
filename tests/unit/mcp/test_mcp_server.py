@@ -256,10 +256,14 @@ class TestRunGraphqlWithBundle:
         # "run cache.setup(...) before using cache" on the first hit.
         bundle = _bundle_with([{"customer_id": 1}, {"customer_id": 2}])
         tools = McpTools(bundle.registry, bundle=bundle)
-        # New GraphJin-style query: direct selection on type, not {T}Result envelope
-        result = await tools.run_graphql("query { customers { customer_id } }")
+        # GraphQL query uses {T}Result wrapper with nodes/pageInfo
+        result = await tools.run_graphql(
+            "query { customers { nodes { customer_id } } }"
+        )
         assert "errors" not in result
-        assert result["data"] == {"customers": [{"customer_id": 1}, {"customer_id": 2}]}
+        assert result["data"] == {
+            "customers": {"nodes": [{"customer_id": 1}, {"customer_id": 2}]}
+        }
 
     def test_parse_error_raises_typed_signal(self):
         # Direct (un-wrapped) callers receive the typed _ToolReturnedError;
@@ -276,7 +280,9 @@ class TestRunGraphqlWithBundle:
         bundle = _bundle_with([{"customer_id": 1}])
         tools = McpTools(bundle.registry, bundle=bundle)
         result = asyncio.run(
-            tools.run_graphql("query { customers { customer_id } }", validate_only=True)
+            tools.run_graphql(
+                "query { customers { nodes { customer_id } } }", validate_only=True
+            )
         )
         assert result == {"validation": "ok"}
         # Execution skipped — fake DB recorded zero queries.
@@ -315,7 +321,7 @@ class TestRunGraphqlWithBundle:
         # run_graphql converts to _ToolReturnedError so the metrics wrapper
         # records status=error.
         with pytest.raises(_ToolReturnedError) as ei:
-            asyncio.run(tools.run_graphql("query { orders { order_id } }"))
+            asyncio.run(tools.run_graphql("query { orders { nodes { order_id } } }"))
         assert "errors" in ei.value.payload
         assert any("orders" in e["message"] for e in ei.value.payload["errors"])
 

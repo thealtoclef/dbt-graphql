@@ -70,7 +70,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     - ``input {T}OrderBy`` — every real column and aggregate field → OrderDirection
     - ``enum {T}Column`` — one value per real scalar column
 
-    Query root: ``Query.{T}(where, order_by, limit, offset, distinct) -> [T!]``
+    Query root: ``Query.{T}(where, order_by, first, after, distinct) -> {T}Result!``
 
     Shared types (``OrderDirection``, ``StringFilter``, ``IntFilter``, ``FloatFilter``,
     ``BooleanFilter``) are emitted once before all tables.
@@ -81,6 +81,13 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     order_by_defs: list[str] = []
     column_enum_defs: list[str] = []
     agg_type_defs: list[str] = []
+    result_defs: list[str] = []
+
+    _PAGE_INFO_TYPE = """\
+type PageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+}"""
 
     for table_def in registry:
         name = table_def.name
@@ -117,6 +124,10 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
 
         agg_type_defs.append(
             f"type {name}Aggregate {{\n" + "\n".join(agg_field_lines) + "\n}"
+        )
+
+        result_defs.append(
+            f"type {name}Result {{\n  nodes: [{name}!]!\n  pageInfo: PageInfo!\n}}"
         )
 
         # --- type {T} with real columns AND _aggregate field ---
@@ -176,7 +187,7 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
 
     query_fields = [
         _description_block(t.description, indent="  ")
-        + f"  {t.name}(where: {t.name}Where, order_by: {t.name}OrderBy, limit: Int, offset: Int, distinct: Boolean): [{t.name}!]"
+        + f"  {t.name}(where: {t.name}Where, order_by: {t.name}OrderBy, first: Int, after: String, distinct: Boolean): {t.name}Result!"
         for t in registry
     ]
     query_fields.append(
@@ -206,11 +217,12 @@ def _build_ariadne_sdl(registry: TableRegistry) -> str:
     scalar_defs = [f"scalar {s}" for s in sorted(custom_scalars)]
     parts = (
         scalar_defs
-        + [_SHARED_FILTER_TYPES, _ORDER_DIRECTION_ENUM]
+        + [_SHARED_FILTER_TYPES, _ORDER_DIRECTION_ENUM, _PAGE_INFO_TYPE]
         + column_enum_defs
         + where_defs
         + order_by_defs
         + agg_type_defs
+        + result_defs
         + type_blocks
         + [table_info_block, query_block]
     )
@@ -338,6 +350,7 @@ def create_graphql_subapp(
             "jwt_payload": jwt_payload,
             "policy_engine": policy_engine,
             "cache_config": cache_config,
+            "graphql_config": graphql_config,
         }
 
     asgi = GraphQL(

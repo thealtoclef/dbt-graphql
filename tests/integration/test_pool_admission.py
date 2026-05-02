@@ -62,14 +62,14 @@ async def test_pool_exhaustion_returns_503_with_retry_after(
             timeout=10.0,
             follow_redirects=True,
         ) as ac:
-            # Distinct ``offset`` per request → distinct rendered SQL →
+            # Distinct ``first`` value per request → distinct rendered SQL →
             # distinct cache keys, so the always-on result cache + singleflight
             # can't coalesce these three calls into one DB checkout.
-            async def one(offset: int):
+            async def one(i: int):
                 return await ac.post(
                     "/graphql",
                     json={
-                        "query": (f"{{ customers(offset: {offset}) {{ customer_id }}}}")
+                        "query": f"query {{ customers(first: {i + 1}) {{ nodes {{ customer_id }} }} }}"
                     },
                 )
 

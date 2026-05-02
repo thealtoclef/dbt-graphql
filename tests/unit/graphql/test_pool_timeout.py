@@ -14,8 +14,8 @@ from graphql import GraphQLError
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from dbt_graphql.cache import CacheConfig
-from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE, _make_root_resolver
-from dbt_graphql.config import PoolConfig
+from dbt_graphql.graphql.resolvers import POOL_TIMEOUT_CODE, _make_connection_resolver
+from dbt_graphql.config import PoolConfig, GraphQLConfig
 
 
 class _FakeRegistry:
@@ -34,8 +34,17 @@ def _make_info(db, registry):
         "jwt_payload": {},
         "policy_engine": None,
         "cache_config": CacheConfig(),
+        "graphql_config": GraphQLConfig(),
     }
-    info.field_nodes = []
+    # Mock field_nodes with a nodes selection
+    nodes_selection = MagicMock()
+    nodes_selection.name.value = "nodes"
+    nodes_selection.selection_set.selections = []
+
+    field_node = MagicMock()
+    field_node.selection_set.selections = [nodes_selection]
+
+    info.field_nodes = [field_node]
     return info
 
 
@@ -69,7 +78,7 @@ async def test_resolver_translates_pool_timeout_to_graphql_error(
     registry = _FakeRegistry(tdef)
     info = _make_info(db, registry)
 
-    resolver = _make_root_resolver("customers")
+    resolver = _make_connection_resolver("customers")
 
     with pytest.raises(GraphQLError) as exc_info:
         await resolver(None, info, where=None)

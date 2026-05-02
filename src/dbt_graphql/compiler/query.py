@@ -31,6 +31,7 @@ from ..schema.models import ColumnDef, RelationDef, TableDef, TableRegistry
 from ..schema.constants import AGGREGATE_FIELD
 from ..schema.helpers import numeric_columns, scalar_columns
 from ..compiler.operators import apply_comparison, AGG_FUNC_MAP, ORDER_BY_MAP
+from ..compiler.cursor import cursor_where_clause
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.elements import ClauseElement
 from sqlalchemy.sql.expression import FunctionElement
@@ -227,11 +228,9 @@ def compile_query(
     tdef: TableDef,
     field_nodes: list,
     registry: TableRegistry,
-    dialect: str = "",
     where: dict | None = None,
     order_by: list[tuple[str, str]] | None = None,
     limit: int | None = None,
-    offset: int | None = None,
     distinct: bool | None = None,
     resolve_policy: ResolvePolicy | None = None,
 ) -> Select:
@@ -430,8 +429,6 @@ def compile_query(
 
         if limit is not None:
             stmt = stmt.limit(limit)
-        if offset is not None:
-            stmt = stmt.offset(offset)
 
         if distinct:
             stmt = stmt.distinct()
@@ -493,9 +490,37 @@ def compile_query(
 
         if limit is not None:
             stmt = stmt.limit(limit)
-        if offset is not None:
-            stmt = stmt.offset(offset)
 
+    return stmt
+
+
+def compile_connection_query(
+    tdef: TableDef,
+    field_nodes: list,
+    registry: TableRegistry,
+    *,
+    where: dict | None = None,
+    order_by: list[tuple[str, str]] | None = None,
+    cursor_values: dict[str, Any] | None = None,
+    limit: int,
+    distinct: bool = False,
+    resolve_policy: ResolvePolicy | None = None,
+) -> Select:
+    stmt = compile_query(
+        tdef=tdef,
+        field_nodes=field_nodes,
+        registry=registry,
+        where=where,
+        order_by=order_by,
+        limit=limit + 1,
+        distinct=distinct,
+        resolve_policy=resolve_policy,
+    )
+    if cursor_values and order_by:
+        # Use the SAME aliased table from the compiled statement, not a new alias.
+        # stmt.get_final_froms()[0] is the _uq alias created by compile_query.
+        aliased = stmt.get_final_froms()[0]
+        stmt = stmt.where(cursor_where_clause(aliased, order_by, cursor_values))
     return stmt
 
 
