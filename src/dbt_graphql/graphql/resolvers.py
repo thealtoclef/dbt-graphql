@@ -13,19 +13,12 @@ from ..compiler.query import compile_query, compile_connection_query
 from ..config import CacheConfig, GraphQLConfig
 from ..schema.constants import AGGREGATE_FIELD
 from ..schema.models import TableDef
-from .cursors import CursorPayload, encode_cursor, decode_cursor
+from .cursors import encode_cursor, decode_cursor, _query_fingerprint
 from .effective import effective_registry
 from .policy import PolicyError
 
 # GraphQL extension code paired with the HTTP handler's 503 elevation.
 POOL_TIMEOUT_CODE = "POOL_TIMEOUT"
-
-# Nested aggregate field names that need restructuring
-_NESTED_AGG_FIELDS = frozenset(
-    {
-        AGGREGATE_FIELD,
-    }
-)
 
 
 def _restructure_nested_aggregates(
@@ -247,12 +240,13 @@ def _make_connection_resolver(table_name: str):
         # Early check: order_by columns must be in the nodes selection
         if order_by_parsed:
             selected_cols = _extract_selected_column_names(inner_field_nodes)
-            for col, _ in order_by_parsed:
-                if col not in selected_cols:
-                    raise GraphQLError(
-                        f"order_by column '{col}' is not in the nodes selection.",
-                        extensions={"code": "ORDER_BY_NOT_IN_SELECTION"},
-                    )
+            order_by_col_set = {col for col, _ in order_by_parsed}
+            missing = order_by_col_set - selected_cols
+            if missing:
+                raise GraphQLError(
+                    f"order_by columns not in the nodes selection: {sorted(missing)}.",
+                    extensions={"code": "ORDER_BY_NOT_IN_SELECTION"},
+                )
 
         if after and not order_by_parsed:
             raise GraphQLError(
@@ -274,12 +268,19 @@ def _make_connection_resolver(table_name: str):
                 extensions={"code": "ORDER_BY_REQUIRED"},
             )
 
+        # Compute GROUP BY columns for cursor stale detection + uniqueness validation.
+        # When _aggregate is selected, the compiler groups by all non-aggregate
+        # selected columns.  Changing these between pages changes the result set.
+        effective_distinct = distinct if distinct is not None else False
+        requested = _extract_selected_column_names(inner_field_nodes)
+        has_aggregate = AGGREGATE_FIELD in requested
+        group_by_cols: set[str] | None = None
+        if has_aggregate:
+            col_names = {c.name for c in tdef.columns if not c.is_array}
+            group_by_cols = requested.intersection(col_names)
+
         if order_by_parsed:
-            # Compute dimension columns from selection for GROUP BY uniqueness
-            requested = _collect_field_names(inner_field_nodes)
-            dim_col_names = {c.name for c in tdef.columns if not c.is_array}
-            dim_cols = {f for f in requested if f in dim_col_names}
-            _validate_order_by_uniqueness(tdef, order_by_parsed, dim_cols)
+            _validate_order_by_uniqueness(tdef, order_by_parsed, group_by_cols)
 
         if not order_by_parsed:
             try:
@@ -290,7 +291,7 @@ def _make_connection_resolver(table_name: str):
                     where=where,
                     order_by=order_by_parsed,
                     limit=effective_first,
-                    distinct=distinct if distinct is not None else False,
+                    distinct=effective_distinct,
                     resolve_policy=resolve_policy,
                 )
                 rows = await execute_with_cache(
@@ -320,27 +321,19 @@ def _make_connection_resolver(table_name: str):
                 raise GraphQLError(
                     "Invalid or expired cursor", extensions={"code": "INVALID_CURSOR"}
                 )
-            # Compare order_by specs (directions only, not values)
-            cursor_order_by = _normalize_order_by_for_comparison(
-                [entry[:2] for entry in payload.order_by]
-            )
-            query_order_by = _normalize_order_by_for_comparison(order_by_parsed)
-            if cursor_order_by != query_order_by:
+            # Verify cursor matches current query parameters
+            if payload.digest != _query_fingerprint(
+                order_by=order_by_parsed,
+                where=where,
+                distinct=effective_distinct,
+                group_by_cols=group_by_cols,
+            ):
                 raise GraphQLError(
-                    "Cursor was created for a different order_by. "
+                    "Cursor was created for a different query signature. "
                     "Start a fresh query without 'after'.",
-                    extensions={"code": "CURSOR_ORDER_BY_MISMATCH"},
+                    extensions={"code": "CURSOR_STALE"},
                 )
-            # Compare WHERE clause - different filters = different result set
-            cursor_where = payload.where or None
-            query_where = where or None
-            if cursor_where != query_where:
-                raise GraphQLError(
-                    "Cursor was created for a different filter. "
-                    "Start a fresh query without 'after'.",
-                    extensions={"code": "CURSOR_WHERE_MISMATCH"},
-                )
-            cursor_values = {entry[0]: entry[2] for entry in payload.order_by}
+            cursor_values = payload.values
 
         # Compile + execute with LIMIT first+1
         try:
@@ -352,7 +345,7 @@ def _make_connection_resolver(table_name: str):
                 order_by=order_by_parsed,
                 cursor_values=cursor_values,
                 limit=effective_first,
-                distinct=distinct if distinct is not None else False,
+                distinct=effective_distinct,
                 resolve_policy=resolve_policy,
             )
             rows = await execute_with_cache(
@@ -375,14 +368,13 @@ def _make_connection_resolver(table_name: str):
         end_cursor = None
         if rows:
             last_row = rows[-1]
+            cursor_vals = {col: last_row[col] for col, _ in order_by_parsed}
             end_cursor = encode_cursor(
-                CursorPayload(
-                    order_by=[
-                        [col, direction, last_row[col]]
-                        for col, direction in order_by_parsed
-                    ],
-                    where=where,
-                )
+                order_by_parsed=order_by_parsed,
+                cursor_values=cursor_vals,
+                where=where,
+                distinct=effective_distinct,
+                group_by_cols=group_by_cols,
             )
 
         return {
@@ -424,70 +416,60 @@ def _extract_selected_column_names(field_nodes: list) -> set[str]:
     return {f.name.value for f in sel.selection_set.selections}
 
 
-def _collect_field_names(field_nodes: list) -> list[str]:
-    """Return the list of field names selected in the first field node's selection set.
-
-    Returns a list (not set) to preserve order.
-    """
-    if not field_nodes:
-        return []
-    sel = field_nodes[0]
-    if sel.selection_set is None:
-        return []
-    return [f.name.value for f in sel.selection_set.selections]
-
-
-def _normalize_order_by_for_comparison(
-    order_by: list[tuple[str, str]] | list[list[str]],
-) -> list[tuple[str, str]]:
-    """Normalize order_by for comparison by standardizing direction format.
-
-    Preserves source column order since column ordering is semantically significant
-    for cursor predicates.
-    """
-    normalized = []
-    for item in order_by:
-        col = item[0]
-        direction = item[1].lower() if len(item) > 1 else "asc"
-        normalized.append((col, direction))
-    return normalized
-
-
 def _validate_order_by_uniqueness(
     tdef: TableDef,
     order_by_parsed: list[tuple[str, str]],
-    dim_cols: set[str] | None = None,
+    group_by_cols: set[str] | None = None,
 ) -> None:
-    """Validate that order_by columns form a unique key.
+    """Validate that the set of order_by columns contains a unique key for stable cursors.
 
-    Raises GraphQLError if order_by does not guarantee uniqueness.
+    See docs/pagination.md §9 for the full rule table.
     """
-    if not order_by_parsed:
-        return
-
     order_by_cols = {col for col, _ in order_by_parsed}
     pk_cols = {col.name for col in tdef.columns if col.is_pk}
+    unique_cols = {col.name for col in tdef.columns if col.is_unique}
 
-    # Valid if order_by covers all PK columns (only when pk_cols is non-empty)
+    # 1. Covers all PK columns
     if pk_cols and pk_cols.issubset(order_by_cols):
         return
 
-    # Also valid if all order_by columns are individually unique
-    unique_cols = {col.name for col in tdef.columns if col.is_unique}
-    if order_by_cols.issubset(unique_cols):
+    # 2. Contains at least one unique-constraint column
+    if order_by_cols.intersection(unique_cols):
         return
 
-    # Also valid if order_by columns match GROUP BY dimensions (aggregate queries)
-    if dim_cols and order_by_cols.issubset(dim_cols):
+    # 3. (Aggregate only) covers all GROUP BY dimensions
+    if group_by_cols and group_by_cols.issubset(order_by_cols):
         return
 
-    # Not valid - could cause duplicate/skip rows
+    # No condition met — build an actionable error.
+    got = [col for col, _ in order_by_parsed]
+    hints: list[str] = []
+
+    if pk_cols:
+        missing = sorted(pk_cols - order_by_cols)
+        hints.append(f"include PK columns {sorted(pk_cols)} (missing: {missing})")
+    if unique_cols:
+        candidates = sorted(unique_cols - order_by_cols)
+        if candidates:
+            hints.append(f"include any unique-constraint column {candidates}")
+    if group_by_cols is not None:
+        missing = sorted(group_by_cols - order_by_cols)
+        if missing:
+            hints.append(
+                f"include all GROUP BY dimension columns {sorted(group_by_cols)} "
+                f"(missing: {missing})"
+            )
+
+    if not hints:
+        hints.append(
+            "table has no PK, unique, or GROUP BY columns to form a unique key"
+        )
+
     raise GraphQLError(
-        f"order_by columns must form a unique key. "
-        f"Got: {[col for col, _ in order_by_parsed]}, "
-        f"PK: {sorted(pk_cols) if pk_cols else 'none'}, "
-        f"unique: {sorted(unique_cols) if unique_cols else 'none'}",
-        extensions={"code": "ORDER_BY_NOT_UNIQUE"},
+        f"order_by does not guarantee a stable cursor — "
+        f"columns do not form a unique key. Got: {got}. "
+        f"To fix, {'; or '.join(hints)}.",
+        extensions={"code": "CURSOR_ORDER_BY_NOT_UNIQUE"},
     )
 
 

@@ -829,3 +829,140 @@ class TestPagination:
         assert "errors" in body
         err = body["errors"][0]
         assert err["extensions"]["code"] == "CURSOR_REQUIRES_ORDER_BY"
+
+    def test_order_by_not_unique_returns_error(self, client):
+        """order_by on non-unique column raises CURSOR_ORDER_BY_NOT_UNIQUE.
+
+        The `orders` table PK is `order_id`; `status` alone does not
+        form a unique key, so cursor pagination is rejected.
+        """
+        resp = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ orders(first: 5, order_by: { status: asc }) "
+                    "{ nodes { order_id status } "
+                    "pageInfo { endCursor } } }"
+                )
+            },
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "errors" in body
+        err = body["errors"][0]
+        assert err["extensions"]["code"] == "CURSOR_ORDER_BY_NOT_UNIQUE"
+
+    def test_cursor_stale_when_where_changes(self, client):
+        """Using a cursor from a different WHERE clause raises CURSOR_STALE."""
+        # Get a valid cursor with one WHERE filter
+        resp1 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ orders(first: 1, where: { order_id: { _gte: 1 } }, "
+                    "order_by: { order_id: asc }) "
+                    "{ nodes { order_id } pageInfo { endCursor } } }"
+                )
+            },
+        )
+        cursor = resp1.json()["data"]["orders"]["pageInfo"]["endCursor"]
+
+        # Use that cursor with a different WHERE — fingerprint mismatch
+        resp2 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    '{ orders(first: 1, after: "%s", '
+                    "where: { order_id: { _gte: 5 } }, "
+                    "order_by: { order_id: asc }) "
+                    "{ nodes { order_id } pageInfo { endCursor } } }" % cursor
+                )
+            },
+        )
+        assert resp2.status_code == 400
+        body = resp2.json()
+        assert "errors" in body
+        err = body["errors"][0]
+        assert err["extensions"]["code"] == "CURSOR_STALE"
+
+    def test_cursor_stale_when_order_by_changes(self, client):
+        """Using a cursor from a different order_by raises CURSOR_STALE."""
+        # Get a valid cursor with single-field PK order_by
+        resp1 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ customers(first: 1, order_by: { customer_id: asc }) "
+                    "{ nodes { customer_id } pageInfo { endCursor } } }"
+                )
+            },
+        )
+        cursor = resp1.json()["data"]["customers"]["pageInfo"]["endCursor"]
+
+        # Use that cursor with a different (but still valid) order_by
+        resp2 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    '{ customers(first: 1, after: "%s", '
+                    "order_by: { customer_id: asc, first_name: asc }) "
+                    "{ nodes { customer_id } pageInfo { endCursor } } }" % cursor
+                )
+            },
+        )
+        assert resp2.status_code == 400
+        body = resp2.json()
+        assert "errors" in body
+        err = body["errors"][0]
+        assert err["extensions"]["code"] == "CURSOR_STALE"
+
+    def test_cursor_stale_when_distinct_changes(self, client):
+        """Using a cursor when distinct flag changes raises CURSOR_STALE."""
+        # Get a cursor WITHOUT distinct (defaults to false)
+        resp1 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ orders(first: 1, order_by: { order_id: asc }) "
+                    "{ nodes { order_id } pageInfo { endCursor } } }"
+                )
+            },
+        )
+        cursor = resp1.json()["data"]["orders"]["pageInfo"]["endCursor"]
+
+        # Use that cursor WITH distinct: true — fingerprint mismatch
+        resp2 = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    '{ orders(first: 1, after: "%s", distinct: true, '
+                    "order_by: { order_id: asc }) "
+                    "{ nodes { order_id } pageInfo { endCursor } } }" % cursor
+                )
+            },
+        )
+        assert resp2.status_code == 400
+        body = resp2.json()
+        assert "errors" in body
+        err = body["errors"][0]
+        assert err["extensions"]["code"] == "CURSOR_STALE"
+
+    def test_order_by_not_in_selection_returns_error(self, client):
+        """order_by on a column not in nodes selection raises ORDER_BY_NOT_IN_SELECTION.
+
+        `customer_id` is sorted by but not selected in `nodes { order_id }`.
+        """
+        resp = client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "{ orders(first: 5, order_by: { customer_id: asc }) "
+                    "{ nodes { order_id } } }"
+                )
+            },
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "errors" in body
+        err = body["errors"][0]
+        assert err["extensions"]["code"] == "ORDER_BY_NOT_IN_SELECTION"

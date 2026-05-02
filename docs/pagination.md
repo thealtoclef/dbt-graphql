@@ -1,6 +1,6 @@
 # Cursor-Based Pagination
 
-dbt-graphql uses **forward-only cursor-based pagination** — a simplified version of the [Relay Cursor Connections Specification](https://relay.dev/graphql/connections.htm). It omits features that are expensive or unnecessary for data-warehouse and LLM-agent workloads.
+dbt-graphql uses **forward-only cursor-based pagination** — a simplified version of the [Relay Cursor Connections Specification](https://relay.dev/graphql/connections.htm), which is one of the pagination models [recommended by graphql.org](https://graphql.org/learn/pagination/). It omits features that are expensive or unnecessary for data-warehouse and LLM-agent workloads.
 
 **Source:** [`src/dbt_graphql/graphql/cursors.py`](../src/dbt_graphql/graphql/cursors.py), [`src/dbt_graphql/compiler/cursor.py`](../src/dbt_graphql/compiler/cursor.py), [`src/dbt_graphql/graphql/resolvers.py`](../src/dbt_graphql/graphql/resolvers.py)
 
@@ -57,7 +57,7 @@ type Query {
 |---|---|---|
 | `first` | `Int` | Maximum number of rows to return. Defaults to [`query_default_limit`](#6-configuration) (100). Capped at [`query_max_limit`](#6-configuration) (1000). |
 | `after` | `String` | Opaque cursor — pass the `endCursor` from a previous page. Requires `order_by`. |
-| `order_by` | `{T}OrderBy` | Defines sort order AND cursor columns. Must form a unique key (PK, all unique columns, or GROUP BY dimensions). Required when using `after` or selecting `pageInfo`. All order_by columns must be selected in `nodes { ... }`. |
+| `order_by` | `{T}OrderBy` | Defines sort order AND cursor columns. For cursor pagination, the **set** of `order_by` columns must contain a unique key — either by covering all PK columns, containing a unique-constraint column, or (for aggregate queries) covering all GROUP BY dimensions. Order within `order_by` does not matter for uniqueness, only for sort direction. Required when using `after` or selecting `pageInfo`. All `order_by` columns must be selected in `nodes { ... }`. See [§9 uniqueness rules](#9-limits-and-caveats). |
 | `where` | `{T}Where` | Row-level filters. Applied before pagination. |
 | `distinct` | `Boolean` | Deduplicate rows. |
 
@@ -101,6 +101,8 @@ type PageInfo {
 
 ## 4. How cursors work
 
+The GraphQL surface exposes Relay-style connections (`first`/`after`/`pageInfo`) for a familiar client experience. Internally, the compiler translates these into **keyset pagination** (the seek method) — a SQL pattern that uses chained-OR predicates to seek directly to the starting row, rather than scanning and discarding rows like `OFFSET`. These are two separate concerns: the API shape (Relay connections) and the execution strategy (keyset pagination).
+
 ### Format
 
 Cursors are **base64url-encoded JSON**. There is no HMAC or signature — cursors are stateless and not replay-protected. Row-level security is enforced as separate AND clauses in the SQL `WHERE`, so a forged cursor cannot bypass row filters.
@@ -109,15 +111,15 @@ Decoded payload structure:
 
 ```json
 {
-  "p": [["created_at", "desc", "2024-01-15T00:00:00"], ["id", "asc", 42]],
-  "w": {"status": {"_eq": "active"}}
+  "d": "a1b2c3d4...full-sha256-hex",
+  "v": {"created_at": "2024-01-15T00:00:00", "id": 42}
 }
 ```
 
 | Key | Contents |
-|---|---|---|
-| `p` | The `order_by` entries as `[[column, direction, value], ...]`. Each entry pairs a column+direction with the last row's value for that column. Used to validate the cursor spec and to rebuild the chained-OR predicate on the next page. |
-| `w` | The `where` filter that was applied when the cursor was created. If a subsequent query uses a different `where`, pagination would return wrong results, so the cursor is invalidated. |
+|---|---|
+| `d` | SHA-256 fingerprint of the query signature (`order_by` + `where` + `distinct` + GROUP BY columns). Used to detect stale cursors — see [§9 cursor stale detection](#9-limits-and-caveats). |
+| `v` | Column→value dict from the last row on the page. Used to build the chained-OR predicate for the next page. |
 
 ### How the cursor becomes SQL
 
@@ -224,7 +226,7 @@ Response:
         {"id": 998, "name": "Bob", "email": "bob@example.com", "created_at": "2024-02-28"}
       ],
         "pageInfo": {
-        "endCursor": "eyJwIjogW1siY3JlYXRlZF9hdCIsICJkZXNjIl0sIFsiaWQiLCAiYXNjIl1dLCAidiI6IHsiY3JlYXRlZF9hdCI6ICIyMDI0LTAyLTI4VDAwOjAwOjAwIiwgImlkIjogOTk4fX0",
+        "endCursor": "eyJkIjogImFiYy4uLmEgdGhlIGFjdHVhbCBzaGEyNTYgaGV4IHN0cmluZyIsICJ2IjogeyJjcmVhdGVkX2F0IjogIjIwMjQtMDItMjhUMDA6MDA6MDAiLCAiaWQiOiA5OTh9fQ",
         "hasNextPage": true
       }
     }
@@ -238,7 +240,7 @@ query {
   customers(
     order_by: [{created_at: desc}, {id: asc}]
     first: 10
-    after: "eyJwIjogW1siY3JlYXRlZF9hdCIsICJkZXNjIl0sIFsiaWQiLCAiYXNjIl1dLCAidiI6IHsiY3JlYXRlZF9hdCI6ICIyMDI0LTAyLTI4VDAwOjAwOjAwIiwgImlkIjogOTk4fX0"
+    after: "eyJkIjogImFiYy4uLmEgdGhlIGFjdHVhbCBzaGEyNTYgaGV4IHN0cmluZyIsICJ2IjogeyJjcmVhdGVkX2F0IjogIjIwMjQtMDItMjhUMDA6MDA6MDAiLCAiaWQiOiA5OTh9fQ"
   ) {
     nodes {
       id
@@ -279,33 +281,163 @@ query {
 
 ## 9. Limits and caveats
 
-### `order_by` must use unique columns for stable pagination
+### `order_by` uniqueness requirement
 
-dbt-graphql validates that `order_by` columns form a unique key. If not, pagination raises `ORDER_BY_NOT_UNIQUE`:
+Cursor pagination uses a **chained-OR predicate** that encodes ALL `order_by` columns into the cursor. The SQL it produces is always correct — it is equivalent to a row-value comparison `(col₁, col₂, …) > (val₁, val₂, …)`. However, pagination requires that **no two rows can tie on every `order_by` column**. If they do, the cursor cannot distinguish between them, and rows may be skipped or duplicated across pages.
+
+dbt-graphql validates this at query time and raises `CURSOR_ORDER_BY_NOT_UNIQUE` when validation fails.
+
+#### Set-based validation
+
+The chained-OR uses ALL `order_by` columns regardless of their position, so **the order of columns in `order_by` does not matter for uniqueness** — only the SET of columns matters. The validator checks whether the set of `order_by` columns contains a unique key.
+
+A set of columns is **unique** when any of:
+
+| # | Condition | Why it works |
+|---|---|---|
+| 1 | Contains all **PK columns** of the table | PK is unique by definition |
+| 2 | Contains at least one column with a **unique constraint** | That column alone distinguishes all rows |
+| 3 | (Aggregate queries only) Contains all **GROUP BY dimension columns** | GROUP BY produces one row per unique combination |
+
+Any one condition is sufficient. Order within `order_by` only affects sort direction, not whether pagination is correct.
+
+#### Examples
+
+**Non-aggregate, single PK:**
 
 ```graphql
-# Error — duplicate created_at values cause unstable pagination
-order_by: [{created_at: desc}]
+# Table: orders  PK: order_id, unique: surrogate_key
 
-# Valid — id is unique
-order_by: [{created_at: desc}, {id: asc}]
+# ✅ order_id is the PK
+{ orders(order_by: {order_id: asc}, first: 10) { ... } }
 
-# Also valid — uses all primary key columns
-order_by: [{customer_id: asc}, {order_id: asc}]
+# ✅ order_id is PK — its position doesn't matter
+{ orders(order_by: [{status: asc}, {order_id: asc}], first: 10) { ... } }
+
+# ✅ surrogate_key has a unique constraint
+{ orders(order_by: {surrogate_key: asc}, first: 10) { ... } }
+
+# ❌ created_at is not unique, no unique column in the set
+{ orders(order_by: {created_at: asc}, first: 10) { ... } }
 ```
 
-Validation succeeds if:
-1. `order_by` columns cover all primary key columns (composite PK), OR
-2. Every `order_by` column is marked `@unique` in the schema, OR
-3. All `order_by` columns are GROUP BY dimensions (aggregate queries)
+**Non-aggregate, composite PK:**
 
-### Cursor includes WHERE filter
+```graphql
+# Table: order_items  PK: (order_id, item_id)
 
-The cursor encodes the `where` filter that was active when it was created. If you change `where` between pages, pagination raises `CURSOR_WHERE_MISMATCH`. This prevents subtle bugs where different filters would return different rows at the same cursor position.
+# ✅ Both PK columns present
+{ order_items(order_by: [{order_id: asc}, {item_id: asc}], first: 10) { ... } }
 
-### Cursor includes `order_by` spec
+# ✅ Both PK columns present — order within order_by doesn't matter
+{ order_items(order_by: [{status: asc}, {order_id: asc}, {item_id: asc}], first: 10) { ... } }
 
-The cursor encodes the `order_by` columns that were active when it was created. If you change `order_by` between pages, pagination raises `CURSOR_ORDER_BY_MISMATCH`.
+# ❌ order_id alone is not a complete PK
+{ order_items(order_by: {order_id: asc}, first: 10) { ... } }
+```
+
+**Aggregate queries (GROUP BY dimensions):**
+
+When `_aggregate` is selected, the compiler groups by all non-aggregate selected columns. Those GROUP BY dimensions form a unique key in the result set.
+
+```graphql
+# Selected dimensions: agent_email  →  GROUP BY (agent_email)
+
+# ✅ GROUP BY is (agent_email), order_by covers it
+{
+  fct(order_by: {agent_email: asc}, first: 5) {
+    nodes { agent_email  _aggregate { count } }
+    pageInfo { endCursor hasNextPage }
+  }
+}
+```
+
+**Aggregate with multiple dimensions:**
+
+```graphql
+# Selected dimensions: agent_email, action  →  GROUP BY (agent_email, action)
+
+# ❌ agent_email alone does not cover all GROUP BY dimensions
+{
+  fct(order_by: {agent_email: asc}, first: 5) {
+    nodes { agent_email  action  _aggregate { count } }
+    pageInfo { endCursor hasNextPage }
+  }
+}
+
+# ✅ Both dimensions covered
+{
+  fct(order_by: [{agent_email: asc}, {action: asc}], first: 5) {
+    nodes { agent_email  action  _aggregate { count } }
+    pageInfo { endCursor hasNextPage }
+  }
+}
+
+# ✅ surrogate_key has a unique constraint — no need for GROUP BY coverage
+{
+  fct(order_by: {surrogate_key: asc}, first: 5) {
+    nodes { agent_email  action  _aggregate { count } }
+    pageInfo { endCursor hasNextPage }
+  }
+}
+```
+
+#### Error messages
+
+When validation fails, the error lists actionable hints — what columns to **include** in `order_by`:
+
+```
+order_by does not guarantee a stable cursor — columns do not form a unique key.
+Got: ['created_at']. To fix, include PK columns ['order_id']; or include any
+unique-constraint column ['surrogate_key'].
+```
+
+```
+order_by does not guarantee a stable cursor — columns do not form a unique key.
+Got: ['agent_email']. To fix, include PK columns ['surrogate_key']; or include
+all GROUP BY dimension columns ['action', 'agent_email'] (missing: ['action']).
+```
+
+#### Validation flow
+
+```
+order_by provided?
+  │
+  no ──→ skip validation (plain LIMIT, no cursors)
+  │
+  yes ──→ build set of order_by columns
+          │
+          ├─ set ⊇ all PK columns? ──→ ✅ valid
+          ├─ set ∩ unique-constraint columns ≠ ∅? ──→ ✅ valid
+          ├─ set ⊇ all GROUP BY dims (aggregate only)? ──→ ✅ valid
+          │
+          └─ none of the above ──→ ❌ CURSOR_ORDER_BY_NOT_UNIQUE
+```
+
+### Data mutations between pages
+
+Because cursors are stateless (no server-side session), INSERTs, UPDATEs, or DELETEs that occur between pages can cause rows to appear shifted. This is inherent to all stateless keyset pagination and cannot be prevented. For static or append-only warehouse tables this is rarely an issue.
+
+### Cursor stale detection
+
+The cursor encodes a SHA-256 fingerprint of all query parameters that affect which rows appear and in what order. If any of these change between pages, the cursor is rejected with `CURSOR_STALE` — start a fresh query without `after`.
+
+#### Parameters covered by the digest
+
+| Parameter | Why it matters |
+|---|---|
+| `order_by` | Sort order determines cursor position. Different sort → different rows at the same position. |
+| `where` | Filter changes the result set. A cursor pointing at row N in filtered set A is meaningless in filtered set B. |
+| `distinct` | `DISTINCT` collapses duplicate rows, changing row count. A cursor created without `distinct` may point at a row that was deduplicated away with `distinct: true`. |
+| Selected fields (with `_aggregate`) | When `_aggregate` is selected, the compiler groups by all non-aggregate selected columns. Changing which dimension columns are selected changes the GROUP BY, which changes the result set shape and row count. |
+
+#### Parameters NOT covered (by design)
+
+| Parameter | Why it's safe to change |
+|---|---|
+| `first` | Only controls page size. A different `first` on page 2 returns a different number of rows but starts at the correct cursor position. |
+| Selected fields (without `_aggregate`) | Only changes column projection. The same rows are returned in the same order — cursor position is unaffected. |
+| Table name | Each table has its own resolver. You can't send an `orders` cursor to a `customers` query. |
 
 ### NULL values in `order_by` columns
 
